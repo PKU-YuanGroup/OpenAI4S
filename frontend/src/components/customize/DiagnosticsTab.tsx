@@ -33,6 +33,7 @@ const COPY = {
     invalid: "The diagnostics response is incomplete or invalid. Run checks again.",
     failed: "The diagnostics request failed.", timeout: "The diagnostics request timed out. Run checks again.",
     noChecks: "No check items were returned.",
+    sandbox: "Kernel sandbox", egress: "Network egress", secrets: "Credential store", knobs: "Environment variables",
   },
   zh: {
     title: "诊断",
@@ -45,8 +46,91 @@ const COPY = {
     received: "本次获取时间", previous: "上次结果", stale: "配置已改变，需要重新检查。",
     invalid: "诊断响应不完整或格式错误，请重新检查。", failed: "诊断请求失败。",
     timeout: "诊断请求超时，请重新检查。", noChecks: "没有返回检查项。",
+    sandbox: "内核沙箱", egress: "网络出口", secrets: "凭证存储", knobs: "环境变量",
   },
 } as const;
+
+/**
+ * SET-3: the resolved posture (`security.resolved`) in words. The row used to
+ * echo the environment ("kernel_sandbox=(default) · egress=(default) …");
+ * those knobs are now the secondary line.
+ */
+const POSTURE_WORDS: Record<"en" | "zh", Record<string, string>> = {
+  en: {
+    "sandbox.auto": "Automatic", "sandbox.enforce": "Required", "sandbox.off": "Off",
+    "sandbox.invalid": "Setting not recognised; the kernel will not start",
+    "backend.seatbelt": "macOS Seatbelt", "backend.bubblewrap": "bubblewrap",
+    "backend.none": "no sandbox tool found",
+    "selfTest.not_run": "its self-test runs with Run checks",
+    "selfTest.failed": "its self-test failed on this machine",
+    "egress.off": "Not restricted", "egress.allowlist": "Only domains on the allowlist",
+    "store.macos-keychain": "macOS Keychain", "store.secret-service": "system keyring (Secret Service)",
+    "store.windows-dpapi": "Windows account protection", "store.env-injection": "environment variables",
+    "store.plaintext-db": "the database, unencrypted", "store.memory": "memory only (not kept)",
+    "store.none": "none available", "store.not_resolved": "Not used yet",
+    "store.secure": "secure", "store.insecure": "not encrypted",
+    "storeMode.auto": "chosen automatically", "storeMode.keychain": "keychain only",
+    "storeMode.env": "environment only", "storeMode.plaintext": "plaintext chosen",
+    "storeMode.invalid": "setting not recognised",
+  },
+  zh: {
+    "sandbox.auto": "自动", "sandbox.enforce": "必须启用", "sandbox.off": "已关闭",
+    "sandbox.invalid": "设置无法识别，内核将无法启动",
+    "backend.seatbelt": "macOS Seatbelt", "backend.bubblewrap": "bubblewrap",
+    "backend.none": "没有找到沙箱工具",
+    "selfTest.not_run": "自检在「运行检查」时进行",
+    "selfTest.failed": "这台机器上的自检未通过",
+    "egress.off": "不限制", "egress.allowlist": "只允许白名单里的域名",
+    "store.macos-keychain": "macOS 钥匙串", "store.secret-service": "系统密钥环（Secret Service）",
+    "store.windows-dpapi": "Windows 账户保护", "store.env-injection": "环境变量",
+    "store.plaintext-db": "数据库（未加密）", "store.memory": "仅内存（不保留）",
+    "store.none": "没有可用的存储", "store.not_resolved": "尚未使用",
+    "store.secure": "安全", "store.insecure": "未加密",
+    "storeMode.auto": "自动选择", "storeMode.keychain": "仅钥匙串",
+    "storeMode.env": "仅环境变量", "storeMode.plaintext": "已选择明文",
+    "storeMode.invalid": "设置无法识别",
+  },
+};
+
+type PostureRow = { key: string; name: string; desc: string };
+
+function resolvedRows(security: Record<string, unknown>, lang: "en" | "zh"): PostureRow[] {
+  const words = POSTURE_WORDS[lang];
+  const text = lang === "zh" ? COPY.zh : COPY.en;
+  const resolved = security.resolved && typeof security.resolved === "object"
+    ? security.resolved as Record<string, unknown> : null;
+  if (!resolved) return [];
+  const part = (name: string): Record<string, unknown> => {
+    const value = resolved[name];
+    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+  };
+  const word = (key: string) => words[key];
+  const rows: PostureRow[] = [];
+  const sandbox = part("kernel_sandbox");
+  const mode = word("sandbox." + String(sandbox.mode));
+  if (mode) {
+    const bits = [mode];
+    if (sandbox.mode === "auto" || sandbox.mode === "enforce") {
+      const backend = word("backend." + String(sandbox.backend));
+      if (backend) bits.push(backend);
+      const selfTest = sandbox.backend !== "none" ? word("selfTest." + String(sandbox.self_test)) : "";
+      if (selfTest) bits.push(selfTest);
+    }
+    rows.push({ key: "kernel_sandbox", name: text.sandbox, desc: bits.join(" · ") });
+  }
+  const egress = word("egress." + String(part("egress").mode));
+  if (egress) rows.push({ key: "egress", name: text.egress, desc: egress });
+  const store = part("secret_store");
+  const backend = word("store." + String(store.backend));
+  if (backend) {
+    const note = store.backend === "not_resolved"
+      ? word("storeMode." + String(store.mode))
+      : typeof store.secure === "boolean" ? word(store.secure ? "store.secure" : "store.insecure") : "";
+    const desc = note ? (lang === "zh" ? `${backend}（${note}）` : `${backend} (${note})`) : backend;
+    rows.push({ key: "secret_store", name: text.secrets, desc });
+  }
+  return rows;
+}
 
 // doctor._CHECKS names and the existing Customize destinations. Response URLs
 // and remedy commands are ordinary text and never decide navigation or actions.
@@ -89,6 +173,8 @@ export function DiagnosticsTab() {
   const [passiveError, setPassiveError] = useState<DiagnosticsFailure | null>(null);
   const [bundleError, setBundleError] = useState<DiagnosticsFailure | null>(null);
   const [copied, setCopied] = useState(false);
+  // SET-3: the passive read's `security`, for the resolved posture rows.
+  const [security, setSecurity] = useState<Record<string, unknown> | null>(null);
   const current = () => alive() && generation.current === customizeGeneration.value;
   const snapshot = diagnosticsResult.value;
   const busy = diagnosticsRequest.value?.kind;
@@ -109,6 +195,7 @@ export function DiagnosticsTab() {
         if (!active || !current()) return;
         setPassiveId(status.request_id);
         setPosture(factLine(status.security));
+        setSecurity(status.security);
         setPassiveError(null);
       } catch (err) {
         if (active && current()) setPassiveError(failure(err));
@@ -167,7 +254,22 @@ export function DiagnosticsTab() {
     <div class="cust-diagnostics" data-diagnostics="1">
       <Hdr title={text.title} sub={text.sub} />
       {errorText ? <div class="cust-sub" role="alert" data-diagnostics-error="1">{errorText}</div> : null}
-      {posture ? <CustRow name={text.title} desc={posture} /> : null}
+      {security ? resolvedRows(security, LANG === "zh" ? "zh" : "en").map((row) => (
+        <div key={row.key} class="cust-row" data-diagnostics-posture={row.key}>
+          <div class="info">
+            <div class="nm">{row.name}</div>
+            <div class="ds">{row.desc}</div>
+          </div>
+        </div>
+      )) : null}
+      {posture ? (
+        <div class="cust-row" data-diagnostics-knobs="1">
+          <div class="info">
+            <div class="nm">{text.knobs}</div>
+            <div class="ds">{posture}</div>
+          </div>
+        </div>
+      ) : null}
       <CustRow name={text.requestId} desc={requestId || "—"}>
         <button type="button" class="outline-btn small" disabled={!requestId} onClick={() => void onCopy()}>
           {copied ? text.copied : text.copy}

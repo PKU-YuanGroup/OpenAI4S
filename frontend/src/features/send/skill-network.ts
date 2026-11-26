@@ -1,14 +1,16 @@
 /**
  * A loaded Skill's network limit, as the session timeline shows it.
  *
- * A `host_only` Skill manifest holds every later Host request in the session
- * to its declared domains. The server puts that on two kinds of step:
+ * A `host_only` Skill manifest holds the requests that Skill's OWN helper
+ * code (its kernel.py) makes to its declared domains; the rest of the session
+ * keeps its network policy (owner decision 34). The server puts that on:
  *
  * - its own notice card (`kind: "network"`, `output.notice: "skill_network"`),
- *   emitted once per manifest by whichever call bound it;
- * - the Skill's load card (`output.session_network`);
- * - a request the limit refused (`output.blocked`), which is refused before
- *   any approval is asked for.
+ *   for a binding that has no load card of its own;
+ * - the Skill's load card (`output.session_network`: the Skill's helper
+ *   domains, under a key kept from when the limit was the session's);
+ * - a helper request the limit refused (`output.blocked`), which is refused
+ *   before any approval is asked for.
  *
  * The server's summary and title are English; these helpers give the card
  * its words in the UI language and the domain list on expand.
@@ -20,35 +22,36 @@ import { el } from "../messages/dom";
 
 const COPY: CopyTable = {
   zh: {
-    "net.notice.title": "已加载 {0}：本会话联网限定为 {1} 个域名",
+    "net.notice.title": "已加载 {0}：它的辅助代码只能访问 {1} 个域名",
     "net.notice.meta": "{0} 个域名",
     "net.notice.explain":
-      "加载 {0} 后，本会话之后的联网请求（网页检索、网页读取、下载以及 host.bash 命令中的网址）只能访问下列域名；访问其他域名的请求会在发出前被拒绝，批准也无法放宽这一限制。",
+      "{0} 自带的辅助函数（kernel.py）只能访问下列域名；它们访问其他域名的请求会在发出前被拒绝，批准也无法放宽。这个限制只针对该技能的辅助代码：本会话的其他联网——智能体自己的单元代码、网页检索、网页读取、science_search、host.bash——都不受影响。",
     "net.notice.skills": "限制来自技能：{0}",
-    "net.domains": "允许的域名（{0} 个）",
-    "net.load.meta": "已加载 · 本会话联网限定为 {0} 个域名",
-    "net.blocked.meta": "被技能的联网限制拦下",
-    "net.blocked.explain": "{0} 把本会话联网限定为 {1} 个域名，{2} 不在其中，这个请求没有发出，也不需要你批准。",
+    "net.domains": "辅助代码可访问的域名（{0} 个）",
+    "net.load.meta": "已加载 · 辅助代码联网限定为 {0} 个域名",
+    "net.blocked.meta": "被技能辅助代码的联网限制拦下",
+    "net.blocked.explain":
+      "{0} 的辅助代码只能访问 {1} 个域名，{2} 不在其中，这个请求没有发出，也不需要你批准。本会话的其他联网不受影响：智能体可以用自己的代码或内置工具访问它。",
     "net.blocked.unnamed": "已加载的技能",
     "net.blocked.reason": "原始原因",
     "net.blocked.search":
-      "{0} 把本会话联网限定为 {1} 个域名，已启用的搜索引擎都不在其中，这次检索没有发出——这不是「网上没有结果」。",
+      "{0} 的辅助代码只能访问 {1} 个域名，已启用的搜索引擎都不在其中，这次检索没有发出——这不是「网上没有结果」。智能体仍可以直接进行网页检索。",
   },
   en: {
-    "net.notice.title": "Loaded {0}: this session's network is limited to {1}",
+    "net.notice.title": "Loaded {0}: its helpers can reach only {1}",
     "net.notice.meta": "{0}",
     "net.notice.explain":
-      "After loading {0}, this session's network requests (web search, web fetch, downloads and URLs in host.bash commands) can reach only the domains below. A request to any other domain is refused before it is sent, and approving it cannot widen the limit.",
+      "Only {0}'s own helper functions (its kernel.py) are limited to the domains below: a helper's request to any other domain is refused before it is sent, and approving it cannot widen the limit. The rest of this session's network is unchanged: the agent's own cells, web search, web fetch, science_search and host.bash.",
     "net.notice.skills": "Limited by: {0}",
-    "net.domains": "Allowed domains ({0})",
-    "net.load.meta": "loaded · network limited to {0}",
-    "net.blocked.meta": "blocked by a Skill's network limit",
+    "net.domains": "Domains its helpers can reach ({0})",
+    "net.load.meta": "loaded · helpers limited to {0}",
+    "net.blocked.meta": "blocked by a Skill helper's network limit",
     "net.blocked.explain":
-      "{0} limits this session's network to {1}; {2} is not one of them, so the request was not sent and needs no approval.",
+      "{0}'s helper code can reach only {1}; {2} is not one of them, so the request was not sent and needs no approval. The rest of this session's network is unchanged: the agent can reach it with its own code or a built-in tool.",
     "net.blocked.unnamed": "A loaded Skill",
     "net.blocked.reason": "Original reason",
     "net.blocked.search":
-      "{0} limits this session's network to {1}, and none of the enabled search engines is one of them, so the search was not sent. This is not \"no results\".",
+      "{0}'s helper code can reach only {1}, and none of the enabled search engines is one of them, so the search was not sent. This is not \"no results\"; the agent can still search the web directly.",
   },
 };
 
@@ -63,9 +66,9 @@ function domainCount(n: number): string {
 export type SkillNetworkView = {
   /** The Skill whose load this card is about. */
   skill: string;
-  /** Every Skill narrowing the session, in load order. */
+  /** The Skills the card is about, in load order. */
   skills: string[];
-  /** The union the session is held to. */
+  /** The domains those Skills' helpers may reach. */
   domains: string[];
 };
 
@@ -91,7 +94,7 @@ export function noticeView(step: StepLike): SkillNetworkView | null {
   return { skill, skills: skills.length ? skills : [skill], domains };
 }
 
-/** A Skill load card that narrowed the session, or null. */
+/** A Skill load card whose helpers are network-limited, or null. */
 export function loadView(step: StepLike): SkillNetworkView | null {
   if (step.kind !== "skill") return null;
   const out = rec(step.output);
@@ -110,7 +113,7 @@ export type BlockedView = SkillNetworkView & {
   search: boolean;
 };
 
-/** A request the session's Skill limit refused, or null. */
+/** A Skill helper's request the Skill's limit refused, or null. */
 export function blockedView(step: StepLike): BlockedView | null {
   const blocked = rec(rec(step.output).blocked);
   if (blocked.by !== "skill_network") return null;
@@ -166,7 +169,12 @@ export function networkNoticeBody(view: SkillNetworkView): HTMLElement {
   return box;
 }
 
-/** What a refused request's card says, with the server's reason kept below. */
+/**
+ * What a refused helper request's card says, with the server's reason kept
+ * below. It names no way out beyond the next request: the limit is only the
+ * Skill's helpers', so nothing else in the session needs one (owner decision
+ * 34 retired "continue in a new session").
+ */
 export function blockedBody(view: BlockedView, reason: string): HTMLElement {
   const box = el("div", "s-net s-net-blocked");
   const who = view.skill || netT("net.blocked.unnamed");

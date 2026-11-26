@@ -328,7 +328,7 @@ list that names fixed things is as unreadable as one that omits broken ones.
 | Medium | `generation_confidence` and `provenance` were written by a migration and read by nothing | closed — read by `app.js` (the version pane gates on `=== "verified"`) and by `openai4s/benchmark/steps.py` |
 | Low | `Tool.dangerous` was declared on ten tools and read by no gate, audit or prompt | closed — `host_dispatch.py` carries it into the audit record, and `app.js` renders the high-risk permission badge and shortens the grant to once-only |
 | Low | `host.app_render` grew without bound (100 MB measured); a released idle session kept its history | closed — `MAX_APP_TILE_CHARS` refuses an oversized payload and `MAX_APP_TILES` evicts oldest-first, reporting `dropped` so a cell cannot mistake `tiles()` for the full history |
-| Low | model-profile `readiness` and the probe route had no UI call site | closed — Customize → Models renders the readiness card and the explicit probe; the protocol menu carries all five protocols including Gemini, verified in a real browser at this SHA |
+| Low | model-profile `readiness` and the probe route had no UI call site | closed — Settings → Models renders the readiness card and the explicit probe; the protocol menu carries all five protocols including Gemini, verified in a real browser at this SHA |
 
 ### Deliberately not fixed
 
@@ -1076,7 +1076,7 @@ what it deliberately does not cover.
 - **Wiring:** `POST /frames/{fid}/message` takes an optional `client_request_id`
   (exactly 32 lowercase hex; 400 with `annotation_ids`, with `wait` not false,
   or malformed; 404 on a sub-frame). `SessionRunner.claim_message_receipt`
-  claims `(session root, initiator, id)` in `message_admissions` (migration 44,
+  claims `(session root, initiator, id)` in `message_admissions` (migration 45,
   `openai4s/storage/message_admissions.py`) before `submit_message` freezes a
   model, takes a ticket or resolves an `@` file. The digest is the canonical
   SHA-256 of the normalized client input; same key and digest → the original

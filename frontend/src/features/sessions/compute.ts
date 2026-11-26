@@ -23,7 +23,7 @@ export const computeT = copyLookup({
   en: {
     "compute.status.loading": "Checking run location…",
     "compute.status.unavailable": "Run location unavailable",
-    "compute.status.unsupported": "Run-location control is not available on this daemon",
+    "compute.status.unsupported": "The run location cannot be changed on this server",
     "compute.status.stale": "last confirmed; may be out of date",
     "compute.status.unconfirmed": "change not confirmed",
     "compute.status.submitting": "that change is still being submitted",
@@ -31,13 +31,13 @@ export const computeT = copyLookup({
     "compute.status.invalid": "Invalid run-location response",
     "compute.profiles.unavailable": "Could not load cluster profiles",
     "compute.profiles.invalid": "Invalid cluster-profile response",
-    "compute.profiles.empty": "No cluster profiles are configured on this daemon.",
+    "compute.profiles.empty": "No cluster is set up on this server yet.",
     "compute.status.cluster": "cluster",
   },
   zh: {
     "compute.status.loading": "正在查询运行位置…",
     "compute.status.unavailable": "无法确认运行位置",
-    "compute.status.unsupported": "本 daemon 不提供运行位置切换",
+    "compute.status.unsupported": "这台服务器不能切换运行位置",
     "compute.status.stale": "上次确认；可能已过期",
     "compute.status.unconfirmed": "变更未确认",
     "compute.status.submitting": "该变更仍在提交中",
@@ -45,7 +45,7 @@ export const computeT = copyLookup({
     "compute.status.invalid": "运行位置响应无效",
     "compute.profiles.unavailable": "无法加载集群配置",
     "compute.profiles.invalid": "集群配置响应无效",
-    "compute.profiles.empty": "本 daemon 尚未配置集群运行配置。",
+    "compute.profiles.empty": "这台服务器还没有配置集群。",
     "compute.status.cluster": "集群",
   },
 });
@@ -90,7 +90,7 @@ export type ComputeReadState = {
 export type ComputeResult =
   | { phase: "available"; status: ComputeStatus }
   | { phase: "unsupported"; error: string }
-  | { phase: "unavailable"; error: string };
+  | { phase: "unavailable"; error: string; missing?: true };
 
 // Validate the fields the UI reads. A 200 with an HTML body or an incomplete
 // status is unknown, never evidence that the session is running locally.
@@ -153,9 +153,12 @@ export async function loadComputeStatus(fid: string): Promise<ComputeResult> {
     if (!validStatus(status)) throw new Error(t("compute.status.invalid"));
     return { phase: "available", status };
   } catch (error) {
+    if (unsupportedRead(error)) return { phase: "unsupported", error: apiErrorText(error) };
     return {
-      phase: unsupportedRead(error) ? "unsupported" : "unavailable",
+      phase: "unavailable",
       error: apiErrorText(error),
+      // "404 session not found": no such session for this login (TEAM-26).
+      ...(error instanceof ApiError && error.status === 404 ? { missing: true as const } : {}),
     };
   }
 }
@@ -186,6 +189,15 @@ async function readComputeStatus(fid: string): Promise<ComputeResult> {
   renderComputeLostBanner();
   const result = await loadComputeStatus(fid);
   if (fid !== currentId.value || generation !== _openGen.value || computeStatus.value !== loading) return result;
+  if (result.phase === "unavailable" && result.missing) {
+    // A session this login cannot see has no run location to report; the
+    // page already says it is not there, and "Run location unavailable"
+    // beside that read as a second, unrelated failure (TEAM-26).
+    computeStatus.value = null;
+    renderComputeBadge();
+    renderComputeLostBanner();
+    return result;
+  }
   computeStatus.value = result.phase === "available"
     ? { fid, generation, ...result }
     : { ...loading, ...result };

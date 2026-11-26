@@ -99,19 +99,25 @@ def request_digest(
     plan: bool,
     explore: bool,
     task_mode: Any,
+    attachments: list[dict] | None = None,
 ) -> str:
     """Canonical SHA-256 of the normalized client input.
 
     Only what the client sent, after the route normalized it: the request
-    text, the parsed `@` pins, the explicit model and the task options. Not
-    the resolved model, branch or anything the server derives, so a replay
-    after a re-pin or a branch switch still matches its first send.
+    text, the parsed `@` pins, the uploads it names as going with it, the
+    explicit model and the task options. Not the resolved model, branch or
+    anything the server derives, so a replay after a re-pin or a branch switch
+    still matches its first send.
     """
     payload = {
         "request": str(request or ""),
         "mentions": [
             {str(key): str(value) for key, value in sorted(dict(item).items())}
             for item in (mentions or [])
+        ],
+        "attachments": [
+            {str(key): str(value) for key, value in sorted(dict(item).items())}
+            for item in (attachments or [])
         ],
         "model": None if model in (None, "") else str(model),
         "plan": bool(plan),

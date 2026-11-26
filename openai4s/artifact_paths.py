@@ -17,9 +17,17 @@ _PROCESS_SUFFIXES = frozenset(
     {".py", ".r", ".sh", ".bash", ".ipynb", ".log", ".pyc", ".tmp", ".bak", ".rds"}
 )
 _PROCESS_DIRS = ("project-inputs/", "inputs/", "__pycache__/", ".openai4s")
+#: NB-5: a top-level folder the agent keeps working files in. Everything under
+#: `scratch/`, `tmp/`, `temp/`, `tmp_lit/` or `scratch_2/` is how a result was
+#: made -- a fetched paper's XML, a helper CSV -- not a result. Only `temp`
+#: itself: `temp_curves/` is as likely to mean temperature.
+_SCRATCH_TOP_DIR = re.compile(r"(?:(?:scratch|tmp)(?:[_-][^/]*)?|temp)/")
 
 
-def artifact_role(filename: str | None) -> str:
+_ROLES = frozenset({"internal", "process", "deliverable"})
+
+
+def artifact_role(filename: str | None, marked: str | None = None) -> str:
     """``internal``, ``process`` or ``deliverable`` -- decided here and only here.
 
     ``internal`` is the platform's own bookkeeping (context spill files): never
@@ -28,7 +36,13 @@ def artifact_role(filename: str | None) -> str:
     is four versions of one), logs, copies of inputs: kept and linked, folded
     away from the deliverables and left out of their count. Everything else is
     a ``deliverable``. The record itself is never changed by this answer.
+
+    ``marked`` is a role the server recorded for the artifact itself
+    (`Store.artifact_role_marks`: a plan's JSON is ``process``) and wins over
+    anything the filename suggests.
     """
+    if marked in _ROLES:
+        return str(marked)
     lower = str(filename or "").lower().replace("\\", "/")
     slash = lower.rfind("/")
     if _CONTEXT_SPILL.fullmatch(lower[slash + 1 :]):
@@ -37,6 +51,8 @@ def artifact_role(filename: str | None) -> str:
     if dot > slash and lower[dot:] in _PROCESS_SUFFIXES:
         return "process"
     if lower.startswith(_PROCESS_DIRS) or any(f"/{d}" in lower for d in _PROCESS_DIRS):
+        return "process"
+    if _SCRATCH_TOP_DIR.match(lower[2:] if lower.startswith("./") else lower):
         return "process"
     return "deliverable"
 

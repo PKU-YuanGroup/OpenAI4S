@@ -7,7 +7,7 @@
  * #conn-dot is dead (no such node). The banner + hint take over ws onclose/onopen.
  */
 
-import { LANG } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { _menu } from "../../stores/ui";
 import { ws as wsSignal } from "../../stores/stream";
 import { apiErrorText } from "./api";
@@ -37,6 +37,18 @@ export function hint(text?: string | null, err?: boolean, spin?: boolean): void 
   const s = el("span", null, shown);
   if (err) s.style.color = "var(--danger)";
   h.appendChild(s);
+  if (err) {
+    // SYNC-29: an error line stays until the next hint; on a short screen it
+    // costs two lines of the conversation, so it can be put away. An icon,
+    // not a "×" character: readers of the hint's text must not see one.
+    const close = el("button", "hint-dismiss");
+    close.type = "button";
+    close.title = t("common.close");
+    close.setAttribute("aria-label", close.title);
+    close.appendChild(iconEl("x", 12));
+    close.onclick = () => hint("");
+    h.appendChild(close);
+  }
 }
 
 /**
@@ -77,8 +89,41 @@ function menuOutside(e: MouseEvent): void {
 function menuKeydown(e: KeyboardEvent): void {
   if (e.key === "Escape") {
     e.preventDefault();
-    closeMenu();
+    closeMenuToAnchor();
+    return;
   }
+  // SYNC-10: a role=menu moves between its items with the arrow keys and
+  // Home / End, as the palette's list does; Tab still walks them as well.
+  const menu = _menu.value as HTMLElement | null;
+  if (!menu || !menu.contains(document.activeElement)) return;
+  const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')].filter(
+    (item) => !(item as HTMLButtonElement).disabled,
+  );
+  if (!items.length) return;
+  const at = items.indexOf(document.activeElement as HTMLElement);
+  const last = items.length - 1;
+  let next: number;
+  if (e.key === "ArrowDown") next = at < 0 || at === last ? 0 : at + 1;
+  else if (e.key === "ArrowUp") next = at <= 0 ? last : at - 1;
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = last;
+  else return;
+  e.preventDefault();
+  items[next]!.focus();
+}
+
+/**
+ * SYNC-9: Escape or a chosen item closes the menu with focus back on the
+ * button that opened it, not on <body> (a keyboard user then had to Tab
+ * twenty-odd times to reach the composer again). A click elsewhere leaves
+ * focus where that click put it.
+ */
+function closeMenuToAnchor(): void {
+  const menu = _menu.value as HTMLElement | null;
+  const anchor = menuAnchor as HTMLElement | null;
+  const hadFocus = !!menu && menu.contains(document.activeElement);
+  closeMenu();
+  if (hadFocus && anchor && anchor.isConnected && typeof anchor.focus === "function") anchor.focus();
 }
 
 export function closeMenu(): void {
@@ -138,7 +183,7 @@ export function openMenu(anchor: Element, items: MenuItem[]): void {
     } else b.appendChild(el("span", null, it.label));
     b.onclick = (e) => {
       e.stopPropagation();
-      closeMenu();
+      closeMenuToAnchor();
       if (it.onClick) it.onClick();
     };
     m.appendChild(b);

@@ -1,23 +1,31 @@
 import { useState } from "preact/hooks";
 import { t } from "../../../i18n";
-import { copyLookup } from "../../../i18n/copy";
+import { copyLookup, overrideLookup } from "../../../i18n/copy";
 import { api, apiErrorText } from "../../../features/customize/api";
 import {
   doubaoSearchAvailable,
   doubaoSearchResultText,
 } from "../../../features/customize/vendors";
 import { hint } from "../../../features/customize/host";
-import { useVendorKey } from "./use-vendor-key";
+import { useVendorKey, vendorKeyT } from "./use-vendor-key";
 
 const dt = copyLookup({
   en: {
-    "doubao.web.description": "Used for search when Ollama web tools are not configured. It can share one Agent Plan Key with an Ark Agent Plan model set up under Models, and with DataPro; a model key set only through OPENAI4S_ARK_API_KEY or OPENAI4S_LLM_API_KEY is not shared with search. Availability is confirmed only by a successful search with results.",
-    "doubao.web.keyMissing": "No Agent Plan Key saved in this app. A model key set only through OPENAI4S_ARK_API_KEY or OPENAI4S_LLM_API_KEY is not used for search; save the key here to use Doubao search.",
+    "doubao.web.description": "Used for search when Ollama web tools are not configured. It needs an Agent Plan Key, which it can share with an Ark Agent Plan model set up under Models and with DataPro; a model key set only through OPENAI4S_ARK_API_KEY or OPENAI4S_LLM_API_KEY is not shared automatically, but while the model in use is a Volcengine Ark model you can press \"Use the current model's key\" to share it. Availability is confirmed only by a successful search with results.",
+    "doubao.web.keyMissing": "No Agent Plan Key saved in this app. A model key set only through OPENAI4S_ARK_API_KEY or OPENAI4S_LLM_API_KEY is not shared automatically; save the key here to use Doubao Search.",
+    "doubao.web.keyMissingShare": "No Agent Plan Key saved in this app. A model key set only through OPENAI4S_ARK_API_KEY or OPENAI4S_LLM_API_KEY is not shared automatically; press \"Use the current model's key\" below to share it.",
   },
   zh: {
-    "doubao.web.description": "未配置 Ollama 网页工具时使用的搜索服务；可与「模型」页里配置的方舟 Agent Plan 模型以及 DataPro 共用同一个 Agent Plan Key。只通过 OPENAI4S_ARK_API_KEY 或 OPENAI4S_LLM_API_KEY 环境变量提供给模型的 Key 不会被搜索共用。只有真实返回非空搜索结果才会标记可用。",
-    "doubao.web.keyMissing": "本应用里还没有保存 Agent Plan Key。只通过 OPENAI4S_ARK_API_KEY 或 OPENAI4S_LLM_API_KEY 环境变量提供给模型的 Key 不会用于搜索；要用豆包搜索，请在这里保存 Key。",
+    "doubao.web.description": "未配置 Ollama 网页工具时使用的搜索服务，需要 Agent Plan Key；可与「模型」页里配置的方舟 Agent Plan 模型以及 DataPro 共用同一个 Key。只通过 OPENAI4S_ARK_API_KEY 或 OPENAI4S_LLM_API_KEY 环境变量提供给模型的 Key 不会自动共用，当前模型是火山方舟模型时，可点「使用当前模型的 Key」共用。只有真实返回非空搜索结果才会标记可用。",
+    "doubao.web.keyMissing": "本应用里还没有保存 Agent Plan Key。只通过 OPENAI4S_ARK_API_KEY 或 OPENAI4S_LLM_API_KEY 环境变量提供给模型的 Key 不会自动共用；要用豆包搜索，请在这里保存 Key。",
+    "doubao.web.keyMissingShare": "本应用里还没有保存 Agent Plan Key。只通过 OPENAI4S_ARK_API_KEY 或 OPENAI4S_LLM_API_KEY 环境变量提供给模型的 Key 不会自动共用；可点下面的「使用当前模型的 Key」共用。",
   },
+});
+
+/** ONB-2: one name for it everywhere (the generated title was "豆包搜索 Custom 版"). */
+const titleT = overrideLookup({
+  zh: { "cust.doubao.title": "豆包搜索" },
+  en: { "cust.doubao.title": "Doubao Search" },
 });
 
 export function DoubaoSearchCard({
@@ -73,7 +81,7 @@ export function DoubaoSearchCard({
       <div class="datapro-head">
         <div>
           <div class="datapro-title">
-            {t("cust.doubao.title")}
+            {titleT("cust.doubao.title")}
           </div>
           <div class="datapro-desc">{dt("doubao.web.description")}</div>
         </div>
@@ -111,9 +119,24 @@ export function DoubaoSearchCard({
         <div class={"datapro-credential-state" + (vendorKey.keyBad ? " bad" : "")}>
           {/* "Not configured" read as wrong while the model ran on an Ark key
               from the environment: that key is never sent to search. */}
-          {vendorKey.missing ? dt("doubao.web.keyMissing") : vendorKey.keyState}
+          {vendorKey.missing
+            ? dt(vendorKey.modelKeyAvailable ? "doubao.web.keyMissingShare" : "doubao.web.keyMissing")
+            : vendorKey.keyState}
         </div>
       </div>
+      {vendorKey.missing && vendorKey.modelKeyAvailable ? (
+        <div class="datapro-field" data-vendor-model-key="">
+          <div class="ds">{vendorKeyT("vendor.modelKeyHint")}</div>
+          <button
+            type="button"
+            class="outline-btn small"
+            disabled={vendorKey.savingKey}
+            onClick={() => vendorKey.useModelKey()}
+          >
+            {vendorKeyT("vendor.useModelKey")}
+          </button>
+        </div>
+      ) : null}
       <div class="datapro-field">
         <label class="skill-lbl">{t("cust.doubao.queryLabel")}</label>
         <textarea

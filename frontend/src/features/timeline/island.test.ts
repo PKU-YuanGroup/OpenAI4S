@@ -10,6 +10,13 @@
 
 import { effect } from "@preact/signals";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// M-45: confirmations are the workbench's own dialog; a test answers through dialogMock.
+const dialogMock = vi.hoisted(() => ({ answer: (_text: string): boolean => false }));
+vi.mock("../chrome/dialog", () => ({
+  askConfirm: async (text: string) => dialogMock.answer(text),
+  askText: async () => null,
+  showNotice: async () => undefined,
+}));
 import { resetStoreFields } from "../../stores/signal-field";
 import { _kc, pendingReplIdentity } from "../../stores/notebook";
 import { delegationState, executionQueue } from "../../stores/timeline";
@@ -20,6 +27,7 @@ import { nbT } from "../notebook/copy";
 import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
 import {
+  activateSessionBranch,
   loadWorkbenchState,
   mergeDelegationChildEvent,
   resetComputeTasks,
@@ -40,9 +48,10 @@ import {
   sanitizeActionTimeline,
   sanitizeBranches,
   sanitizeContext,
+  sanitizeRecoveryActions,
   sanitizeSecurity,
 } from "./sanitize";
-import { provenanceT } from "../execution/copy";
+import { branchT, provenanceT } from "../execution/copy";
 import { LANG, setLang, t } from "../../i18n/runtime";
 
 type Listener = (event: FakeEvent) => void;
@@ -523,6 +532,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  dialogMock.answer = () => false;
   // The island keeps its repaint scheduler in module state: end any press or
   // composition a failed test left open and let queued frames run, so the
   // next test's repaints are neither held nor already "queued".
@@ -587,6 +597,117 @@ describe("queue strip", () => {
     renderQueueStrip();
     doc.querySelector("#queue-strip .queue-send-now")!.click();
     expect(pressed).toHaveBeenCalledTimes(1);
+  });
+
+  it("every tab shows a queued message as a queued bubble, and a drop made elsewhere (M-21, SYNC-1)", () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    const hintLine = doc.createElement("div");
+    hintLine.id = "composer-hint";
+    doc.body.appendChild(hintLine);
+    const said = vi.fn((text: string) => {
+      hintLine.textContent = text;
+    });
+    vi.stubGlobal("hint", said);
+    // This tab sent "alpha" (its 202 has not named the execution yet); another tab sent "beta".
+    const own = doc.createElement("div");
+    own.className = "msg user queued";
+    own.dataset.requestId = "web-a";
+    host.appendChild(own);
+    const alpha = { ...queued("exec-a", "alpha"), metadata: { preview: "alpha", request_id: "web-a" } };
+    const beta = { ...queued("exec-b", "beta"), metadata: { preview: "beta", request_id: "web-b" } };
+    const running = { ...queued("exec-run"), status: "running" };
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: running, queue: [alpha, beta] };
+    renderQueueStrip();
+    renderQueueStrip();
+    const rows = () => (host.querySelectorAll(".msg.user") as unknown as HTMLElement[]).map((row) => row);
+    // Its own bubble is recognised by the request id; "beta" is drawn once, from the preview.
+    expect(rows()).toHaveLength(2);
+    expect(own.dataset.executionId).toBe("exec-a");
+    const drawn = rows()[1]!;
+    expect(drawn.dataset.executionId).toBe("exec-b");
+    expect(drawn.dataset.queuePreview).toBe("1");
+    expect(drawn.classList.contains("queued")).toBe(true);
+    expect(drawn.querySelector(".bubble")!.textContent).toBe("beta");
+    expect(drawn.querySelector(".msg-queued")!.textContent).toBe("Queued · not sent yet");
+
+    // "beta" is dropped in another tab; "alpha" starts. Only "beta" reads as dropped.
+    hintLine.textContent = t("queue.accepted");
+    S.executionQueue = { owner: { ...alpha, status: "running" }, queue: [] };
+    renderQueueStrip();
+    expect(drawn.classList.contains("cancelled")).toBe(true);
+    expect(own.classList.contains("cancelled")).toBe(false);
+    expect(said.mock.calls.at(-1)?.[0]).toBe(t("queue.cancelled"));
+  });
+
+  it("after a failed turn asks before the held messages run, and runs them on request (M-31)", async () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    const calls = stubApi(() => ({ ok: true, released: 2 }));
+    S.currentId = "frame-a";
+    S.executionQueue = {
+      owner: null,
+      queue: [{ ...queued("exec-h1", "KM by EGFR"), held: true }, { ...queued("exec-h2", "and by TP53"), held: true }],
+    };
+    renderQueueStrip();
+    expect(doc.querySelector("#queue-strip .queue-head-t")!.textContent).toBe(
+      "The last turn failed. Run the 2 queued messages?",
+    );
+    // Nothing is running, so "stop and send now" has nothing to stop.
+    expect(doc.querySelector("#queue-strip .queue-send-now")).toBeNull();
+    // Each one can still be dropped, and its bubble says it is on hold.
+    expect(doc.querySelectorAll("#queue-strip .queue-cancel")).toHaveLength(2);
+    expect(host.querySelector(".msg.user .msg-queued")!.textContent).toBe("On hold · the last turn failed");
+    // Stop would hand the session to none of them.
+    expect(queuedFollowUpCount()).toBe(0);
+    const run = doc.querySelector("#queue-strip .queue-resume") as unknown as HTMLButtonElement;
+    expect(run.textContent).toBe("Run them");
+    run.click();
+    run.click();
+    await flush();
+    expect(calls.map((call) => [call.method, call.path])).toEqual([
+      ["POST", "/frames/frame-a/execution-queue/resume"],
+    ]);
+    // One held message: the question counts it as one.
+    S.executionQueue = { owner: null, queue: [{ ...queued("exec-h1", "KM by EGFR"), held: true }] };
+    renderQueueStrip();
+    expect(doc.querySelector("#queue-strip .queue-head-t")!.textContent).toBe(
+      "The last turn failed. Run the queued message?",
+    );
+    expect(doc.querySelector("#queue-strip .queue-resume")!.textContent).toBe("Run it");
+  });
+
+  it("a queued bubble whose execution started is not marked dropped by a late queue event", () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: null, queue: [queued("exec-c", "gamma")] };
+    renderQueueStrip();
+    const drawn = host.querySelector(".msg.user")!;
+    // Started, and already finished, before the queue event that drops it arrived.
+    rememberExecutionState({ execution_id: "exec-c", owner: { kind: "agent", id: "turn-exec-c" }, status: "running" });
+    S.executionQueue = { owner: null, queue: [] };
+    renderQueueStrip();
+    expect(drawn.classList.contains("cancelled")).toBe(false);
+  });
+
+  it("does not offer to edit a queued message from a cut preview it drew", () => {
+    const doc = mountDocument();
+    const host = doc.createElement("div");
+    host.id = "messages";
+    doc.body.appendChild(host);
+    S.currentId = "frame-a";
+    S.executionQueue = { owner: null, queue: [queued("exec-d", "x".repeat(159) + "…")] };
+    renderQueueStrip();
+    expect(host.querySelector(".msg.user")!.dataset.queuePreview).toBe("1");
+    expect((doc.querySelector("#queue-strip .queue-edit") as unknown as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("cancels a queued row in the session that queued it, not the one now open", async () => {
@@ -1019,7 +1140,7 @@ describe("signal writes publish new objects", () => {
 
 describe("delegation evidence panel", () => {
   const scope =
-    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子代理。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子代理完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
+    "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子智能体。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子智能体完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。";
 
   it("renders both verdicts, truncation, unavailable, and the scope note once", async () => {
     mountDocument();
@@ -1364,6 +1485,143 @@ describe("timeline words", () => {
   });
 });
 
+// VIEW-1: an install the user declined read "Permission Pause · failed ·
+// env_create · —", while the chat said "Installing pydeseq2 · declined".
+describe("tool rows in the chat's words", () => {
+  const tool = (id: string, ordinal: number, overrides: Record<string, unknown>) => ({
+    group_id: id,
+    ordinal,
+    turn_id: "turn-1",
+    kind: "native_tools",
+    attempts: [],
+    ...overrides,
+  });
+
+  it("shows a declined request as declined, by its step title, with how long it took", async () => {
+    const original = LANG;
+    try {
+      await setLang("zh");
+      const doc = mountDocument();
+      stubFrames();
+      stubApi(() => undefined);
+      installTimeline({});
+      showTimeline("frame-v", [
+        tool("g-install", 1, {
+          title: "Installing pydeseq2",
+          step_titles: ["Installing pydeseq2"],
+          status: "denied",
+          permission: { decision_id: "perm-1", state: "denied", scope: "once" },
+          events: [
+            { type: "proposed", name: "env_create", created_at: 1_000 },
+            { type: "permission_pending", created_at: 1_010 },
+            { type: "permission_resolved", created_at: 40_000 },
+            { type: "result", name: "env_create", is_error: true, outcome: "error", created_at: 40_200 },
+          ],
+        }),
+        tool("g-files", 2, {
+          title: "Listing ., Searching in files",
+          step_titles: ["Listing .", "Searching in files"],
+          status: "completed",
+          events: [
+            { type: "proposed", name: "list_dir", created_at: 50_000 },
+            { type: "proposed", name: "content_search", created_at: 50_000 },
+            { type: "result", name: "list_dir", created_at: 50_120 },
+            { type: "result", name: "content_search", created_at: 50_340 },
+          ],
+        }),
+        tool("g-waiting", 3, {
+          title: "Installing scanpy",
+          step_titles: ["Installing scanpy"],
+          status: "pending",
+          permission: { decision_id: "perm-2", state: "pending" },
+          events: [
+            { type: "proposed", name: "env_create", created_at: 60_000 },
+            { type: "permission_pending", created_at: 60_010 },
+          ],
+        }),
+      ]);
+      renderActionTimeline();
+      const row = (id: string) => doc.querySelector(`.timeline-ledger-row[data-group-id="${id}"]`)!;
+
+      const declined = row("g-install");
+      expect(declined.dataset.actionKind).toBe("native_tool");
+      expect(declined.querySelector(".timeline-kind-label")?.textContent).toBe(timelineT("timeline.kind.native_tool"));
+      expect(declined.querySelector(".timeline-ledger-status")?.textContent).toBe("已拒绝");
+      expect(declined.querySelector(".timeline-row-button")?.textContent).toBe("安装 pydeseq2");
+      // Proposed at 1.0 s, its result at 40.2 s: the wait for the decision.
+      expect(declined.querySelector(".timeline-ledger-duration")?.textContent).toBe("39 s");
+
+      const files = row("g-files");
+      expect(files.querySelector(".timeline-row-button")?.textContent).toBe("列出 . · 在文件中搜索");
+      expect(files.querySelector(".timeline-ledger-duration")?.textContent).toBe("340 ms");
+      expect(files.querySelector(".timeline-ledger-status")).toBeNull();
+
+      // Still waiting: that one is an approval pause, and says so.
+      const waiting = row("g-waiting");
+      expect(waiting.dataset.actionKind).toBe("permission");
+      expect(waiting.querySelector(".timeline-ledger-status")?.textContent).toBe("等待中");
+      expect(waiting.querySelector(".timeline-ledger-duration")?.textContent).toBe("—");
+
+      await setLang("en");
+      renderActionTimeline();
+      expect(row("g-install").querySelector(".timeline-ledger-status")?.textContent).toBe("Declined");
+      expect(row("g-install").querySelector(".timeline-row-button")?.textContent).toBe("Installing pydeseq2");
+    } finally {
+      await setLang(original);
+    }
+  });
+
+  // VIEW-1b: a decision made after a daemon restart read "Approval denied
+  // after restart: env_setup" in a Chinese UI too.
+  it("words a decision made after a restart in the UI language, with the tool's own name", async () => {
+    const original = LANG;
+    const decided = (id: string, ordinal: number, decision: unknown, title: string) => ({
+      group_id: id,
+      ordinal,
+      turn_id: "permission-" + id,
+      kind: "permission_resolution",
+      status: "denied",
+      title,
+      restart_decision: decision,
+      attempts: [],
+      events: [{ type: "denied", created_at: 1_000 }],
+    });
+    try {
+      await setLang("zh");
+      const doc = mountDocument();
+      stubFrames();
+      stubApi(() => undefined);
+      installTimeline({});
+      showTimeline("frame-r", [
+        decided("g-denied", 1, { decision: "denied", tool: "env_setup" }, "Approval denied after restart: env_setup"),
+        decided("g-approved", 2, { decision: "approved", tool: "web_fetch" }, "Approval recorded after restart: web_fetch"),
+        decided("g-unknown", 3, { decision: "denied", tool: "lab_robot" }, "Approval denied after restart: lab_robot"),
+        decided("g-resolved", 4, { decision: "resolved", tool: null }, "Approval resolved after restart"),
+      ]);
+      renderActionTimeline();
+      const title = (id: string) =>
+        doc.querySelector(`.timeline-ledger-row[data-group-id="${id}"] .timeline-row-button`)?.textContent;
+
+      expect(title("g-denied")).toBe("重启后已拒绝：往内核环境里安装包");
+      expect(title("g-approved")).toBe("重启后已批准：读取网页（模式为域名）");
+      // A tool the permission table does not know keeps its own name.
+      expect(title("g-unknown")).toBe("重启后已拒绝：lab_robot");
+      expect(title("g-resolved")).toBe("重启后已处理批准请求");
+      // A decided request is a record, not a pause waiting for approval.
+      const kindLabel = (id: string) =>
+        doc.querySelector(`.timeline-ledger-row[data-group-id="${id}"] .timeline-kind-label`)?.textContent;
+      expect(kindLabel("g-denied")).toBe("审批记录");
+
+      await setLang("en");
+      renderActionTimeline();
+      expect(title("g-denied")).toBe("Declined after a restart: Install packages into the kernel environment");
+      expect(title("g-resolved")).toBe("Approval request settled after a restart");
+    } finally {
+      await setLang(original);
+    }
+  });
+});
+
 // Follow-up A: only the Notebook badge stopped saying "Ended · view only" for
 // a kernel that never started; the Timeline's runtime strip kept it.
 describe("runtime strip", () => {
@@ -1537,5 +1795,141 @@ describe("the timeline comes first; the technical panels share one disclosure", 
     expect(details.open).toBe(false);
     details.querySelector("summary")!.click();
     expect(() => details.dispatchEvent({ type: "toggle" })).not.toThrow();
+  });
+});
+
+// M-73: "Activate" dropped the kernel without asking, then said in red
+// "error: … inspect Recovery" when its variables could not all be rebuilt.
+describe("switching to another branch", () => {
+  const projection = (current: string) => ({
+    root_frame_id: "frame-b",
+    branch_id: current,
+    current_branch_id: current,
+    capabilities: { activate: { enabled: true }, checkpoint: { enabled: true } },
+    branches: [
+      { branch_id: "frame-b", head_checkpoint_id: "cp-root", activatable: true, checkpoints: [] },
+      {
+        branch_id: "br-fork1234567890",
+        name: "Fit the Cox model",
+        head_checkpoint_id: "cp-q2",
+        activatable: true,
+        checkpoints: [],
+      },
+    ],
+  });
+  const partial = {
+    ok: false,
+    status: "partial",
+    current_branch_id: "br-fork1234567890",
+    dimensions: {
+      namespace: { applied: false, status: "partial", issues: [{ type: "missing_symbols", names: ["df", "model"] }] },
+    },
+  };
+  const button = (label: string) =>
+    Array.from(renderBranchPanel().querySelectorAll("button")).find((node) => node.textContent === label) ||
+    null;
+
+  function onRootBranch(answer: boolean): { hints: Array<[string, unknown]>; asked: string[] } {
+    mountDocument();
+    S.currentId = "frame-b";
+    S.branchState = sanitizeBranches(projection("frame-b"));
+    const hints: Array<[string, unknown]> = [];
+    const asked: string[] = [];
+    vi.stubGlobal("hint", (message: string, error?: boolean) => hints.push([message, error]));
+    dialogMock.answer = (message: string) => {
+      asked.push(message);
+      return answer;
+    };
+    return { hints, asked };
+  }
+
+  it("asks first, saying the kernel's variables will be lost", async () => {
+    const { asked } = onRootBranch(false);
+    const calls = stubApi();
+    button(t("branch.activate"))!.click();
+    await flush();
+    expect(asked).toEqual([branchT("branch.activateConfirm", "Fit the Cox model")]);
+    expect(calls.filter((call) => call.method === "POST")).toEqual([]);
+  });
+
+  it("says which variables did not come back, as news rather than an error, and offers to restore", async () => {
+    const { hints } = onRootBranch(true);
+    const calls = stubApi((path, method) => {
+      if (method === "POST" && path.endsWith("/activate")) return partial;
+      if (method === "POST" && path.endsWith("/recovery/actions/restore")) return { ok: true, status: "active", results: [] };
+      return undefined;
+    });
+    button(t("branch.activate"))!.click();
+    await flush();
+    await flush();
+    expect(hints.at(-1)).toEqual([branchT("branch.switchedGap", "Fit the Cox model", "df, model"), undefined]);
+
+    // The conversation reload brings the new branch's projection.
+    S.branchState = sanitizeBranches(projection("br-fork1234567890"));
+    const notice = renderBranchPanel().querySelector(".branch-kernel-gap")!;
+    expect(notice.textContent).toContain(branchT("branch.kernelGap", "df, model"));
+
+    button(branchT("branch.restoreKernel"))!.click();
+    await flush();
+    await flush();
+    expect(calls.find((call) => call.path.endsWith("/recovery/actions/restore"))?.body).toEqual({
+      branch_id: "br-fork1234567890",
+      confirm: false,
+    });
+    expect(renderBranchPanel().querySelector(".branch-kernel-gap")!.textContent).toBe(branchT("branch.restored"));
+    expect(button(branchT("branch.restoreKernel"))).toBeNull();
+  });
+
+  it("does not ask twice for a branch its caller already confirmed, and says whether it switched (VIEW-2)", async () => {
+    // A fork from a question asks before the branch exists, then switches
+    // to a branch the list does not hold yet.
+    const { hints, asked } = onRootBranch(false);
+    const calls = stubApi((path, method) =>
+      method === "POST" && path.endsWith("/activate") ? { ok: true, status: "active" } : undefined,
+    );
+    const switched = await activateSessionBranch("br-new", { confirmed: true, name: "RNA-seq 质控…" });
+    expect(switched).toBe(true);
+    expect(asked).toEqual([]);
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual([
+      "/frames/frame-b/branches/br-new/activate",
+    ]);
+    expect(hints.at(-1)).toEqual([branchT("branch.switched", "RNA-seq 质控…"), undefined]);
+    // Without the caller's confirm it still asks, and a no switches nothing.
+    expect(await activateSessionBranch("br-new")).toBe(false);
+    expect(asked).toHaveLength(1);
+  });
+});
+
+// M-64: the recovery card printed "checkpoint has an invalid python bootstrap
+// manifest" beside "Restore", and "Ready" beside the one that could run.
+describe("kernel recovery card words", () => {
+  it("says why an action cannot run, and what an available one does, never the server's words", () => {
+    const doc = mountDocument();
+    stubFrames();
+    stubResizeObserver();
+    showTimeline("frame-k", [group("g-1", 1)], "frame-k");
+    S.branchState = sanitizeBranches({ root_frame_id: "frame-k", branch_id: "frame-k", branches: [] });
+    S.recoveryState = { status: "failed", log: [] };
+    S.recoveryActions = sanitizeRecoveryActions({
+      root_frame_id: "frame-k",
+      branch_id: "frame-k",
+      checkpoint_id: "cp-33f1aaaaaaaaaaaa",
+      state: "failed",
+      actions: [
+        { id: "restore", enabled: false, reason: "checkpoint has an invalid python bootstrap manifest" },
+        { id: "retry", enabled: false, reason: "checkpoint has an invalid python bootstrap manifest" },
+        { id: "restart_fresh", enabled: true, reason: null, requires_confirmation: true },
+      ],
+    });
+    renderActionTimeline();
+    const card = doc.querySelector(".kind-recovery")!;
+    const reasons = card.querySelectorAll(".recovery-action-reason").map((node) => node.textContent);
+    expect(reasons).toEqual([
+      branchT("recovery.why.checkpoint"),
+      branchT("recovery.why.checkpoint"),
+      branchT("recovery.what.restart_fresh"),
+    ]);
+    expect(card.textContent).not.toContain("bootstrap manifest");
+    expect(card.textContent).not.toContain("cp-33f1");
   });
 });

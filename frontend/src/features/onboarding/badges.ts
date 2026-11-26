@@ -50,6 +50,8 @@ export type BadgeRow = {
   observedAt?: number;
   /** Next-request decision; present only on an "effective" row. */
   effective?: EffectiveCapability | null;
+  /** An "effective" row's profile has a probe receipt: a test has run. */
+  tested?: boolean;
 };
 
 type ObservationKey = "native_tool_call" | "streaming";
@@ -115,6 +117,7 @@ export function capabilityBadgeRows(
         unknownReason: "",
         observed: false,
         effective: next,
+        tested: !!receipt,
       });
     }
   }
@@ -125,19 +128,30 @@ export function capabilityBadgeRows(
 export function capabilityEffectiveText(row: BadgeRow): string {
   const effective = row.effective;
   if (!effective) return "";
-  return modelT(
-    "model.effective.value",
-    effective.value
-      ? modelT("model.effective.on")
-      : modelT("model.effective.off"),
-    modelT("model.effective.source." + effective.source),
+  // Named: the two capabilities' rows used to read the same "on (catalogue
+  // default)" side by side, with nothing saying which was which (M-24).
+  // SET-2: a test that agrees with a catalogue default leaves the source
+  // `catalog`, so "not tested" is said only while no test has run at all.
+  const source =
+    effective.source === "catalog" && row.tested ? "catalogTested" : effective.source;
+  return ot(
+    "onboarding.badge.effective",
+    row.label,
+    modelT(
+      "model.effective.value",
+      effective.value
+        ? modelT("model.effective.on")
+        : modelT("model.effective.off"),
+      modelT("model.effective.source." + source),
+    ),
   );
 }
 
 export function capabilityBadgeText(row: BadgeRow): string {
   if (row.kind !== "observed") return capabilityEffectiveText(row);
-  // The tri-state in the UI language: "原生工具调用 · unknown" in Chinese.
-  let text = `${row.label} · ${ot("onboarding.badge.state." + row.state)}`;
+  // The tri-state as a plain sentence (M-24): "支持工具调用 ✓", "Tool calling:
+  // not determined". `unknown` is never worded as unsupported.
+  let text = ot("onboarding.badge.cap." + row.state, row.label);
   if (row.unknownReason) text += ` — ${row.unknownReason}`;
   if (row.stale) text += ` · ${ot("onboarding.badge.stale")}`;
   if (row.observedAt) {

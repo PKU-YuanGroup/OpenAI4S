@@ -674,6 +674,32 @@ def test_the_env_use_step_names_a_local_environment(tmp_path, monkeypatch):
     assert data == {"name": "work", "local": True}
 
 
+def test_the_env_use_approval_card_carries_the_models_reason(tmp_path, monkeypatch):
+    """SCI-21 (owner decision 32): `env_use` takes an optional `reason`, and the
+    step input the approval card is built from carries it, bounded and on one
+    line. A switch without one is unchanged."""
+    from openai4s.host_dispatch import _step_begin
+    from openai4s.tools.env_use import EnvUseTool
+
+    conda_root = tmp_path / "miniconda3"
+    _make_py_env(conda_root / "envs", "work")
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(conda_root))
+    E.discover_environments(force=True)
+
+    schema = EnvUseTool.parameters
+    assert schema["properties"]["reason"]["type"] == "string"
+    assert schema["required"] == ["name"]
+
+    _kind, _title, data = _step_begin(
+        "env_use",
+        [{"name": "work", "reason": "RDKit is only\n installed in work. " + "x" * 400}],
+    )
+    assert data["name"] == "work" and data["local"] is True
+    assert data["reason"].startswith("RDKit is only installed in work. x")
+    assert len(data["reason"]) == 300
+    assert "reason" not in _step_begin("env_use", [{"name": "work", "reason": " "}])[2]
+
+
 def test_r_on_path_wins_over_a_personal_conda_env_with_rscript(tmp_path, monkeypatch):
     from openai4s.kernel.r_kernel import resolve_r_interpreter
 

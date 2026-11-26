@@ -105,7 +105,7 @@ remote adapter 尚不存在的情况下会明确报不支持，不会偷偷改�
 环境的绝对路径。只有启动 connector 时，该 token 才解析为当前 daemon interpreter。
 启动迁移只修正匹配的旧内置记录，不改写任意 custom command。
 
-从 **Customize → Connectors** 添加 connector 只是启用配置，并不会立即启动 server；
+从 **设置 → Connectors** 添加 connector 只是启用配置，并不会立即启动 server；
 工具发现或首次调用才会懒启动。编辑启动配置会断开缓存进程，使下一次操作使用新配置。
 浏览器把环境值视为 write-only：不会返回已有值；可以显式替换选中的值，也可以显式删除
 选中的变量名。

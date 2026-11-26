@@ -15,7 +15,7 @@ A status read starts when the menu opens, on an explicit retry, on a canonical e
 | [`copy.ts`](copy.ts) | Feature-local English/Chinese copy (`autoModeT`), so the generated `i18n/en.ts` / `zh.ts` stay untouched. |
 | [`present.ts`](present.ts) | Pure text for the three lines, the budget block (near/at ceiling, unfrozen token ceiling, tripped circuit) and audit rows. |
 | [`status.ts`](status.ts) | The status store: context re-keying, read ordering, failure mapping. |
-| [`menu.ts`](menu.ts) | The block the session options menu shows, repainted in place while open. |
+| [`menu.ts`](menu.ts) | The block the session options menu shows, repainted in place while open. It is one line ("Auto Mode status · Off") until opened (SCI-34); the reader's choice is kept in `localStorage` `os-automode-open`, and a block with a meter near or at its ceiling, an exhausted list or a tripped circuit is shown open. |
 | [`audits.ts`](audits.ts) | The Audit modal: kind filter, `before` cursor paging, the contract's error codes, refresh on hints. |
 | [`hints.ts`](hints.ts) | Canonical events as refresh hints, the reconnect and reopen watchers. |
 | [`index.ts`](index.ts) | Public exports and `installAutoMode()` (called from `main.tsx`). |
@@ -24,6 +24,6 @@ A status read starts when the menu opens, on an explicit retry, on a canonical e
 | [`sanitize.test.ts`](sanitize.test.ts) | Allowlist, closed vocabularies, availability consistency, unknown usage, `has_more` only with a cursor, credential scrubbing. |
 | [`present.test.ts`](present.test.ts) | Both languages' copy for every line and source, the worked example, the meter rules, and no "On"/"已开启" anywhere. |
 | [`status.test.ts`](status.test.ts) | Out-of-order reads, unchanged-ordinal selection refresh, revert, frame/branch changes, failures, GET only. |
-| [`menu.test.ts`](menu.test.ts) | The block inside the real `sessionOptionsMenu`: placement, the Auto review row unchanged, retry, Audit entry, hints. |
+| [`menu.test.ts`](menu.test.ts) | The block inside the real `sessionOptionsMenu`: placement, the Auto review row unchanged, retry, Audit entry, hints, the one-line fold and its kept choice, a description on every option row. |
 | [`audits.test.ts`](audits.test.ts) | Paging, filter, superseded answers, redaction, error codes, refresh and reopen, GET only. |
 | [`hints.test.ts`](hints.test.ts) | Registry composition with the send lane, reconnect and reopen triggers. |

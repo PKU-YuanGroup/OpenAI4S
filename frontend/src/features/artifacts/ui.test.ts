@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activeTab, openTabs } from "../../stores/ui";
-import { artifactTabKey, syncArtifactVersion } from "./cache";
-import { dockArtifact } from "../../stores/artifacts";
+import { artifactTabKey, newerVersionThan, syncArtifactVersion } from "./cache";
+import { artifacts as artifactsSignal, dockArtifact } from "../../stores/artifacts";
+import { filesT } from "./copy";
+import { paintNewerVersion } from "./renderers";
 import { resetStoreFields } from "../../stores/signal-field";
 import { setArtifactsFetch } from "./api";
 import { jsonResponse } from "./http-stub";
@@ -10,6 +12,7 @@ import type { ArtifactRow, ArtifactVersionRow } from "./types";
 import {
   addOpenTab,
   closeTab,
+  dockTabLabel,
   setActiveTab,
   applyArtifactDeepLink,
   consumeArtifactDeepLink,
@@ -174,6 +177,63 @@ describe("version-specific tabs", () => {
   });
 });
 
+
+// VIEW-3: the dock tab read "pca.png · v-7331c85411a5" and stayed on that
+// version while four newer ones arrived, with only a small "固定版本" link.
+describe("a tab pinned to one version", () => {
+  beforeEach(() => resetStoreFields());
+
+  it("names the version in words and keeps the id for the tooltip", () => {
+    const pinned: ArtifactRow = { id: "a-pca", filename: "pca.png", version_id: "v-7331c85411a5", _exactVersion: true };
+    artifactsSignal.value = [{ id: "a-pca", filename: "pca.png", version_id: "v-7331c85411a5" }];
+    const named = dockTabLabel(pinned);
+    expect(named.label).toBe("pca.png · " + filesT("viewer.version.pinned"));
+    expect(named.label).not.toContain("v-7331c85411a5");
+    expect(named.title).toBe(filesT("viewer.tab.versionTip", "pca.png", "v-7331c85411a5"));
+    expect(named.title).toContain("v-7331c85411a5");
+    expect(dockTabLabel({ id: "a-pca", filename: "pca.png", version_id: "v-7331c85411a5" }).label).toBe("pca.png");
+  });
+
+  it("says the tab shows an earlier version once the file has a newer one", () => {
+    const pinned: ArtifactRow = { id: "a-pca", filename: "pca.png", version_id: "v-1", _exactVersion: true };
+    artifactsSignal.value = [{ id: "a-pca", filename: "pca.png", version_id: "v-1" }];
+    expect(newerVersionThan(pinned)).toBe("");
+    syncArtifactVersion({ id: "a-pca", version_id: "v-5" });
+    expect(newerVersionThan(pinned)).toBe("v-5");
+    expect(dockTabLabel(pinned).label).toBe("pca.png · " + filesT("viewer.tab.older"));
+    expect(newerVersionThan({ id: "a-pca", version_id: "v-5", _exactVersion: true })).toBe("");
+    expect(newerVersionThan({ id: "a-pca", version_id: "v-5" })).toBe("");
+  });
+
+  it("offers the latest version in the pinned viewer only when there is one", () => {
+    class Node {
+      children: Node[] = []; className = ""; textContent = ""; title = "";
+      dataset: Record<string, string> = {};
+      onclick: (() => void) | null = null;
+      set innerHTML(_value: string) { this.children = []; }
+      appendChild(child: Node) { this.children.push(child); return child; }
+      setAttribute() {}
+    }
+    vi.stubGlobal("document", { createElement: () => new Node() });
+    try {
+      artifactsSignal.value = [{ id: "a-pca", filename: "pca.png", version_id: "v-1" }];
+      const slot = new Node();
+      slot.dataset.artifactId = "a-pca";
+      slot.dataset.versionId = "v-1";
+      paintNewerVersion(slot as unknown as HTMLElement);
+      expect(slot.children).toHaveLength(0);
+      syncArtifactVersion({ id: "a-pca", version_id: "v-2" });
+      paintNewerVersion(slot as unknown as HTMLElement);
+      expect(slot.children.map((node) => node.textContent)).toEqual([
+        filesT("viewer.version.newer"),
+        filesT("viewer.version.openLatest"),
+      ]);
+      expect(typeof slot.children[1]!.onclick).toBe("function");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 it("a failed session read shows Retry instead of an empty grid (AUDIT A26)", async () => {
   const { currentId } = await import("../../stores/session");
@@ -392,6 +452,51 @@ it("conversation strip tiles open the latest tab rather than pinning the head at
   } finally {
     vi.unstubAllGlobals();
     setArtifactsFetch(null);
+    resetStoreFields();
+  }
+});
+
+it("the example session's files strip starts open; another session's stays collapsed (G2 / SCI-02)", async () => {
+  const { artifacts } = await import("../../stores/artifacts");
+  const { currentId, projects, sessions } = await import("../../stores/session");
+  const { renderConversationArtifacts } = await import("./ui");
+  class Node {
+    children: Node[] = []; textContent = ""; className = ""; id = ""; src = ""; open = false; title = "";
+    onclick?: () => unknown;
+    ontoggle?: () => unknown;
+    appendChild(child: Node) { this.children.push(child); return child; }
+    insertBefore(child: Node) { this.children.push(child); return child; }
+    querySelector() { return null; }
+    remove() {}
+  }
+  resetStoreFields();
+  artifacts.value = [{ id: "art-1", filename: "report.md", content_type: "text/markdown", version_id: "v1" }];
+  projects.value = [{ id: "p-example", is_example: true }, { id: "p-mine", is_example: false }];
+  sessions.value = [{ id: "f-example", project_id: "p-example" }, { id: "f-mine", project_id: "p-mine" }];
+  const host = new Node();
+  vi.stubGlobal("document", {
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    getElementById: (id: string) => id === "messages" ? host : null,
+    createElement: () => new Node(),
+  });
+  const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+  const lastStrip = () => walk(host).filter((node) => node.className === "generated").at(-1);
+  try {
+    currentId.value = "f-mine";
+    renderConversationArtifacts();
+    expect(lastStrip()?.open).toBe(false);
+    currentId.value = "f-example";
+    renderConversationArtifacts();
+    expect(lastStrip()?.open).toBe(true);
+    expect(walk(host).some((node) => node.className === "tile")).toBe(true);
+    // The reader's own choice still wins.
+    lastStrip()!.open = false;
+    lastStrip()!.ontoggle?.();
+    renderConversationArtifacts();
+    expect(lastStrip()?.open).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
     resetStoreFields();
   }
 });

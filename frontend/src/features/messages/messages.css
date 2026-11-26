@@ -63,6 +63,14 @@
   flex: none;
 }
 
+/* CHAT-8: "Continue" beside the stopped marker; only the newest row may continue. */
+.msg-stopped .msg-continue {
+  margin-inline-start: 0.75rem;
+}
+.msg:has(~ .msg) .msg-continue {
+  display: none;
+}
+
 /*
  * The running turn's status row (messages/turnStatus.ts). It takes exactly
  * the room the turn's action row takes once the turn ends (8px above, 30px
@@ -173,6 +181,59 @@
   flex: 0 0 100%;
 }
 
+/* M-81: "N saved memories applied" on its own line under a question; the
+   list opens on click. */
+.msg.user:has(> .msg-memories) {
+  flex-wrap: wrap;
+}
+.msg-memories {
+  flex: 0 0 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-top: 4px;
+}
+.msg-memories-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-400);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.msg-memories-toggle:hover {
+  color: var(--text-200);
+}
+.msg-memories-list {
+  margin: 4px 0 0;
+  padding: 6px 10px;
+  list-style: none;
+  max-width: min(520px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--text-200);
+  font-size: 12px;
+}
+.msg-memories-list li {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+.msg-memories-type {
+  flex: none;
+  color: var(--text-400);
+}
+.msg-memories-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* A stored user question can fork. Wrap only while the control is shown,
    so a checkpointed row does not grow an empty line when the capability is off. */
 :root[data-fork-from-message="on"] .msg.user:has(.msg-fork) {
@@ -229,5 +290,18 @@
   }
 }
 
+/* M-72: after a 👎, an optional reason and where feedback is kept. */
+.msg-feedback{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin:6px 0 0;max-width:520px}
+.msg-feedback .mf-label{display:flex;flex-direction:column;gap:4px;width:100%;color:var(--text-300);font-size:12.5px}
+.msg-feedback .mf-reason{width:100%;box-sizing:border-box;resize:vertical;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-000);color:var(--text-100);font:inherit;font-size:13px}
+.msg-feedback .mf-note{color:var(--text-400);font-size:12px}
+
 /* ART-8: a finished answer's key figures, under their links. */
 .md img.msg-fig{display:block;max-width:min(100%,520px);max-height:360px;margin:8px 0 4px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-000)}
+
+/* CHAT-4: the figures a Saving step made, under its head even while the card
+   is collapsed: thumbnails, each opening its figure (send/step.ts). */
+.step > .s-thumbs{padding:0 12px 10px 36px;gap:8px}
+.step > .s-thumbs .s-fig{max-width:180px}
+.step > .s-thumbs .s-fig img{max-height:120px}
+.step > .s-thumbs .s-fig-cap{padding:4px 8px}

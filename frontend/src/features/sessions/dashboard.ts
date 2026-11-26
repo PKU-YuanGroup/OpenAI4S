@@ -9,7 +9,8 @@ import { unsub } from "../ws/connect";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys, reportFailure } from "./chrome";
-import { dashCopy, displayProjectName, sessionCopy } from "./copy";
+import { dashCopy, displayProjectName, lastTurnOutcome, sessionCopy } from "./copy";
+import { iconEl } from "./icon";
 import { $, ago, el, navURL, syncMobileChrome } from "./dom";
 import {
   canLoadMoreProjects,
@@ -27,6 +28,8 @@ import {
   type SessionLike,
 } from "./paging";
 import { openProject } from "./projects";
+// The example requests are shared with 示例项目's empty session (ONB-4).
+import { readExampleSeed, requestExampleSeed, type ExampleStatus } from "../messages/example";
 
 let exampleTimer = 0;
 let visBound = false;
@@ -110,14 +113,6 @@ let exampleOwner: object | null = null;
 /** Bumped whenever the example poll stops; a reply from an older poll is dropped. */
 let examplePollEpoch = 0;
 
-type ExampleStatus = {
-  running?: boolean;
-  error?: string | null;
-  seeded?: boolean;
-  frame_id?: string | null;
-  project_id?: string;
-  result?: { cells?: number; failed?: number; failed_steps?: number } | null;
-};
 
 /**
  * The example run this page started (or found running), until dismissed.
@@ -404,10 +399,9 @@ function exampleSeedCta(): HTMLElement {
   btn.onclick = () => {
     btn.disabled = true;
     btn.textContent = t("dash.example.running");
-    // `lang`: the example's own prompt and summary follow the UI language.
-    api("/example/session", { method: "POST", body: JSON.stringify({ confirm: true, lang: LANG }) })
+    requestExampleSeed()
       .then((st) => {
-        if (live()) beginExampleRun(st as ExampleStatus);
+        if (live()) beginExampleRun(st);
       })
       .catch((e) => {
         btn.disabled = false;
@@ -415,10 +409,9 @@ function exampleSeedCta(): HTMLElement {
         note.textContent = t("dash.example.failed") + apiErrorText(e);
       });
   };
-  api("/example/session")
-    .then((raw) => {
+  readExampleSeed()
+    .then((st) => {
       if (!live()) return;
-      const st = raw as ExampleStatus;
       // Started from another tab: follow it here too.
       if (st.running) beginExampleRun(st);
       else if (st.seeded) box.remove();
@@ -493,8 +486,14 @@ export function renderDashRecent(frames: SessionLike[]): void {
       b.appendChild(el("span", null, t("dash.badge.running")));
       row.appendChild(b);
     } else {
-      if (ended === "failed") {
-        row.appendChild(el("span", "d-status failed", dashCopy("dash.status.failed")));
+      // SYNC-28: failed, stopped and blocked each say so, with an icon.
+      const outcome = lastTurnOutcome(f.status);
+      if (outcome) {
+        const tag = el("span", "d-status " + outcome.kind);
+        tag.appendChild(iconEl(outcome.icon, 11));
+        tag.appendChild(el("span", null, outcome.label));
+        tag.title = outcome.tip;
+        row.appendChild(tag);
       }
       row.appendChild(el("div", "d-meta", ago(f.updated_at)));
     }

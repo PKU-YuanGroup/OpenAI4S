@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { copyLookup } from "../../i18n/copy";
 import { api } from "../../features/customize/api";
+import { copyFailedText, copyText } from "../../features/chrome/clipboard";
 import { asList, asString, hint } from "../../features/customize/host";
 import {
   createTelemetryDrain,
@@ -10,7 +11,8 @@ import {
 import { useAlive } from "./use-timer-lease";
 import { useOptimisticToggle, useTabRead } from "./hooks";
 import { markCustomizeLoaded } from "../../features/customize/load";
-import { Hdr, Pill, Toggle } from "./ui";
+import { roleT, settingsReadOnly } from "../../features/customize/roles";
+import { Hdr, Note, Pill, Toggle } from "./ui";
 import { DoubaoSearchCard } from "./vendors/doubao";
 import { OllamaWebCard } from "./vendors/ollama";
 import { SearchEngines } from "./SearchEngines";
@@ -35,6 +37,11 @@ const nt = copyLookup({
       "另外，加载带联网清单的技能（如 literature-review）会把那个会话进一步限定到技能声明的域名，可在「技能」页查看。",
     "allowlist.granted": "已批准的域名：{0}",
     "allowlist.more": "还有 {0} 个",
+    "allowlist.restart":
+      "开关白名单要用 OPENAI4S_EGRESS 重新启动服务器（这里没有运行时开关）：复制下面的命令，在运行 OpenAI4S 的那台机器的终端里执行。",
+    "allowlist.member": "开关白名单需要重新启动服务器，只有管理员可以操作。",
+    "allowlist.copy": "复制启动命令",
+    "allowlist.copied": "已复制启动命令",
     "group.Scientific databases": "科学数据库",
     "group.Literature & preprints": "文献与预印本",
     "group.Package indexes": "软件包索引",
@@ -57,6 +64,11 @@ const nt = copyLookup({
       "A Skill with a network manifest (such as literature-review) further limits the session that loads it to the domains it declares; see the Skills tab.",
     "allowlist.granted": "Approved domains: {0}",
     "allowlist.more": "{0} more",
+    "allowlist.restart":
+      "Turning the allowlist on or off means restarting the server with OPENAI4S_EGRESS (there is no switch while it runs): copy the command below and run it in a terminal on the machine OpenAI4S runs on.",
+    "allowlist.member": "Turning the allowlist on or off restarts the server; only an administrator can do that.",
+    "allowlist.copy": "Copy start command",
+    "allowlist.copied": "Start command copied",
   },
 });
 
@@ -68,6 +80,50 @@ export function allowlistGroupName(name: string): string {
 }
 
 const GROUP_PILLS = 12;
+
+/**
+ * The command that restarts the daemon with the other egress mode. The mode is
+ * read once at start (M-26, lead decision: no runtime switch), so the page
+ * hands over the exact command instead of a variable name to look up.
+ */
+export function egressRestartCommand(mode: string): string {
+  const next = mode === "allowlist" ? "off" : "allowlist";
+  return `openai4s stop && OPENAI4S_EGRESS=${next} openai4s serve`;
+}
+
+function EgressRestart({ mode, readOnly }: { mode: string; readOnly: boolean }) {
+  const [copied, setCopied] = useState(false);
+  if (readOnly) {
+    return (
+      <div class="ds" data-egress-restart="member">
+        {nt("allowlist.member")}
+      </div>
+    );
+  }
+  const command = egressRestartCommand(mode);
+  return (
+    <div class="egress-restart" data-egress-restart="">
+      <div class="ds">{nt("allowlist.restart")}</div>
+      <div class="job-submit">
+        <code class="egress-restart-cmd">{command}</code>
+        <button
+          type="button"
+          class="outline-btn small"
+          onClick={async () => {
+            if (await copyText(command)) {
+              setCopied(true);
+              hint(nt("allowlist.copied"));
+            } else {
+              hint(copyFailedText(), true);
+            }
+          }}
+        >
+          {copied ? nt("allowlist.copied") : nt("allowlist.copy")}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function NetworkTab() {
   const alive = useAlive();
@@ -138,6 +194,9 @@ export function NetworkTab() {
   );
 
   if (err) return <div>{err}</div>;
+  // Team member (TEAM-23): every write here is the admin's (403 `admin_only`);
+  // the page shows the state, without the key forms.
+  const readOnly = settingsReadOnly();
 
   return (
     <div>
@@ -145,8 +204,16 @@ export function NetworkTab() {
           put code in cells under a switch that never reached it: the switch
           governs the app's own requests, the kernel sandbox governs code. */}
       <Hdr title={t("cust.network.title")} sub={nt("network.desc")} />
-      <OllamaWebCard config={ollama.config} configError={ollama.error} />
-      <DoubaoSearchCard config={doubao.config} configError={doubao.error} />
+      {readOnly ? (
+        <div data-admin-only="">
+          <Note>{roleT("role.network.member")}</Note>
+        </div>
+      ) : (
+        <>
+          <OllamaWebCard config={ollama.config} configError={ollama.error} />
+          <DoubaoSearchCard config={doubao.config} configError={doubao.error} />
+        </>
+      )}
       <div class="cust-row">
         <div class="info">
           <div class="nm">{nt("network.allowName")}</div>
@@ -154,15 +221,24 @@ export function NetworkTab() {
             {network.on ? nt("network.enabledDesc") : nt("network.disabledDesc")}
           </div>
         </div>
-        <Toggle on={network.on} disabled={!network.ready} onClick={network.toggle} />
+        <Toggle
+          on={network.on}
+          label={nt("network.allowName")}
+          disabled={!network.ready || readOnly}
+          title={readOnly ? roleT("role.adminOnly") : undefined}
+          onClick={() => {
+            if (!readOnly) network.toggle();
+          }}
+        />
       </div>
-      <SearchEngines raw={search} onSaved={setSearch} />
+      <SearchEngines raw={search} onSaved={setSearch} readOnly={readOnly} />
       {allow.groups.length ? (
         <div class="search-engines-head allowlist-head" data-egress-mode={allow.mode}>
           <div class="nm">{nt("allowlist.title")}</div>
           <div class="ds">
             {nt(allow.mode === "allowlist" ? "allowlist.on" : "allowlist.off")}
           </div>
+          <EgressRestart mode={allow.mode} readOnly={readOnly} />
           <div class="ds">{nt("allowlist.skills")}</div>
           {allow.granted.length ? (
             <div class="ds">{nt("allowlist.granted", allow.granted.join(", "))}</div>
@@ -188,12 +264,12 @@ export function NetworkTab() {
           </div>
         );
       })}
-      <TelemetryToggle alive={alive} />
+      <TelemetryToggle alive={alive} readOnly={readOnly} />
     </div>
   );
 }
 
-function TelemetryToggle({ alive }: { alive: () => boolean }) {
+function TelemetryToggle({ alive, readOnly }: { alive: () => boolean; readOnly: boolean }) {
   const [consent, setConsent] = useState<{
     enabled: boolean;
     env_locked: boolean;
@@ -216,14 +292,15 @@ function TelemetryToggle({ alive }: { alive: () => boolean }) {
 
   if (!consent) return null;
 
-  if (consent.env_locked) {
+  if (consent.env_locked || readOnly) {
+    const why = consent.env_locked ? t("cust.telemetry.envlock") : roleT("role.adminOnly");
     return (
       <div class="cust-row">
         <div class="info">
           <div class="nm">{t("cust.telemetry.name")}</div>
-          <div class="ds">{t("cust.telemetry.envlock")}</div>
+          <div class="ds">{why}</div>
         </div>
-        <Toggle on={consent.enabled} disabled title={t("cust.telemetry.envlock")} onClick={() => {}} />
+        <Toggle on={consent.enabled} disabled title={why} label={t("cust.telemetry.name")} onClick={() => {}} />
       </div>
     );
   }
@@ -253,7 +330,7 @@ function LiveTelemetry({
         <div class="nm">{t("cust.telemetry.name")}</div>
         <div class="ds">{on ? t("cust.telemetry.on") : t("cust.telemetry.off")}</div>
       </div>
-      <Toggle on={on} onClick={() => drain.onclick()} />
+      <Toggle on={on} label={t("cust.telemetry.name")} onClick={() => drain.onclick()} />
     </div>
   );
 }

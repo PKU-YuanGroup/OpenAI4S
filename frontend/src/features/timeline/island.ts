@@ -10,7 +10,17 @@
  */
 
 import { LANG, tOptional } from "../../i18n/runtime";
-import { provenanceT } from "../execution/copy";
+import {
+  branchDisplayName,
+  checkpointLabel,
+  kernelGapText,
+  kernelOutcome,
+  recoveryActionWords,
+  restoreBranchKernel,
+  switchedText,
+  type KernelOutcome,
+} from "../execution/branch";
+import { branchT, provenanceT } from "../execution/copy";
 import { publicText } from "../scrub/scrub";
 import { pendingReplIdentity } from "../../stores/notebook";
 import { nbFindCell } from "../notebook/cells";
@@ -41,8 +51,9 @@ import {
   actionTimelineSelectionOverlaps,
   latestActionTimelineAttempt,
   timelineCost,
-  timelineDuration,
+  timelineDurationValue,
   timelineEpochMs,
+  timelineGroupDurationMs,
   timelineLocalClock,
   timelineOverviewExactDuration,
   timelineOverviewExactTime,
@@ -52,11 +63,20 @@ import {
   timelineOverviewXToTime,
   timelineTokenTotal,
 } from "./model";
-import { renderQueueStrip } from "./queue";
+import { noteExecutionStarted, renderQueueStrip } from "./queue";
 import { S } from "./s";
 import { ago, localDateTime } from "../chrome/dom";
+import { askConfirm, askText } from "../chrome/dialog";
 import { nbLabelT } from "../notebook/copy";
-import { computeRecordsT, timelineT, workbenchT } from "./copy";
+import {
+  computeRecordsT,
+  restartDecisionTitle,
+  timelineStatusText,
+  timelineT,
+  workbenchT,
+  workbenchWord,
+} from "./copy";
+import { stepTitleText } from "../send/step-title";
 
 /**
  * The island's lookup: the dictionary, except where the Timeline's own table
@@ -97,10 +117,30 @@ import type {
 type View = any;
 type Group = TimelineGroup & Record<string, any>;
 
+/**
+ * VIEW-1: an approval is waited for only while it is. The permission events
+ * stay in a row's ledger after the decision, and an install the user had
+ * declined still read "Permission Pause". The sanitized `permission` is
+ * "state · scope"; a raw one is `{state, scope}`.
+ */
+function timelinePermissionPending(group: any): boolean {
+  const permission = group && group.permission;
+  const state =
+    typeof permission === "string"
+      ? permission.split("·")[0]
+      : permission && typeof permission === "object"
+        ? permission.state
+        : "";
+  const status = String((group && group.status) || "").toLowerCase();
+  return String(state || "").trim().toLowerCase() === "pending" && ["pending", "running"].includes(status);
+}
+
 export function timelineKind(group: any): string {
   const kind = String((group && group.kind) || "").toLowerCase();
+  // The permission events are the request's history, not the row's kind.
   const eventKinds = ((group && group.events) || [])
     .map((event: any) => String(event.type || "").toLowerCase())
+    .filter((type: string) => !type.startsWith("permission_"))
     .join(" ");
   const latestAttempt = latestActionTimelineAttempt(group),
     linkedCell = latestAttempt && nbFindCell(latestAttempt.producing_cell_id);
@@ -108,7 +148,9 @@ export function timelineKind(group: any): string {
     group.language || (linkedCell && linkedCell.language) || "",
   ).toLowerCase();
   if (/final/.test(kind + " " + eventKinds)) return "finalize";
-  if (/permission|approval/.test(kind + " " + eventKinds)) return "permission";
+  // VIEW-1b: an approval decided across a restart is a record, not a pause.
+  if (group && group.restart_decision && !timelinePermissionPending(group)) return "permission_record";
+  if (/permission|approval/.test(kind) || timelinePermissionPending(group)) return "permission";
   if (/recover|restore|bootstrap/.test(kind + " " + eventKinds)) return "recovery";
   if (/delegat|subagent/.test(kind + " " + eventKinds)) return "delegate";
   if (/background|remote|compute|job/.test(kind + " " + eventKinds)) return "background";
@@ -119,9 +161,27 @@ export function timelineKind(group: any): string {
   return "action";
 }
 
+/**
+ * VIEW-1: the row's title in the chat's words. A tool batch's calls come as
+ * the step cards' English titles ("Listing .", "Installing pydeseq2"),
+ * translated by the chat's own table; anything else keeps its title.
+ */
+export function timelineGroupTitle(group: any): string {
+  // VIEW-1b: a decision made after a restart, in the UI language and with
+  // the tool's own name, not the server's English "…after restart: env_setup".
+  const decision = group && group.restart_decision;
+  if (decision && typeof decision === "object")
+    return restartDecisionTitle(String(decision.decision || ""), String(decision.tool || ""));
+  const steps: string[] = Array.isArray(group && group.step_titles)
+    ? group.step_titles.filter((title: unknown) => typeof title === "string" && title)
+    : [];
+  if (steps.length) return steps.map((title) => stepTitleText(title)).join(" · ");
+  return (group && group.title) || t("timeline.kind." + timelineKind(group || {}));
+}
+
 function timelineKindIcon(kind: string): string {
   if (kind === "delegate") return "users";
-  if (kind === "permission") return "lock";
+  if (kind === "permission" || kind === "permission_record") return "lock";
   if (kind === "recovery") return "refresh";
   if (kind === "finalize") return "check";
   if (kind === "native_tool" || kind === "dynamic_tool") return "sliders";
@@ -153,6 +213,9 @@ export function rememberExecutionState(event: any): void {
           },
         }
       : null;
+  // A queued bubble whose execution started is not a dropped one (queue.ts).
+  if (identity && ["running", "finalizing", "completed", "failed"].includes(status))
+    noteExecutionStarted(identity.execution_id);
   if (identity && ["running", "finalizing"].includes(status)) S.executionIdentity = identity;
   else if (identity && status === "queued" && !S.executionIdentity)
     S.executionIdentity = identity;
@@ -721,7 +784,7 @@ function actionTimelineDetails(group: Group): any {
       group.permission ||
       (group.events || []).map((event: any) => event.side_effect_class).filter(Boolean),
     replay: group.replay_policy || (latest && latest.replayed_from_cell_id ? "replayed" : "original"),
-    duration: timelineDuration(latest),
+    duration: timelineDurationValue(timelineGroupDurationMs(group)),
     tokens: t(
       "timeline.tokensValue",
       (group.usage || {}).input_tokens || 0,
@@ -762,9 +825,11 @@ export function actionTimelineCard(group: Group): HTMLElement {
   kindLabel.appendChild(iconEl(timelineKindIcon(kind), 14));
   kindLabel.appendChild(el("span", null, t("timeline.kind." + kind)));
   head.appendChild(kindLabel);
-  head.appendChild(el("span", "timeline-status " + status, publicText(status || "completed", 32)));
+  head.appendChild(
+    el("span", "timeline-status " + status, timelineStatusText(publicText(status || "completed", 32))),
+  );
   card.appendChild(head);
-  card.appendChild(el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)));
+  card.appendChild(el("div", "timeline-card-title", timelineGroupTitle(group)));
   appendActionTimelineDetails(card, group);
   return card;
 }
@@ -798,12 +863,10 @@ function actionTimelineInspector(group: Group): HTMLElement {
   kindLabel.appendChild(el("span", null, t("timeline.kind." + kind)));
   cardHead.appendChild(kindLabel);
   cardHead.appendChild(
-    el("span", "timeline-status " + status, publicText(status || "completed", 32)),
+    el("span", "timeline-status " + status, timelineStatusText(publicText(status || "completed", 32))),
   );
   panel.appendChild(cardHead);
-  panel.appendChild(
-    el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)),
-  );
+  panel.appendChild(el("div", "timeline-card-title", timelineGroupTitle(group)));
   appendActionTimelineDetails(panel, group);
   appendActionTimelineTimingDetails(panel, group);
   (panel as any)._timelineGroup = group;
@@ -842,7 +905,13 @@ function normalizeActionTimelineSearch(value: unknown): string {
 
 function actionTimelineSearchDocument(group: Group): string {
   const kind = timelineKind(group || {});
-  const fields = [group && group.title, group && group.kind, kind, t("timeline.kind." + kind)];
+  const fields = [
+    group && group.title,
+    group && timelineGroupTitle(group),
+    group && group.kind,
+    kind,
+    t("timeline.kind." + kind),
+  ];
   ((group && group.events) || []).forEach((event: any) => {
     (event.resource_keys || []).forEach((value: string) => fields.push(value));
     (event.artifacts || []).forEach((value: string) => fields.push(value));
@@ -983,7 +1052,7 @@ function showActionTimelineOverviewTooltip(
     item = overview && overview.model && overview.model.byId.get(groupId);
   if (!overview || !item || overview.hoverCandidateId !== groupId) return;
   const ordinal = timelineOrdinal(item.group.ordinal),
-    title = item.group.title || t("timeline.kind." + timelineKind(item.group));
+    title = timelineGroupTitle(item.group);
   const head = el(
     "div",
     "timeline-overview-tooltip-title",
@@ -1941,9 +2010,9 @@ function actionTimelineLedgerRow(
   kindCell.appendChild(kindIcon);
   kindCell.appendChild(el("span", "timeline-kind-label", t("timeline.kind." + kind)));
   row.appendChild(kindCell);
-  const title = group.title || t("timeline.kind." + kind),
+  const title = timelineGroupTitle(group),
     titleCell = cell("timeline-ledger-title");
-  const statusText = publicText(status || "completed", 32);
+  const statusText = timelineStatusText(publicText(status || "completed", 32));
   const statusNoteworthy = statusClass !== "completed" && statusClass !== "recorded";
   if (statusNoteworthy)
     titleCell.appendChild(
@@ -1968,7 +2037,7 @@ function actionTimelineLedgerRow(
   titleCell.appendChild(titleButton);
   row.appendChild(titleCell);
   const durationCell = cell("timeline-ledger-duration");
-  durationCell.textContent = timelineDuration(latest) || "—";
+  durationCell.textContent = timelineDurationValue(timelineGroupDurationMs(group)) || "—";
   row.appendChild(durationCell);
   const tokens = cell("timeline-ledger-tokens");
   tokens.textContent = group.usage ? String(timelineTokenTotal(group.usage)) : "—";
@@ -2849,8 +2918,11 @@ async function executeRecoveryAction(actionId: string): Promise<void> {
     S._recoveryActionLoading
   )
     return;
-  if (actionId === "restart_fresh" && !confirm(t("recovery.freshConfirm"))) return;
   const frameId = S.currentId;
+  if (actionId === "restart_fresh") {
+    if (!(await askConfirm(t("recovery.freshConfirm"), { danger: true }))) return;
+    if (S.currentId !== frameId || S._recoveryActionLoading) return;
+  }
   S._recoveryActionLoading = actionId;
   delete S.workbenchErrors.recoveryAction;
   renderActionTimeline();
@@ -2891,17 +2963,12 @@ function recoveryTimelineCard(state: any, actionsState: any): HTMLElement {
   kind.appendChild(iconEl("refresh", 14));
   kind.appendChild(el("span", null, t("recovery.title")));
   head.appendChild(kind);
-  head.appendChild(el("span", "timeline-status", status));
+  head.appendChild(el("span", "timeline-status", workbenchWord("wb.recovery.", status)));
   card.appendChild(head);
   if (state.message) card.appendChild(el("div", "timeline-card-title", state.message));
+  // M-64: the checkpoint's internal id is a tooltip, not a line of the card.
   if (actionsState.checkpoint_id)
-    card.appendChild(
-      el(
-        "div",
-        "recovery-checkpoint",
-        t("recovery.checkpoint", shortRuntime(actionsState.checkpoint_id)),
-      ),
-    );
+    card.title = t("recovery.checkpoint", shortRuntime(actionsState.checkpoint_id));
   if (state.progress != null) {
     const track = el("div", "recovery-progress");
     const bar = el("span");
@@ -2918,7 +2985,7 @@ function recoveryTimelineCard(state: any, actionsState: any): HTMLElement {
       ? t("recovery.action.unavailable")
       : !currentBranch
         ? t("recovery.action.currentOnly")
-        : action.reason || t("recovery.action.ready");
+        : recoveryActionWords(action);
     row.appendChild(
       disabledWorkbenchButton(
         loading ? t("recovery.action.loading") : t("recovery.action." + action.id),
@@ -3016,10 +3083,10 @@ async function createSessionCheckpoint(): Promise<void> {
 async function forkSessionCheckpoint(checkpointId: string): Promise<void> {
   if (!S.currentId || !branchCapability("fork") || !checkpointId || S._branchActionLoading) return;
   checkpointId = publicText(checkpointId, 96);
-  const requestedName = prompt(t("branch.forkName"), t("branch.forkDefault", shortRuntime(checkpointId)));
-  if (requestedName === null) return;
-  const name = publicText(String(requestedName).trim(), 120),
-    frameId = S.currentId;
+  const frameId = S.currentId;
+  const requestedName = await askText(t("branch.forkName"), t("branch.forkDefault", shortRuntime(checkpointId)));
+  if (requestedName === null || S.currentId !== frameId || S._branchActionLoading) return;
+  const name = publicText(String(requestedName).trim(), 120);
   S._branchActionLoading = "fork:" + checkpointId;
   delete S.workbenchErrors.branchAction;
   renderActionTimeline();
@@ -3043,29 +3110,82 @@ async function forkSessionCheckpoint(checkpointId: string): Promise<void> {
   }
 }
 
-async function activateSessionBranch(branchId: string): Promise<void> {
+/**
+ * M-73: what the last activation left this session's kernel with. The branch
+ * panel shows it beside "Restart kernel and restore" until the kernel is
+ * restored, the branch changes, or the session does.
+ */
+let branchKernel: {
+  frameId: string;
+  branchId: string;
+  outcome: KernelOutcome;
+  restoring: boolean;
+} | null = null;
+
+async function restoreActivatedBranch(): Promise<void> {
+  const pending = branchKernel;
+  if (!pending || pending.restoring || pending.frameId !== S.currentId) return;
+  pending.restoring = true;
+  renderActionTimeline();
+  const outcome = await restoreBranchKernel(pending.frameId, pending.branchId);
+  if (branchKernel !== pending) return;
+  pending.restoring = false;
+  pending.outcome = outcome;
+  if (S.currentId === pending.frameId) {
+    invalidateKernelCache();
+    await Promise.all([
+      loadWorkbenchState(pending.frameId, true),
+      Promise.resolve(laneCall("loadExecutionLog", pending.frameId)),
+    ]);
+    hint(kernelGapText(outcome), outcome.status === "failed" && !!outcome.message);
+  }
+  renderActionTimeline();
+}
+
+/**
+ * Switch the open session to one of its branches. True once the switch
+ * happened. `confirmed`: the caller already asked this confirm (VIEW-2: a
+ * fork from a question asks before the branch exists), and `name` is the
+ * branch's name when the branch list does not have it yet.
+ */
+export async function activateSessionBranch(
+  branchId: string,
+  options: { confirmed?: boolean; name?: string } = {},
+): Promise<boolean> {
   branchId = publicText(branchId, 96);
-  if (!S.currentId || !branchId || !branchCapability("activate") || S._branchActionLoading) return;
+  if (!S.currentId || !branchId || !branchCapability("activate") || S._branchActionLoading) return false;
+  const target = ((S.branchState && S.branchState.branches) || []).find(
+    (branch: any) => branch && branch.branch_id === branchId,
+  );
+  const name =
+    publicText(options && options.name, 120) ||
+    branchDisplayName(target || { branch_id: branchId }, S.currentId);
+  // M-73: the kernel stopped and its variables were gone without a word.
   const frameId = S.currentId;
+  if (!(options && options.confirmed === true) && !(await askConfirm(branchT("branch.activateConfirm", name))))
+    return false;
+  if (S.currentId !== frameId || S._branchActionLoading) return false;
   S._branchActionLoading = "activate:" + branchId;
   delete S.workbenchErrors.branchAction;
   renderActionTimeline();
+  let switched = false;
   try {
-    const result = (await api(
+    const result = await api(
       `/frames/${encodeURIComponent(frameId)}/branches/${encodeURIComponent(branchId)}/activate`,
       { method: "POST", body: "{}" },
-    )) as { status?: string };
-    if (S.currentId !== frameId) return;
+    );
+    if (S.currentId !== frameId) return false;
+    switched = true;
     invalidateKernelCache();
     S.cells = [];
     S.liveCells = [];
     S._liveCell = null;
     pendingReplIdentity.value = null;
+    const outcome = kernelOutcome(result);
+    branchKernel = outcome.status === "active" ? null : { frameId, branchId, outcome, restoring: false };
     await Promise.resolve(laneCall("openConversation", frameId, S.project, { resetHistory: true }));
-    if (S.currentId === frameId) {
-      const partial = String((result && result.status) || "").toLowerCase() !== "active";
-      hint(t(partial ? "branch.activatedPartial" : "branch.activated", shortRuntime(branchId)), partial);
-    }
+    // The switch happened: not an error, and no "inspect Recovery" errand.
+    if (S.currentId === frameId) hint(switchedText(name, outcome));
   } catch (error) {
     if (S.currentId === frameId)
       S.workbenchErrors.branchAction = publicText((error as Error).message, 240);
@@ -3076,6 +3196,7 @@ async function activateSessionBranch(branchId: string): Promise<void> {
       laneCall("renderNotebook");
     }
   }
+  return switched;
 }
 
 async function previewSessionRevert(checkpointId: string): Promise<void> {
@@ -3190,6 +3311,34 @@ async function undoSessionRevert(): Promise<void> {
   }
 }
 
+/** M-73: what the activation did not bring back, with the one action that can. */
+function branchKernelNotice(pending: NonNullable<typeof branchKernel>): HTMLElement {
+  const box = el("div", "branch-kernel-gap");
+  box.setAttribute("role", "status");
+  box.appendChild(el("span", null, kernelGapText(pending.outcome)));
+  if (pending.outcome.status !== "active") {
+    const button = disabledWorkbenchButton(
+      pending.restoring ? branchT("branch.restoring") : branchT("branch.restoreKernel"),
+      !pending.restoring && !S._branchActionLoading && !S._recoveryActionLoading,
+      () => {
+        void restoreActivatedBranch();
+      },
+      undefined,
+      "branch-restore-kernel",
+    );
+    button.title = branchT("branch.restoreKernelTitle");
+    box.appendChild(button);
+  }
+  return box;
+}
+
+function currentBranchName(state: any): string {
+  const current = ((state && state.branches) || []).find(
+    (branch: any) => branch && branch.branch_id === state.branch_id,
+  );
+  return branchDisplayName(current || { branch_id: state.branch_id }, S.currentId);
+}
+
 export function renderBranchPanel(): HTMLElement {
   const panel = panelShell(t("timeline.panel.branches"), "branch-panel"),
     state = S.branchState;
@@ -3221,7 +3370,7 @@ export function renderBranchPanel(): HTMLElement {
   panel.appendChild(controls);
   if (state && state.branch_id)
     panel.appendChild(
-      el("div", "branch-current-summary", t("branch.currentSummary", shortRuntime(state.branch_id))),
+      el("div", "branch-current-summary", t("branch.currentSummary", currentBranchName(state))),
     );
   if (S.workbenchErrors.branchAction)
     panel.appendChild(
@@ -3234,7 +3383,7 @@ export function renderBranchPanel(): HTMLElement {
   (state.branches || []).forEach((branch: any) => {
     const row = el("div", "branch-row" + (branch.branch_id === state.branch_id ? " current" : ""));
     const head = el("div", "branch-head");
-    head.appendChild(el("span", "branch-name", branch.name || shortRuntime(branch.branch_id)));
+    head.appendChild(el("span", "branch-name", branchDisplayName(branch, S.currentId)));
     if (branch.branch_id === state.branch_id)
       head.appendChild(el("span", "timeline-pill", t("branch.current")));
     else {
@@ -3251,17 +3400,34 @@ export function renderBranchPanel(): HTMLElement {
         ),
       );
     }
-    if (branch.head_checkpoint_id)
-      head.appendChild(
-        el("span", "branch-head-id", t("branch.head", shortRuntime(branch.head_checkpoint_id))),
+    if (branch.head_checkpoint_id) {
+      // M-64: the head as "when a question was asked · 10:32:05", not "cp-967e8…".
+      const headCheckpoint = (branch.checkpoints || []).find(
+        (cp: any) => cp && cp.checkpoint_id === branch.head_checkpoint_id,
       );
+      const headId = el(
+        "span",
+        "branch-head-id",
+        t("branch.head", headCheckpoint ? checkpointLabel(headCheckpoint) : shortRuntime(branch.head_checkpoint_id)),
+      );
+      headId.title = shortRuntime(branch.head_checkpoint_id);
+      head.appendChild(headId);
+    }
     row.appendChild(head);
+    if (
+      branchKernel &&
+      branch.branch_id === state.branch_id &&
+      branchKernel.frameId === S.currentId &&
+      branchKernel.branchId === branch.branch_id
+    )
+      row.appendChild(branchKernelNotice(branchKernel));
     const cps = el("div", "checkpoint-list"),
       allCheckpoints = branch.checkpoints || [];
     const checkpointRow = (cp: any) => {
       const cpRow = el("div", "checkpoint-row");
-      cpRow.appendChild(el("span", "checkpoint-id", shortRuntime(cp.checkpoint_id)));
-      cpRow.appendChild(el("span", "checkpoint-reason", cp.reason || "checkpoint"));
+      // M-64: when and why, not "cp-33f1… cursor_cell"; the id stays in the tooltip.
+      cpRow.title = shortRuntime(cp.checkpoint_id);
+      cpRow.appendChild(el("span", "checkpoint-reason", checkpointLabel(cp)));
       const actions = el("span", "checkpoint-actions");
       actions.appendChild(
         disabledWorkbenchButton(
@@ -3388,10 +3554,13 @@ export function renderContextPanel(): HTMLElement {
   panel.appendChild(summary);
   state.layers.forEach((layer: any) => {
     const row = el("div", "context-layer");
-    row.appendChild(el("span", "context-layer-name", layer.name || layer.kind || "context"));
+    const layerName = layer.kind ? workbenchWord("wb.layer.", String(layer.kind)) : "";
+    row.appendChild(
+      el("span", "context-layer-name", layerName && layerName !== layer.kind ? layerName : layer.name || layer.kind || "context"),
+    );
     if (layer.token_count != null)
       row.appendChild(el("span", "context-layer-tokens", t("context.tokens", layer.token_count)));
-    if (layer.status) row.appendChild(el("span", "timeline-pill", layer.status));
+    if (layer.status) row.appendChild(el("span", "timeline-pill", workbenchWord("wb.status.", String(layer.status))));
     panel.appendChild(row);
   });
   (state.omitted || []).forEach((item: any) => {
@@ -3561,7 +3730,7 @@ async function cancelComputeTask(jobId: string, button: HTMLButtonElement): Prom
   const promptText =
     tOptional("compute.cancelConfirm") ||
     "Cancel this remote job? If the remote does not confirm, it may still be running and billing.";
-  if (typeof globalThis.confirm === "function" && !globalThis.confirm(promptText)) return;
+  if (!(await askConfirm(promptText, { danger: true })) || computeCancelInFlight.has(jobId)) return;
   computeCancelInFlight.add(jobId);
   button.disabled = true;
   try {
@@ -3823,7 +3992,7 @@ export async function steerDelegationChild(
 ): Promise<void> {
   const id = S.currentId;
   if (!id || !childId) return;
-  const message = prompt(t("delegation.steerPrompt"));
+  const message = await askText(t("delegation.steerPrompt"));
   if (!message || !message.trim()) return;
   button.disabled = true;
   try {

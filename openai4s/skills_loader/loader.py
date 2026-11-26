@@ -269,16 +269,161 @@ def _requirements(value: object) -> tuple[str, ...]:
     return tuple(sorted({part.lower() for part in parts if part}))
 
 
+#: A hyphenated compound (``chia-pet``, ``hi-c``, ``rna-seq``, ``t-test``).
+_COMPOUND = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
+#: CJK ideographs (Extension A, the unified block, compatibility ideographs).
+_CJK_RUN = re.compile(r"[㐀-䶿一-鿿豈-﫿]+")
+#: Compound fragments this short are not evidence of what a Skill is about.
+_SHORT_FRAGMENT = 3
+
+
+def _cjk_bigrams(text: str) -> set[str]:
+    """Chinese has no spaces, so a run is indexed as overlapping character
+    pairs (a lone character stays itself): ``面板数据`` -> 面板, 板数, 数据."""
+
+    grams: set[str] = set()
+    for run in _CJK_RUN.findall(text):
+        if len(run) == 1:
+            grams.add(run)
+        grams.update(run[index : index + 2] for index in range(len(run) - 1))
+    return grams
+
+
 def _tokenize(*texts: str) -> set[str]:
+    """ASCII words, whole hyphenated compounds, and CJK character bigrams.
+
+    SKL-3: tokens were ``[a-z0-9]+`` only, so every Chinese query tokenized
+    to nothing; and a compound kept only its parts, so a query naming the
+    compound itself could not prefer the Skill that names it.
+    """
+
     toks: set[str] = set()
     for t in texts:
-        toks.update(_WORD.findall(t.lower()))
+        lowered = t.lower()
+        toks.update(_WORD.findall(lowered))
+        toks.update(_COMPOUND.findall(lowered))
+        toks.update(_cjk_bigrams(lowered))
     return toks
+
+
+def _summary_tokens(name: str, description: str) -> frozenset[str]:
+    """The tokens that earn a Skill the name/description boost.
+
+    A short fragment of a hyphenated compound in the description is left out:
+    the ``pet`` of ``ChIA-PET`` is not a claim to be about PET, and with its
+    high IDF it put a Hi-C loop caller first for a PETase structure query.
+    The compound itself, longer fragments, and every standalone word still
+    count, so ``PDB`` or ``RNA`` written as a word keeps its boost. The name
+    is hyphen-separated words throughout and is tokenized whole.
+    """
+
+    lowered = description.lower()
+    standalone = _WORD.findall(_COMPOUND.sub(" ", lowered))
+    compounds = _COMPOUND.findall(lowered)
+    long_parts = {
+        part
+        for compound in compounds
+        for part in compound.split("-")
+        if len(part) > _SHORT_FRAGMENT
+    }
+    return frozenset(
+        _tokenize(name)
+        | set(standalone)
+        | set(compounds)
+        | long_parts
+        | _cjk_bigrams(lowered)
+    )
 
 
 #: A query term found in a Skill's name or description is stronger evidence
 #: than the same term somewhere in its body.
 _SUMMARY_BOOST = 1.5
+
+
+#: SKL-3: the bundled Skills are written in English, so a Chinese query's own
+#: character pairs seldom meet the right Skill -- and the few Skills that do
+#: carry Chinese text then win on generic words like 数据. Common research terms
+#: found in a query are also searched as their English words.
+_ZH_TERMS: tuple[tuple[str, str], ...] = (
+    ("单细胞", "single cell"),
+    ("细胞类型", "cell type"),
+    ("注释", "annotation"),
+    ("聚类", "clustering"),
+    ("差异表达", "differential expression"),
+    ("火山图", "volcano plot"),
+    ("热图", "heatmap"),
+    ("富集", "enrichment"),
+    ("通路", "pathway"),
+    ("转录组", "transcriptome rna-seq"),
+    ("测序", "sequencing"),
+    ("基因组", "genome"),
+    ("基因", "gene"),
+    ("突变", "mutation variant"),
+    ("变异", "variant"),
+    ("序列比对", "sequence alignment"),
+    ("比对", "alignment"),
+    ("系统发育", "phylogenetic phylogeny"),
+    ("进化树", "phylogenetic tree"),
+    ("蛋白质", "protein"),
+    ("蛋白", "protein"),
+    ("结构", "structure"),
+    ("预测", "prediction"),
+    ("设计", "design"),
+    ("分子对接", "molecular docking"),
+    ("对接", "docking"),
+    ("分子动力学", "molecular dynamics"),
+    ("化合物", "compound"),
+    ("药物", "drug"),
+    ("配体", "ligand"),
+    ("文献综述", "literature review"),
+    ("文献", "literature"),
+    ("综述", "review"),
+    ("引用", "citation"),
+    ("核验", "verify"),
+    ("质控", "quality control"),
+    ("批次", "batch"),
+    ("回归", "regression"),
+    ("生存分析", "survival analysis"),
+    ("机器学习", "machine learning"),
+    ("可视化", "visualization"),
+    ("作图", "figure plot"),
+    ("绘图", "figure plot"),
+    ("光谱", "spectra spectrum"),
+    ("催化剂", "catalyst"),
+    ("晶体", "crystal"),
+    ("数据集", "dataset"),
+    ("时间序列", "time series"),
+    ("面板数据", "panel data"),
+    ("因果推断", "causal inference"),
+)
+#: Chinese character pairs too common to say what a Skill is about.
+_CJK_STOP = frozenset(
+    {
+        "数据",
+        "分析",
+        "处理",
+        "方法",
+        "结果",
+        "如何",
+        "怎么",
+        "帮我",
+        "这批",
+        "一个",
+        "一篇",
+        "进行",
+        "使用",
+        "流程",
+        "完整",
+        "可以",
+        "需要",
+        "什么",
+        "这个",
+    }
+)
+#: A Skill's Chinese text counts only when it shares at least this many
+#: distinct non-generic character pairs with the query; one shared pair is
+#: usually a homonym (``突变`` in "数据突变").
+_MIN_CJK_MATCHES = 2
 
 
 def _query_tokens(query: str) -> set[str]:
@@ -292,6 +437,10 @@ def _query_tokens(query: str) -> set[str]:
     """
 
     tokens = _tokenize(query)
+    lowered = query.lower()
+    for chinese, english in _ZH_TERMS:
+        if chinese in lowered:
+            tokens |= _tokenize(english)
     return {token for token in tokens if len(token) > 1} or tokens
 
 
@@ -960,7 +1109,7 @@ class _SearchIndex:
             corpus=corpus,
             document_frequency=dict(frequency),
             summary_tokens={
-                key: frozenset(_tokenize(skill.name, skill.description))
+                key: _summary_tokens(skill.name, skill.description)
                 for key, skill in corpus.items()
             },
         )
@@ -1581,15 +1730,32 @@ class SkillLoader:
         weights = [
             (token, index.weight(token)) for token in sorted(_query_tokens(query))
         ]
+        cjk_tokens = frozenset(t for t, _ in weights if _CJK_RUN.fullmatch(t))
         scored: list[tuple[float, Skill]] = []
         for key, s in candidates.items():
             if permits is not None and not permits(s.name):
                 continue
             summary = index.summary_tokens.get(key)
             if summary is None or index.corpus.get(key) is not s:
-                summary = frozenset(_tokenize(s.name, s.description))
-            body = sum(weight for token, weight in weights if token in s.keywords)
-            boost = sum(weight for token, weight in weights if token in summary)
+                summary = _summary_tokens(s.name, s.description)
+            # Chinese pairs are evidence only when several meaningful ones
+            # agree; a generic pair never is (see _CJK_STOP).
+            shared = {
+                t for t in cjk_tokens - _CJK_STOP if t in s.keywords or t in summary
+            }
+            ignored = (
+                cjk_tokens if len(shared) < _MIN_CJK_MATCHES else cjk_tokens & _CJK_STOP
+            )
+            body = sum(
+                weight
+                for token, weight in weights
+                if token in s.keywords and token not in ignored
+            )
+            boost = sum(
+                weight
+                for token, weight in weights
+                if token in summary and token not in ignored
+            )
             score = body + _SUMMARY_BOOST * boost
             if score > 0:
                 scored.append((score, s))

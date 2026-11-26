@@ -2,10 +2,10 @@ import {
   dockArtifact,
   filesScope,
 } from "../../stores/artifacts";
-import { currentId, sessions } from "../../stores/session";
+import { currentId, projects, sessions } from "../../stores/session";
 import { activeTab, dock, openTabs, provMode } from "../../stores/ui";
 import { api, apiErrorText, bytes, callWindow, el, icon, translate } from "./api";
-import { artifactTabKey } from "./cache";
+import { artifactTabKey, newerVersionThan } from "./cache";
 import { filesT } from "./copy";
 import {
   parseArtifactDeepLink,
@@ -55,6 +55,21 @@ function artIcon(a: ArtifactRow): string {
   return "file";
 }
 
+/**
+ * VIEW-3: a pinned tab read "pca.png · v-7331c85411a5". It says which kind of
+ * version it shows -- pinned, or an earlier one once the file has moved on --
+ * and keeps the id for the tooltip.
+ */
+export function dockTabLabel(a: ArtifactRow): { label: string; title: string } {
+  const name = String(a.filename || "artifact");
+  if (!a._exactVersion) return { label: name, title: name };
+  const kind = filesT(newerVersionThan(a) ? "viewer.tab.older" : "viewer.version.pinned");
+  return {
+    label: name + " · " + kind,
+    title: filesT("viewer.tab.versionTip", name, String(a.version_id || "")),
+  };
+}
+
 function tabBtn(kind: "div" | "button", iconName: string, label: string): HTMLElement {
   const node = el(kind, "dock-tab");
   const ic = el("span", "ic");
@@ -74,7 +89,9 @@ export function renderDockTabs(): void {
   // of them pushed Timeline and Files out of view.
   const fileTabs: HTMLElement[] = [];
   ((openTabs.value as ArtifactRow[]) || []).forEach((a) => {
-    const tab = tabBtn("div", artIcon(a), (a.filename || "artifact") + (a._exactVersion ? " · " + a.version_id : ""));
+    const named = dockTabLabel(a);
+    const tab = tabBtn("div", artIcon(a), named.label);
+    tab.title = named.title;
     if (activeTab.value === artifactTabKey(a)) tab.classList.add("active");
     const close = el("span", "t-close");
     close.innerHTML = icon("x", 14);
@@ -217,6 +234,23 @@ export function sessionNameFor(frameId: string | null | undefined): string {
 /** ART-9: strips the reader opened, by `session:kind`; collapsed is the default. */
 const stripOpen = new Map<string, boolean>();
 
+/**
+ * G2 / SCI-02: the example session exists to show what a run delivers, and
+ * its deliverables sat in a collapsed one-line strip. Its files strip opens
+ * by default; the reader's own choice still wins, and every other session
+ * keeps ART-9's collapsed default.
+ */
+function isExampleSession(frameId: string | null): boolean {
+  if (!frameId) return false;
+  const frame = ((sessions.value as Array<{ id?: string; project_id?: string | null }>) || []).find(
+    (s) => s.id === frameId,
+  );
+  const pid = frame && frame.project_id;
+  if (!pid) return false;
+  const list = (projects.value as Array<{ id?: string; project_id?: string; is_example?: boolean }>) || [];
+  return list.some((p) => (p.id === pid || p.project_id === pid) && p.is_example === true);
+}
+
 export function renderConversationArtifacts(): void {
   if (typeof document === "undefined") return;
   document.querySelectorAll(".generated, .uploaded").forEach((n) => n.remove());
@@ -271,7 +305,7 @@ export function renderConversationArtifacts(): void {
       stripOpen.set(key, !!g.open);
       if (g.open) build();
     };
-    if (stripOpen.get(key) === true) {
+    if (stripOpen.get(key) ?? (cls === "generated" && isExampleSession(currentId.value))) {
       g.open = true;
       build();
     }

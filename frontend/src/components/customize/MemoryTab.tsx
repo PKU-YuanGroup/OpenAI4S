@@ -1,9 +1,18 @@
 import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
+import { askText } from "../../features/chrome/dialog";
 import { refreshCustTab } from "../../features/customize/actions";
 import { asList, asString, customizeProject, hint } from "../../features/customize/host";
-import { MEMORY_BLOCKS, memScopeIds, memScopeLabel } from "../../features/customize/memory";
+import {
+  MEMORY_BLOCKS,
+  memScopeIds,
+  memScopeLabel,
+  memoryAppliedText,
+  memoryBlockHint,
+  memoryBlockLabel,
+} from "../../features/customize/memory";
+import { roleT, settingsReadOnly } from "../../features/customize/roles";
 import { useAlive } from "./use-timer-lease";
 import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Empty, Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
@@ -27,7 +36,10 @@ export function MemoryTab() {
   const [memories, setMemories] = useState<Record<string, unknown>[]>([]);
   const [cats, setCats] = useState<Record<string, unknown>[]>([]);
   const [ctx, setCtx] = useState<Record<string, unknown> | null>(null);
-  const scopes = memScopeIds(customizeProject.value);
+  // Team member (TEAM-23): the switch and the all-projects tier are the
+  // admin's (403 `admin_only`); a member saves memory for a project.
+  const readOnly = settingsReadOnly();
+  const scopes = memScopeIds(customizeProject.value).filter((id) => !readOnly || id !== "global");
   const active = scopes[scopes.length - 1] || "global";
   const [block, setBlock] = useState("user");
   const [scope, setScope] = useState(active);
@@ -79,13 +91,26 @@ export function MemoryTab() {
           <div class="nm">{t("cust.memory.enableName")}</div>
           <div class="ds">
             {memory.on ? t("cust.memory.enabledDesc") : t("cust.memory.disabledDesc")}
+            {readOnly ? " " + roleT("role.memory.toggleMember") : ""}
           </div>
         </div>
-        <Toggle on={memory.on} disabled={!memory.ready} onClick={memory.toggle} />
+        <Toggle
+          on={memory.on}
+          label={t("cust.memory.enableName")}
+          disabled={!memory.ready || readOnly}
+          onClick={() => {
+            if (!readOnly) memory.toggle();
+          }}
+        />
       </div>
       <div class="cust-row">
         <div class="info">
           <div class="nm">{t("cust.memory.addName")}</div>
+          {!scopes.length ? (
+            <div class="ds" data-admin-only="">
+              {roleT("role.memory.scopeMember")}
+            </div>
+          ) : (
           <div class="job-submit">
             <select
               class="cust-input"
@@ -108,7 +133,7 @@ export function MemoryTab() {
             >
               {MEMORY_BLOCKS.map((k) => (
                 <option value={k} key={k}>
-                  {k}
+                  {memoryBlockLabel(k)}
                 </option>
               ))}
             </select>
@@ -147,6 +172,12 @@ export function MemoryTab() {
               {t("common.save")}
             </button>
           </div>
+          )}
+          {scopes.length ? (
+            <div class="ds" data-memory-block-hint="">
+              {memoryBlockHint(block)}
+            </div>
+          ) : null}
         </div>
       </div>
       {ctx ? (
@@ -155,14 +186,8 @@ export function MemoryTab() {
             <div class="nm">
               <InjectedInto pid={active} />
             </div>
-            <div class="ds">
-              {t(
-                "cust.memory.injectedCounts",
-                String(ctx.included_count || 0),
-                String(asList(ctx.omitted).length),
-                String(ctx.inherited_count || 0),
-                String(ctx.overridden_count || 0),
-              )}
+            <div class="ds" data-memory-applied="">
+              {memoryAppliedText(ctx)}
             </div>
           </div>
         </div>
@@ -174,7 +199,7 @@ export function MemoryTab() {
             <div class="ds">
               {cats.map((k, i) => (
                 <Pill key={i}>
-                  {asString(k.block, "general") + " · " + String(k.count)}
+                  {memoryBlockLabel(asString(k.block, "general")) + " · " + String(k.count)}
                 </Pill>
               ))}
             </div>
@@ -185,7 +210,7 @@ export function MemoryTab() {
         .sort()
         .map((b) => (
           <div key={b}>
-            <Subhead>{b}</Subhead>
+            <Subhead>{memoryBlockLabel(b)}</Subhead>
             {(groups[b] || []).map((x) => (
               <div class="cust-row" key={asString(x.memory_id)}>
                 <div class="info">
@@ -202,7 +227,7 @@ export function MemoryTab() {
                   title={t("common.edit")}
                   size={14}
                   onClick={async () => {
-                    const next = window.prompt(t("cust.memory.editPrompt"), asString(x.content));
+                    const next = await askText(t("cust.memory.editPrompt"), asString(x.content));
                     if (next === null) return;
                     const value = String(next).trim();
                     if (!value || value === asString(x.content)) return;

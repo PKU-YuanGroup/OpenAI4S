@@ -134,9 +134,15 @@ from openai4s.server import (
     ws_frames,
 )
 from openai4s.server.action_timeline import ActionTimelineService
-from openai4s.server.agent_run import EventCancellation
+from openai4s.server.agent_run import (
+    EventCancellation,
+)
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
-from openai4s.server.agent_run import WebActionExecutor, WebEventSink
+from openai4s.server.agent_run import (
+    WebActionExecutor,
+    WebEventSink,
+    announce_llm_retries,
+)
 from openai4s.server.artifact_workbench import (
     ArtifactWorkbenchService,
     format_located_annotations,
@@ -171,10 +177,15 @@ from openai4s.server.completions import (
     completion_message,
     narration_paths,
     response_language,
+    unfinished_turns_since,
 )
 from openai4s.server.delivery import (
     CompletionDeliveryService,
     DeliveryValidationError,
+)
+from openai4s.server.download_provenance import (
+    DOWNLOAD_TOOL,
+    record_download_sources,
 )
 from openai4s.server.errors import (
     ERROR_CODES,
@@ -233,7 +244,9 @@ from openai4s.server.security_headers import (
     ketcher_editor_security_headers,
     sandboxed_artifact_security_headers,
     security_headers,
+    workbench_security_headers,
 )
+from openai4s.server.session_branching import BranchDeletionRefused
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
     CursorCheckpointUnavailable,
@@ -261,13 +274,18 @@ from openai4s.server.volcengine_arkcli import ArkCliError
 from openai4s.server.volcengine_connector import VolcengineConnectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
-from openai4s.specialists import builtin_catalog
+from openai4s.specialists import (
+    builtin_catalog,
+    canonical_specialist_name,
+    specialist_state_names,
+)
 from openai4s.storage import message_admissions as message_receipts
 from openai4s.storage.connectors import public_connector
 from openai4s.storage.governance import QuotaExceeded, record_session_llm_usage
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
 from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
 from openai4s.storage.memories import MemoryLimitError
+from openai4s.storage.permissions import InstallRuleRefused
 from openai4s.storage.snapshots import revert_recovery_setting_key
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs, get_tool
@@ -532,7 +550,7 @@ def queue_preview(text: str) -> str:
 
 
 def _skill_result_status(payload: object) -> int:
-    """The status a Customize skill result should be answered with.
+    """The status a Settings skill result should be answered with.
 
     These routes answered 200 with an ``{"error": ...}`` body. The service
     returns soft dictionaries by design -- see ``server/skills.py`` -- but the
@@ -639,6 +657,8 @@ _GUEST_AUTH_PATHS = frozenset(
         "/auth/me",
         "/auth/status",
         "/auth/redeem-invite",
+        # Read-only: the sessions this guest may replay (TEAM-28).
+        "/auth/me/replays",
     }
 )
 
@@ -718,11 +738,22 @@ def _guess_ctype(name: str) -> str:
     # structure / science formats first (mimetypes mis-maps some, e.g. .pdb)
     if low.endswith((".pdb", ".cif", ".mmcif", ".ent")):
         return "chemical/x-pdb"
-    if low.endswith((".mol", ".mol2", ".sdf")):
+    # SCI-26: one type per format. `.mol` was typed as an SD file, and `.smi`
+    # fell through to mimetypes, which calls it SMIL multimedia.
+    if low.endswith(".sdf"):
         return "chemical/x-mdl-sdfile"
+    if low.endswith(".mol"):
+        return "chemical/x-mdl-molfile"
+    if low.endswith(".mol2"):
+        return "chemical/x-mol2"
+    if low.endswith((".smi", ".smiles")):
+        return "chemical/x-daylight-smiles"
     if low.endswith(".xyz"):
         return "chemical/x-xyz"
-    if low.endswith((".fasta", ".fa", ".nwk", ".treefile", ".log")):
+    # M-62: R and Julia sources are text; they were stored as octet-stream.
+    if low.endswith(
+        (".fasta", ".fa", ".nwk", ".treefile", ".log", ".r", ".rmd", ".jl")
+    ):
         return "text/plain; charset=utf-8"
     ctype, encoding = mimetypes.guess_type(name)
     if encoding:
@@ -2136,6 +2167,9 @@ class SessionState:
         # What this turn's budgets left out of the context, by kind. Read by
         # the Context projection; rebuilt with the system prompt each turn.
         self.context_omissions: dict[str, list[dict]] = {}
+        # The saved memories the current system prompt carries (M-81),
+        # recorded when it is built; each turn stamps them on its user row.
+        self.memories_applied: list[dict] = []
         self.cell_index = 0
         self.booted = False
         self.turn_lock = threading.Lock()
@@ -2616,6 +2650,12 @@ card. Only for a genuinely long campaign (≳4 distinct stages) may you drop a \
 `host.todo_write` progress tracker — AFTER the work is visibly underway — and \
 keep its statuses current as you go.
 
+THE USER'S OWN CODE. When the user gives you a ```python or ```r cell and asks you \
+to run it, your next reply runs exactly that code, unchanged, as its only action — \
+no search, no file read, no rewrite first, and no refusal because its output is not \
+a deliverable (they may be testing the workbench). If it cannot run here (a missing \
+package, a command the sandbox blocks), say why instead of doing something else.
+
 Recommended workflow for a real analysis task (mirror this — it is what the user \
 expects to SEE happen, each as its own card):
 1. SEARCH — MANDATORY whenever the task touches external facts, datasets, accession \
@@ -2796,8 +2836,8 @@ or the DB API). If a fetch genuinely fails, report the failure and proceed with 
 DID retrieve — never GENERATE a synthetic dataset to stand in for real data.
 - Genuinely-real CPU tools are NOT fabrication — run them for real: MAFFT / IQ-TREE / \
 trimAl / FastTree (`host.env.use("phylo")`), and scanpy/Leiden/UMAP/DE on REAL fetched data.
-- `host` is already injected as a global — call `host.fold(...)` etc. directly; NEVER \
-write `import host` (there is no such module). `host.submit_output(...)` takes \
+- `host` is already injected as a global — call `host.fold(...)` etc. directly; no \
+import is needed (`import host` returns the same object). `host.submit_output(...)` takes \
 `completion_bullets` as a list of 1–4 short strings.
 - Deliverables: generate the FULL set of figures (publication-quality matplotlib PNGs), \
 CSV/JSON tables, a Markdown or HTML report, and any structure/sequence files the task \
@@ -2981,6 +3021,9 @@ class SessionRunner:
                     job_id, root_frame_id
                 ),
                 busy_error=lambda code, message: GatewayError(code, message),
+                refusal_error=lambda code, message, error_code: GatewayError(
+                    code, message, error_code
+                ),
                 run_reviewer=lambda *args, **kwargs: self._run_reviewer(
                     *args, **kwargs
                 ),
@@ -3139,6 +3182,7 @@ class SessionRunner:
             llm_config_for=lambda state: self._llm_cfg(state),
             pending_for=self._pending_permissions,
             context_window_fallback=self.cfg.context_window_tokens,
+            compaction_trigger_ratio=self.cfg.compaction_trigger_ratio,
             tool_schemas_for=lambda state: (
                 state.dispatcher.tool_catalog().specs_for(state.messages)
                 if state is not None and state.dispatcher is not None
@@ -5207,7 +5251,9 @@ class SessionRunner:
             result = self.artifacts.restore(artifact_id, version_id)
         if result.get("ok") and result.get("artifact"):
             result = dict(result)
-            result["artifact"] = _artifact_json(result["artifact"])
+            result["artifact"] = _artifact_json(
+                result["artifact"], self.store.artifact_role_marks([artifact_id])
+            )
         return result
 
     def mutate_session_domain(
@@ -5552,6 +5598,40 @@ class SessionRunner:
                 "dimensions": dimensions,
                 "recovery": recovery_result,
             }
+
+    def delete_session_branch(
+        self,
+        root_frame_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> dict[str, Any]:
+        """M-73: delete a branch that is neither the active one nor the main line.
+
+        Refused rather than queued while anything runs in the Session. The
+        domain check runs first, read-only, and again under the lifecycle
+        ticket, where no activation can make the branch the active one.
+        """
+
+        try:
+            self.session_domain.check_branch_delete(root_frame_id, branch_id=branch_id)
+            if self._execution_active(root_frame_id):
+                raise GatewayError(
+                    409,
+                    "a turn or Cell is running in this session; delete the "
+                    "branch when it has finished",
+                    "session_busy",
+                )
+            return self.mutate_session_domain(
+                root_frame_id,
+                project_id,
+                operation="delete_branch",
+                mutate=lambda: self.session_domain.delete_branch(
+                    root_frame_id, branch_id=branch_id
+                ),
+            )
+        except BranchDeletionRefused as error:
+            status = 404 if error.code == "branch_not_found" else 409
+            raise GatewayError(status, str(error), error.code) from error
 
     def execute_recovery_action(
         self,
@@ -6230,6 +6310,7 @@ class SessionRunner:
         if sctx:
             ctx += "\n\n" + sctx
         # long-term memory: inject saved memory blocks when the feature is on
+        st.memories_applied = []
         try:
             if self.store.get_setting("memory_enabled", "0") == "1":
                 # This session's project plus the global tier it inherits, and
@@ -6245,10 +6326,14 @@ class SessionRunner:
                     # background before the user has said anything, on every
                     # turn. A count cannot bound this because length is what
                     # varies.
-                    kept, dropped = memory_budget.select(mems)
+                    kept_rows, kept, dropped = memory_budget.select_with_rows(mems)
                     block = memory_budget.render(kept, dropped)
                     if block:
                         ctx += "\n\n" + block
+                    # Which ones, as the prompt was built (M-81): the turn's
+                    # "N memories applied" mark reads this record, not the
+                    # memories as they are by the time someone looks.
+                    st.memories_applied = memory_budget.applied(kept_rows)
                     # The Context panel reports this. A budget the user cannot
                     # see is one they discover by noticing the agent has
                     # forgotten something, which is the worst way to learn it.
@@ -6339,6 +6424,14 @@ class SessionRunner:
                 python_env_name=st.env_name or envmod.default_env_name(),
                 r_env_name=getattr(st, "r_env_name", None),
             )
+        except Exception:  # noqa: BLE001
+            pass
+        # CHAT-9: the local GPU and the key packages, as Settings → Compute
+        # sees them, so a self-introduction does not promise what is absent.
+        try:
+            from openai4s.prompts import local_capability_note
+
+            ctx += "\n\n" + local_capability_note(st.env_name)
         except Exception:  # noqa: BLE001
             pass
         # The Action Ledger, rather than UI prose/execution-log projections,
@@ -6563,7 +6656,7 @@ class SessionRunner:
         #
         # The dispatcher is built once per session from the BOOT config, whose
         # `llm.api_key` is empty on the documented install because the key is
-        # entered in Customize → Models and lives in settings. Everything the
+        # entered in Settings → Models and lives in settings. Everything the
         # dispatcher owns that reaches a provider was therefore dead there:
         # `host.llm` raised MissingCredentialError, and the injection screener's
         # nuanced pass returned "not injected" without ever calling a model, so
@@ -8330,15 +8423,30 @@ class SessionRunner:
     def running_frames(self) -> set:
         """Set of root_frame_ids with a live turn — compute ONCE for list views
         instead of re-scanning _jobs per row."""
-        return {
-            j.root_frame_id for j in list(self._jobs.values()) if not j.done.is_set()
-        }
+        held: dict[str, frozenset[str]] = {}
+        running: set[str] = set()
+        for j in list(self._jobs.values()):
+            if j.done.is_set():
+                continue
+            # Not a turn held after a failed one (M-31): it waits for the user.
+            if j.root_frame_id not in held:
+                held[j.root_frame_id] = self.executions.held_ids(j.root_frame_id)
+            if j.execution_id not in held[j.root_frame_id]:
+                running.add(j.root_frame_id)
+        return running
 
     def is_running(self, root_frame_id: str) -> bool:
         """True while an agent turn is executing for this frame (survives client
         disconnect — the MessageJob runs in a daemon thread)."""
+        # A turn held after a failed one waits for the user, not for the
+        # session: nothing runs until they say so (M-31).
+        held = self.executions.held_ids(root_frame_id)
         for job in list(self._jobs.values()):
-            if job.root_frame_id == root_frame_id and not job.done.is_set():
+            if (
+                job.root_frame_id == root_frame_id
+                and not job.done.is_set()
+                and job.execution_id not in held
+            ):
                 return True
         return False
 
@@ -8410,6 +8518,38 @@ class SessionRunner:
                 str(quarantine.get("reason") or "untrusted_session_package")
                 if quarantine
                 else None
+            ),
+            # SCI-35: the fields above are the Python slot's. A session that
+            # only ever ran R cells read as "not started" while its R kernel
+            # was live, so the R slot reports its own state beside them.
+            "r": self._r_slot_status(st, root_frame_id),
+        }
+
+    def _r_slot_status(self, st: SessionState | None, root_frame_id: str) -> dict:
+        """The R slot's {state, alive, generation_id}, computed as the Python
+        slot's is in `kernel_status`: the live supervisor while the session is
+        resident, else its newest persisted R generation."""
+        supervisor_status = st.kernels.status("r") if st else None
+        persisted = (
+            None
+            if supervisor_status is not None
+            else self.store.latest_kernel_generation(
+                root_frame_id,
+                "r",
+                branch_id=self.store.active_session_branch(root_frame_id),
+            )
+        )
+        if supervisor_status is None:
+            state = "ended" if persisted is not None else "none"
+        else:
+            state = supervisor_status["state"]
+        return {
+            "state": state,  # none | running | stopped | ended
+            "alive": bool(supervisor_status and supervisor_status["alive"]),
+            "generation_id": (
+                supervisor_status.get("generation_id")
+                if supervisor_status
+                else (persisted or {}).get("generation_id")
             ),
         }
 
@@ -8786,7 +8926,11 @@ class SessionRunner:
             }
         st = self._state(root_frame_id, project_id)
         dispatcher = self._ensure_runtime(st)
-        dispatcher.active_r_env = env.name
+        # SCI-20: `env=None` goes back to the default resolution; once a local
+        # R was picked there was no way back. The next R cell respawns.
+        dispatcher.active_r_env = env.name if env is not None else None
+        if env is None:
+            st.r_env_name = None
         status = st.kernels.status("r")
         self.hub.emitter(root_frame_id)(
             {
@@ -8794,13 +8938,13 @@ class SessionRunner:
                 "frame_id": root_frame_id,
                 "status": "env_changed",
                 "language": "r",
-                "env": {"name": env.name, "language": "r"},
+                "env": {"name": env.name if env is not None else None, "language": "r"},
             }
         )
         return {
             "ok": True,
             "state": status["state"],
-            "env": env.name,
+            "env": env.name if env is not None else None,
             "generation": status["generation"],
             "generation_id": status.get("generation_id"),
             "language": "r",
@@ -8901,6 +9045,7 @@ class SessionRunner:
         task_mode: str | None = None,
         on_admitted: Callable[[MessageJob], None] | None = None,
         mentions: list[dict] | None = None,
+        attachments: list[dict] | None = None,
     ) -> MessageJob:
         """Start a user turn in a background thread.
 
@@ -8969,6 +9114,11 @@ class SessionRunner:
             metadata={
                 # Display text: a text-form `@name#v-<id>` previews as `@name`.
                 "preview": queue_preview(artifact_refs.display_text(text)),
+                # The sender's `X-Request-Id` (its `user_message` carries it
+                # too): the sending tab knows its own bubble by it before the
+                # 202 has named the execution, so the bubble every tab draws
+                # for a queued item is not drawn there a second time.
+                "request_id": job.request_id,
                 "model_profile_id": job.model_profile_id,
                 "model_profile_revision": job.model_profile_revision,
             },
@@ -9058,6 +9208,7 @@ class SessionRunner:
                             # Only when there are any: a turn without pins
                             # calls `run_message` exactly as it always has.
                             **({"mentions": mentions} if mentions else {}),
+                            **({"attachments": attachments} if attachments else {}),
                         )
                         result.setdefault("job_id", job.job_id)
                         result.setdefault("execution_id", ticket.execution_id)
@@ -9620,11 +9771,11 @@ class SessionRunner:
             ),
         ):
             return self._invoke_writing_control_with_artifacts_bound(
-                st, emit, invoke, tool_name=str(name)
+                st, emit, invoke, tool_name=str(name), call=call
             )
 
     def _invoke_writing_control_with_artifacts_bound(
-        self, st, emit, invoke, *, tool_name: str
+        self, st, emit, invoke, *, tool_name: str, call: Any = None
     ):
         """Run one declared writing action inside its capture lease."""
 
@@ -9745,6 +9896,10 @@ class SessionRunner:
             try:
                 if not captured_holder:
                     capture_written_files()
+                if tool_name == DOWNLOAD_TOOL and captured_holder:
+                    # SCI-10: the URL, size, digest and approval behind a
+                    # downloaded file, for its Provenance view.
+                    self._record_download_provenance(st, call, captured_holder[-1])
             except Exception as capture_error:  # noqa: BLE001
                 if self.stage1_trusted_delivery:
                     # The tool already ran.  Returning its success would make
@@ -9760,6 +9915,24 @@ class SessionRunner:
             return result
         finally:
             self.recovery.touch(st)
+
+    def _record_download_provenance(self, st, call, captured) -> None:
+        """Best effort: a missing record must never fail the download."""
+
+        try:
+            read = call.get if isinstance(call, dict) else None
+            record_download_sources(
+                self.store,
+                root_frame_id=st.root_frame_id,
+                call_id=str((read("id") if read else getattr(call, "id", None)) or ""),
+                arguments=(
+                    read("arguments") if read else getattr(call, "arguments", None)
+                ),
+                artifacts=captured.artifacts,
+                now=self._clock,
+            )
+        except Exception as error:  # noqa: BLE001
+            record_diagnostic(error, surface="artifacts:download_provenance")
 
     @staticmethod
     def _remote_provenance_drain(st):
@@ -9800,7 +9973,7 @@ class SessionRunner:
     def _llm_cfg(
         self, st: "SessionState | None" = None, *, apply_user_key: bool = True
     ):
-        """Effective LLM config = base cfg + runtime overrides (Customize→Models)
+        """Effective LLM config = base cfg + runtime overrides (Settings→Models)
         + the session's chosen model. Makes the model selector real.
 
         Reads the 4 settings once (callers should resolve this once per turn, not
@@ -10101,9 +10274,20 @@ class SessionRunner:
         if failure_code in {"llm_stream_timeout", "llm_stream_interrupted"}:
             cause = (
                 (
-                    "上游长时间未发送数据，流式响应已超时"
-                    if zh
-                    else "The upstream stream timed out while waiting for more data"
+                    # M-30: a silent stream is asked again once. Only the
+                    # second silence is raised non-retryable after a retry.
+                    (
+                        "上游长时间未发送数据，自动重试一次后仍然超时"
+                        if zh
+                        else "The upstream stream sent no data, and one automatic retry timed out as well"
+                    )
+                    if retry_outcome == "retried"
+                    and not getattr(exc, "retryable", False)
+                    else (
+                        "上游长时间未发送数据，流式响应已超时"
+                        if zh
+                        else "The upstream stream timed out while waiting for more data"
+                    )
                 )
                 if failure_code == "llm_stream_timeout"
                 else (
@@ -10265,11 +10449,11 @@ class SessionRunner:
             )
         if isinstance(exc, LLMError):
             return (
-                "**LLM 调用失败。** 请在 Customize → Models 确认模型与 API Key "
+                "**LLM 调用失败。** 请在 Settings → Models 确认模型与 API Key "
                 "配置后重试。"
                 if zh
                 else "**The LLM call failed.** Check the model and API key in "
-                "Customize → Models, then try again."
+                "Settings → Models, then try again."
             )
         return ("**这一轮出错了。** " if zh else "**This turn failed.** ") + str(
             (safe or {}).get("error") or INTERNAL_ERROR_MESSAGE
@@ -10636,7 +10820,7 @@ class SessionRunner:
                     409,
                     f"no model profile is active and more than one matches "
                     f"{recorded!r}; activate the one this session continues under "
-                    "in Customize -> Models, then send again",
+                    "in Settings -> Models, then send again",
                     "model_profile_needs_active",
                 )
             if len(matches) == 1 and not self._profile_credential(matches[0]).usable:
@@ -10645,7 +10829,7 @@ class SessionRunner:
                     409,
                     f"no model profile is active and {name!r}, which this "
                     "session's recorded model matches, has no usable API key; "
-                    "activate a profile in Customize -> Models (or add that "
+                    "activate a profile in Settings -> Models (or add that "
                     "profile's key), then send again",
                     "model_profile_needs_active",
                 )
@@ -10740,7 +10924,7 @@ class SessionRunner:
             raise GatewayError(
                 409,
                 f"no model profile is active and more than one matches {live!r}; "
-                "activate the one this session continues under in Customize -> "
+                "activate the one this session continues under in Settings -> "
                 "Models, or choose that profile",
                 "model_profile_needs_active",
             )
@@ -10835,7 +11019,7 @@ class SessionRunner:
         else:
             message = (
                 "this session is pinned to a model profile whose credential is "
-                "not available; add its API key in Customize -> Models or rebind "
+                "not available; add its API key in Settings -> Models or rebind "
                 "the session to continue"
             )
         return GatewayError(409, message, "model_revision_unavailable")
@@ -10875,7 +11059,7 @@ class SessionRunner:
         if credential.source == "revoked":
             message = (
                 f"the API key stored for model profile {name!r} can no longer be "
-                "read; enter it again in Customize -> Models"
+                "read; enter it again in Settings -> Models"
             )
         else:
             variable = (
@@ -10891,19 +11075,19 @@ class SessionRunner:
             elif chosen:
                 message = (
                     f"model profile {name!r} has no API key: add one in "
-                    f"Customize -> Models, set {variable} for the daemon, or "
+                    f"Settings -> Models, set {variable} for the daemon, or "
                     "choose another model"
                 )
             elif follows_active:
                 message = (
-                    f"model profile {name!r} has no API key: add one in Customize "
+                    f"model profile {name!r} has no API key: add one in Settings "
                     f"-> Models, set {variable} for the daemon, or activate "
                     "another profile"
                 )
             else:
                 message = (
                     f"model profile {name!r}, which this session's recorded "
-                    "model matches, has no API key: add one in Customize -> "
+                    "model matches, has no API key: add one in Settings -> "
                     f"Models or set {variable} for the daemon"
                 )
         raise GatewayError(409, message, "model_profile_needs_key")
@@ -11118,6 +11302,7 @@ class SessionRunner:
         frozen_binding: tuple[str, int] | None = None,
         task_mode: str | None = None,
         mentions: list[dict] | None = None,
+        attachments: list[dict] | None = None,
     ) -> dict:
         st = self._state(root_frame_id, project_id)
         if frozen_binding:
@@ -11229,18 +11414,27 @@ class SessionRunner:
             if not (frame.get("name") or frame.get("task_summary")):
                 title_placeholder = re.sub(r"\s+", " ", title_text).strip()[:80]
                 self.store.update_frame(root_frame_id, task_summary=title_placeholder)
+            # Written with the row, so neither can outlive it: the files it was
+            # sent with (M-10) and the saved memories this turn's system prompt
+            # carries, as it was built (M-81).
+            user_metadata: dict[str, Any] = {}
+            if attachments:
+                user_metadata["attachments"] = attachments
+            if st.memories_applied:
+                user_metadata["memories"] = list(st.memories_applied)
             stored_user_message = self.store.add_message(
                 root_frame_id=root_frame_id,
                 branch_id=st.branch_id,
                 role="user",
                 content=user_text,
                 frame_id=root_frame_id,
+                metadata=user_metadata or None,
             )
             # This is the exact branch point for an alternative answer: the
             # user message is durable, while no later model action or Cell has
             # touched the workspace yet. Snapshot failure is separately audited
             # and never changes the successful message write above.
-            self._capture_cursor_checkpoint_best_effort(
+            branch_point = self._capture_cursor_checkpoint_best_effort(
                 root_frame_id,
                 source_kind="message",
                 source_id=stored_user_message["message_id"],
@@ -11324,6 +11518,20 @@ class SessionRunner:
                             )
                         }
                         if annos
+                        else {}
+                    ),
+                    **({"attachments": attachments} if attachments else {}),
+                    **(
+                        {"memories": user_metadata["memories"]}
+                        if user_metadata.get("memories")
+                        else {}
+                    ),
+                    # SYNC-5: the branch point a reload shows as "Branch from
+                    # this question"; the live bubble offers it as well.
+                    **(
+                        {"fork_checkpoint_id": branch_point["checkpoint_id"]}
+                        if isinstance(branch_point, Mapping)
+                        and isinstance(branch_point.get("checkpoint_id"), str)
                         else {}
                     ),
                 }
@@ -11413,6 +11621,17 @@ class SessionRunner:
                 for a in self.store.list_artifacts({"root_frame_id": root_frame_id})
                 if (a.get("artifact_id") or a.get("id"))
             }
+            # M-59: after turns that failed or were stopped, the summary that
+            # finally completes the task also lists what those turns produced.
+            unfinished_since = unfinished_turns_since(
+                self.store.list_messages(
+                    root_frame_id,
+                    branch_id=st.branch_id,
+                    before_seq=stored_user_message.get("seq"),
+                    newest_first=True,
+                    limit=400,
+                )
+            )
             capture_observation_cursor = (
                 self.store.artifact_capture_observation_cursor(
                     root_frame_id=root_frame_id,
@@ -11660,13 +11879,29 @@ class SessionRunner:
                 current_artifacts = self.store.list_artifacts(
                     {"root_frame_id": root_frame_id}
                 )
+                # M-59: every file those unfinished turns wrote -- created, or
+                # an older file only rewritten -- has a version since then.
+                versioned_since = (
+                    self.store.artifact_ids_versioned_since(
+                        root_frame_id, unfinished_since
+                    )
+                    if unfinished_since is not None
+                    else set()
+                )
                 produced_artifacts = [
                     artifact
                     for artifact in current_artifacts
-                    if artifact_versions_before.get(
-                        artifact.get("artifact_id") or artifact.get("id")
+                    if (
+                        artifact_versions_before.get(
+                            artifact.get("artifact_id") or artifact.get("id")
+                        )
+                        != artifact.get("latest_version_id")
+                        or (
+                            not artifact.get("is_user_upload")
+                            and str(artifact.get("artifact_id") or "")
+                            in versioned_since
+                        )
                     )
-                    != artifact.get("latest_version_id")
                     # Hidden rows (internal context spills, files the user
                     # hid) are not this turn's deliverables.
                     and int(artifact.get("priority") or 0) >= 0
@@ -11696,17 +11931,39 @@ class SessionRunner:
                         produced_artifacts.append(
                             {**candidate, "version_id": version_id}
                         )
+                # NB-6: a file the turn wrote and then deleted is not one of
+                # its deliverables.
+                from openai4s.server.completions import without_removed_files
+
+                produced_artifacts = without_removed_files(
+                    produced_artifacts,
+                    st.workspace,
+                    lambda vid: (self.store.version_meta(vid) or {}).get("path"),
+                )
                 prior_text = "\n\n".join(
                     str(block.get("text") or "") for block in assistant_visible
                 ).strip()
+                cell_output = getattr(st.dispatcher, "last_output", None)
+                # CHAT-1: a cell's `host.submit_output` IS `last_output`; a
+                # `finalize_response` record is built by the engine instead.
+                # Only the latter's reply prose is the answer itself -- the
+                # prose before a submitting cell is narration of that cell.
+                finalized = (
+                    st.last_engine_completion is not None
+                    and st.last_engine_completion is not cell_output
+                )
                 final_text = completion_message(
-                    st.last_engine_completion
-                    or getattr(st.dispatcher, "last_output", None),
+                    st.last_engine_completion or cell_output,
                     produced_artifacts,
                     previous_text=prior_text,
                     language=response_language(user_text),
                     require_fallback=not bool(st.last_model_prose.strip()),
                     trusted_delivery=self.stage1_trusted_delivery,
+                    role_marks=self.store.artifact_role_marks(
+                        str(a.get("artifact_id") or a.get("id") or "")
+                        for a in produced_artifacts
+                    ),
+                    answered_in_reply=finalized and bool(st.last_model_prose.strip()),
                 )
                 if final_text:
                     delivered_at = int(time.time() * 1000)
@@ -12804,6 +13061,10 @@ class SessionRunner:
             # runs on the detached provider thread, where the live one may
             # already be the next turn's.
             context = kwargs.pop("call_context", None) or {}
+            # M-36: a retried send shows in the turn instead of a silent wait.
+            announce_llm_retries(
+                kwargs.get("should_cancel"), emit, rid, events.language
+            )
             return self._invoke_model_with_auto_budget(
                 st,
                 messages,
@@ -13131,7 +13392,7 @@ class SessionRunner:
         # The session's RESOLVED config, not the boot one. Both screeners read
         # `cfg.llm.api_key` and return "unconfigured; failed open" when it is
         # empty -- and on the documented Web install it is always empty, because
-        # the key is configured through Customize → Models and lives in
+        # the key is configured through Settings → Models and lives in
         # settings, which is the reason `_llm_cfg` exists at all. So the port
         # widened, the call was wired, and the screener still never ran here:
         # every biosecurity-relevant cell got ALLOW with `screened=False` from a
@@ -13231,7 +13492,7 @@ class SessionRunner:
     def _record_cell_with_cursor_checkpoint(self, **record: Any) -> str:
         cell_id = self.store.log_cell(**record)
         root_frame_id = record.get("root_frame_id")
-        if root_frame_id and record.get("origin") in {"agent", "user"}:
+        if root_frame_id and record.get("origin") in {"agent", "user", "example"}:
             # Team-mode metering (M2-5): the kernel's getrusage delta for a
             # live cell, attributed to the session owner. Origin-filtered
             # here, so a session-package import replay is never billed. With
@@ -13413,7 +13674,9 @@ class SessionRunner:
                 input=step_input,
                 status="done",
             )
-            self.store.update_step(sid, output=step_output)
+            # SYNC-14: the summary the live card shows ("2 artifacts") is
+            # stored too, or a reload drew the same card without it.
+            self.store.update_step(sid, output=step_output, summary=summary)
         except Exception:  # noqa: BLE001 — telemetry must never break a turn
             pass
         # Emit begin+end back-to-back: the step is already complete, but sending
@@ -14055,8 +14318,18 @@ class SessionRunner:
         code: str,
         language: str = "python",
         execution_id: str | None = None,
+        origin: str = "user",
     ) -> dict:
-        """Execute code directly in the session kernel (notebook REPL, no LLM)."""
+        """Execute code directly in the session kernel (notebook REPL, no LLM).
+
+        ``origin="example"`` is the example session's seed (SCI-03): the same
+        direct execution, never screened as an agent cell, but its cards and
+        steps reach the conversation, and the seed ends the session's one
+        turn itself, so no per-cell terminal event is sent.
+        """
+        if origin not in {"user", "example"}:
+            raise ValueError("origin must be 'user' or 'example'")
+        example = origin == "example"
         st = self._state(root_frame_id, project_id)
         emit = self.hub.emitter(root_frame_id)
         execution_id = str(execution_id or f"repl-{uuid.uuid4().hex}")
@@ -14088,8 +14361,8 @@ class SessionRunner:
             info = self._execute_and_log(
                 st,
                 code,
-                "user",
-                emit_notebook,
+                origin,
+                emit if example else emit_notebook,
                 stream=True,
                 language=language,
             )
@@ -14115,7 +14388,10 @@ class SessionRunner:
             # An interrupted cell is not a success, whether the stop came
             # through the coordinator or as a kernel interrupt; the Notebook
             # already said "interrupted" for the same cell.
-            if execution.cancellation.is_set() or r.get("interrupted"):
+            # (An example cell sends none: the seed ends its one turn.)
+            if example:
+                pass
+            elif execution.cancellation.is_set() or r.get("interrupted"):
                 emit(
                     {
                         "type": "frame_update",
@@ -14245,9 +14521,9 @@ class SessionRunner:
 
 
 # --------------------------------------------------------------------------- #
-#  Customize-panel payloads (agents / compute / environment / network / memory)
+#  Settings-panel payloads (agents / compute / environment / network / memory)
 # --------------------------------------------------------------------------- #
-# Built-in agent roster surfaced in Customize → Agents. Derived from
+# Built-in agent roster surfaced in Settings → Agents. Derived from
 # openai4s/specialists.py — the single source of truth that also supplies the
 # runtime personas and execution policies — so the catalog can never again
 # advertise a specialist the delegation resolver does not know. The payload
@@ -14324,7 +14600,7 @@ _CONNECTOR_DIRECTORY = [
 ]
 
 
-# Network egress groups shown in Customize → Network (the domains agent tools may
+# Network egress groups shown in Settings → Network (the domains agent tools may
 # reach). This is the SAME canonical allowlist that openai4s.egress ENFORCES
 # when OPENAI4S_EGRESS=allowlist — one source of truth for both
 # the display here and the fence in webtools/host.bash. The on/off master switch
@@ -14876,10 +15152,45 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             project_id=project_id,
         )
 
+    def _current_model_plan_key() -> str:
+        """M-6: the key the live model runs on, when DataPro/Doubao may share it.
+
+        An Ark model whose key came only from the environment ran fine while
+        both managed products asked for the same key to be typed again. Only an
+        `ark` model dispatched to Volcengine itself qualifies -- the same
+        account boundary `datapro.ark_key_for_datapro` keeps -- and the key is
+        never returned to the browser: the routes save it and answer the usual
+        redacted configuration.
+        """
+        try:
+            live = runner._llm_cfg(None, apply_user_key=False)
+        except Exception:  # noqa: BLE001 - an unresolvable config shares nothing
+            return ""
+        if str(getattr(live, "provider", "") or "").strip().lower() != "ark":
+            return ""
+        if not datapro.is_volcengine_endpoint(str(getattr(live, "base_url", "") or "")):
+            return ""
+        key = str(getattr(live, "api_key", "") or "").strip()
+        return key if datapro._has_valid_agent_plan_key(key) else ""
+
+    def _agent_plan_key_from_body(body: Mapping[str, Any]) -> Any:
+        """`{"use_model_key": true}` saves the live model's key (M-6)."""
+        if body.get("use_model_key") is not True:
+            return body.get("agent_plan_key")
+        key = _current_model_plan_key()
+        if not key:
+            raise GatewayError(
+                400,
+                "the model in use is not a Volcengine Ark model with a key to share",
+                "model_key_unavailable",
+            )
+        return key
+
     def _datapro_config_payload() -> dict[str, Any]:
         connector = store.get_connector(datapro.CONNECTOR_ID)
         return {
             **datapro.credential_state(store),
+            "model_key_available": bool(_current_model_plan_key()),
             "connector_id": datapro.CONNECTOR_ID,
             "connector_enabled": bool(connector and connector.get("enabled")),
             "skill_name": datapro.SKILL_NAME,
@@ -14894,13 +15205,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         service = DoubaoSearchService(store)
         return {
             **datapro.credential_state(store),
+            "model_key_available": bool(_current_model_plan_key()),
             "key_configured": service.configured(),
             "provider": "doubao-search",
             "primary": True,
         }
 
-    def _volcengine_connection_payload(*, force: bool = False) -> dict[str, Any]:
-        """Add OpenAI4S profile state to the Ark CLI's public projection."""
+    def _volcengine_connection_payload(
+        *, force: bool = False, hide_endpoint: bool = False
+    ) -> dict[str, Any]:
+        """Add OpenAI4S profile state to the Ark CLI's public projection.
+
+        ``hide_endpoint`` blanks the linked profile's ``base_url`` for a team
+        member, as every other route that projects a profile does (owner
+        decision 25, `team_policy.hides_instance_endpoint`).
+        """
 
         payload = (
             volcengine_connector.refresh()
@@ -14935,7 +15254,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             "configured": configured,
             "configured_plan_key": configured_plan_key,
             "model_profile": (
-                model_profiles.public_profile(profile) if linked and profile else None
+                model_profiles.public_profile(profile, hide_endpoint=hide_endpoint)
+                if linked and profile
+                else None
             ),
         }
 
@@ -15160,6 +15481,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     from openai4s.server.team_auth import SERVICE_IDENTITY as _TEAM_SERVICE_IDENTITY
     from openai4s.server.team_auth import TEAM_COOKIE as _TEAM_COOKIE
     from openai4s.server.team_auth import TeamAuthService as _TeamAuthService
+    from openai4s.server.team_auth import guest_landing as _team_guest_landing
+    from openai4s.server.team_auth import login_location as _team_login_location
 
     # A TLS proxy terminates encryption before this loopback HTTP server, so
     # transport state here cannot prove whether the browser used HTTPS.  The
@@ -15597,7 +15920,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
             403 rather than the frame guard's 404: these are management
             surfaces whose existence is not a secret, and the UI already
-            reads `admin_only` to decide which Customize panes to show.
+            reads `admin_only` to decide which Settings panes to show.
             """
             path = sub.split("?")[0]
             if not team_policy.is_admin_only_surface(method, path):
@@ -15803,10 +16126,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self.close_connection = True
             if method == "GET" and _wants_html(self.headers):
                 # A person in a browser: send them to the login page rather
-                # than a JSON refusal they cannot act on.
+                # than a JSON refusal they cannot act on -- carrying the page
+                # they asked for, so a colleague's session link still lands
+                # on that session after the login (TEAM-9).
                 self._last_status = 303
                 self.send_response(303)
-                self.send_header("Location", "/login")
+                self.send_header("Location", _team_login_location(self.path))
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return False
@@ -16394,15 +16719,34 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- static -----------------------------------------------------
         def _serve_index(self) -> None:
+            _identity = getattr(self, "_team_identity", None)
+            if (
+                _team_auth is not None
+                and _identity is not None
+                and _identity.kind == "user"
+                and _identity.role == "guest"
+            ):
+                # A replay-only guest has no workbench: loading it only made
+                # its API reads 403 until the client sent them on (TEAM-28).
+                self._last_status = 303
+                self.send_response(303)
+                self.send_header(
+                    "Location", _team_guest_landing(urlparse(self.path).path)
+                )
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             index = (
                 WEBUI_DIR / "index.html"
                 if _webui_legacy_enabled()
                 else WEBUI_DIR / "dist" / "index.html"
             )
+            # The workbench document is the one page that may use the
+            # microphone (voice input); everything else keeps the denial.
             self._serve_ui_file(
                 index,
                 "text/html; charset=utf-8",
-                security=_default_security(),
+                security=workbench_security_headers(frame_src=_app_origins()),
             )
 
         def _serve_static(self, path: str) -> bool:
@@ -17144,7 +17488,32 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if method in ("PUT", "POST", "PATCH"):
                     body = self._body()
-                    self._json(runner.set_sharing_enabled(bool(body.get("enabled"))))
+                    enabled = bool(body.get("enabled"))
+                    if enabled and not cfg.share.configured:
+                        # Persisted, "on" made the next relay configuration
+                        # connect by itself with no Enable step, after an
+                        # answer that read as a failure. Refused, nothing kept.
+                        missing = [
+                            name
+                            for name, value in (
+                                ("OPENAI4S_SHARE_RELAY_URL", cfg.share.relay_url),
+                                ("OPENAI4S_SHARE_AUTH_TOKEN", cfg.share.auth_token),
+                            )
+                            if not value
+                        ]
+                        self._json(
+                            {
+                                "error": "sharing is not configured: set "
+                                + " and ".join(missing)
+                                + ", restart OpenAI4S, then enable sharing "
+                                "(docs/webshare.md)",
+                                "code": "sharing_unconfigured",
+                                "missing": missing,
+                            },
+                            409,
+                        )
+                        return
+                    self._json(runner.set_sharing_enabled(enabled))
                     return
             if sub == "/share/status" and method == "GET":
                 self._json(runner.share_status())
@@ -17173,15 +17542,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             share_create = re.fullmatch(r"/frames/([^/]+)/shares", sub)
             if share_create and method == "POST":
+                if not cfg.share.configured:
+                    # First: "enable it" is no advice while enabling is
+                    # refused for the same reason (no relay).
+                    raise GatewayError(
+                        409,
+                        "sharing is not configured: set OPENAI4S_SHARE_RELAY_URL "
+                        "and OPENAI4S_SHARE_AUTH_TOKEN, restart OpenAI4S, then "
+                        "enable sharing (docs/webshare.md)",
+                        "sharing_unconfigured",
+                    )
                 if not runner._share_enabled():
                     raise GatewayError(
                         403,
                         "sharing is disabled; enable it in the Share dialog "
                         "(session menu → Share) or with `openai4s share enable`",
-                    )
-                if not cfg.share.configured:
-                    raise GatewayError(
-                        409, "sharing is not configured (relay URL and token required)"
                     )
                 runner.ensure_share_tunnel()
                 body = self._body()
@@ -17304,7 +17679,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     }
                 )
                 return
-            # ---- editable LLM config (Customize → Models) ----
+            # ---- editable LLM config (Settings → Models) ----
             if sub == "/config/llm":
                 if method == "GET":
                     self._json(
@@ -17313,8 +17688,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             or cfg.llm.provider,
                             "model": store.get_setting("llm_model")
                             or _default_model["id"],
-                            "base_url": store.get_setting("llm_base_url")
-                            or cfg.llm.base_url,
+                            # A team member is told which model, not where
+                            # the admin sends it (owner decision 25).
+                            "base_url": (
+                                ""
+                                if team_policy.hides_instance_endpoint(self)
+                                else store.get_setting("llm_base_url")
+                                or cfg.llm.base_url
+                            ),
                             "has_api_key": bool(runner.effective_api_key()),
                         }
                     )
@@ -17416,7 +17797,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
             # ---- Volcengine account connection through the official Ark CLI ----
             if sub == "/volcengine/connection" and method == "GET":
-                payload = _volcengine_connection_payload()
+                payload = _volcengine_connection_payload(
+                    hide_endpoint=team_policy.hides_instance_endpoint(self)
+                )
                 if self._team_visibility_filter() is not None:
                     # Non-admin team members may see the connector state, but
                     # never the live login envelope: authorize_url carries the
@@ -18125,8 +18508,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m:
                 fid = m.group(1)
                 if method == "GET":
+                    # A 404, like the rename below. `{}` with a 200 read as a
+                    # session that exists and has no fields, so a tab still
+                    # showing a session deleted elsewhere had nothing to tell
+                    # it the session was gone.
                     f = store.get_frame(fid)
-                    self._json(_frame_json(f, store) if f else {})
+                    if f is None:
+                        raise GatewayError(404, "session not found")
+                    self._json(_frame_json(f, store))
                     return
                 if method == "PATCH":
                     # An UPDATE naming no row succeeds, and `_frame_json(None)`
@@ -18259,6 +18648,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 if _message_annotations(mm)
                                 else {}
                             ),
+                            # The uploads it was sent with (M-10), absent when
+                            # there were none.
+                            **(
+                                {"attachments": artifact_refs.message_attachments(mm)}
+                                if artifact_refs.message_attachments(mm)
+                                else {}
+                            ),
+                            # The saved memories that turn's prompt carried
+                            # (M-81), absent when there were none.
+                            **(
+                                {"memories": memory_budget.message_memories(mm)}
+                                if memory_budget.message_memories(mm)
+                                else {}
+                            ),
                             **_message_candidate_identity(mm),
                         }
                         for mm in msgs
@@ -18327,7 +18730,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/steps", sub)
             if m and method == "GET":
-                self._json({"steps": store.list_steps(m.group(1))})
+                # M-73: only the active branch's steps, like its messages.
+                from openai4s.server.session_branching import project_branch_steps
+
+                fid = m.group(1)
+                self._json(
+                    {"steps": project_branch_steps(store, fid, store.list_steps(fid))}
+                )
                 return
             m = re.fullmatch(r"/frames/([^/]+)/review", sub)
             if m and method == "POST":
@@ -18371,7 +18780,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     mentions = artifact_refs.parse_mentions(b.get("mentions"))
                 except ValueError as error:
                     raise GatewayError(400, str(error), "invalid_mentions") from error
-                f = store.get_frame(fid) or {}
+                # The uploads the composer showed as going with this message
+                # (M-10), kept on the user row so its chip survives a reload.
+                try:
+                    attachments = artifact_refs.parse_attachments(b.get("attachments"))
+                except ValueError as error:
+                    raise GatewayError(
+                        400, str(error), "invalid_attachments"
+                    ) from error
+                # A session that does not exist -- deleted in another tab, or
+                # a stale link -- takes no message. `submit_message` builds an
+                # ephemeral state for an unknown id (in-process callers rely on
+                # that), so without this the turn really ran and wrote its
+                # messages and action groups under a root no `frames` row has.
+                f = store.get_frame(fid)
+                if f is None:
+                    raise GatewayError(404, "session not found")
                 pid = f.get("project_id") or "default"
                 # Fold pinned image annotations into the message so the remote
                 # agent receives the exact figure + pin location + comment and
@@ -18420,6 +18844,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     digest = message_receipts.request_digest(
                         request=req,
                         mentions=mentions,
+                        attachments=attachments,
                         model=b.get("model"),
                         plan=bool(b.get("plan")),
                         explore=bool(b.get("explore")),
@@ -18584,6 +19009,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         task_mode=b.get("task_mode"),
                         on_admitted=_persist_correlation,
                         **({"mentions": mentions} if mentions else {}),
+                        **({"attachments": attachments} if attachments else {}),
                     )
                 except BaseException as refusal:
                     # Every synchronous refusal lands here -- the 413 on an
@@ -19012,13 +19438,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(scope_id), "changing Session permissions"
                     )
-                rid = store.set_permission_rule(
-                    scope=scope,
-                    scope_id=scope_id or "",
-                    tool=b.get("tool") or "*",
-                    pattern=b.get("pattern") or "*",
-                    decision=b.get("decision") or "ask",
-                )
+                try:
+                    rid = store.set_permission_rule(
+                        scope=scope,
+                        scope_id=scope_id or "",
+                        tool=b.get("tool") or "*",
+                        pattern=b.get("pattern") or "*",
+                        decision=b.get("decision") or "ask",
+                    )
+                except InstallRuleRefused as exc:
+                    # PERM-1: package installs ask every time (owner decision
+                    # 1), so a standing allow for one is refused -- with its
+                    # reason, not as a 500.
+                    raise GatewayError(400, str(exc), InstallRuleRefused.code) from exc
                 self._json({"ok": True, "rule_id": rid})
                 return
             if sub == "/permissions/reset" and method == "POST":
@@ -19079,7 +19511,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "POST":
                 fid = m.group(1)
                 b = self._body()
-                store.set_feedback(fid, str(b.get("key") or "0"), b.get("rating"))
+                # M-72: a 👎 may say why; kept with the rating, on this computer.
+                reason = b.get("reason")
+                store.set_feedback(
+                    fid,
+                    str(b.get("key") or "0"),
+                    b.get("rating"),
+                    reason.strip()[:2000] if isinstance(reason, str) else None,
+                )
                 self._json({"ok": True})
                 return
             m = re.fullmatch(r"/frames/([^/]+)/feedback", sub)
@@ -19460,10 +19899,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/artifacts", sub)
             if m and method == "GET":
                 fid = m.group(1)
-                arts = store.list_artifacts({"root_frame_id": fid})
-                self._json(
-                    [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
-                )
+                # M-73: activating a branch clears the head of every Artifact
+                # its checkpoint does not hold; such a row is no file of the
+                # active branch, and listing it showed later work as "generated".
+                arts = [
+                    a
+                    for a in store.list_artifacts({"root_frame_id": fid})
+                    if a.get("latest_version_id")
+                ]
+                offered = artifact_index.offered_artifacts(arts)
+                marks = store.artifact_role_marks(a["artifact_id"] for a in offered)
+                self._json([_artifact_json(a, marks) for a in offered])
                 return
             m = re.fullmatch(r"/projects/([^/]+)/artifacts", sub)
             if m and method == "GET":
@@ -19474,9 +19920,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 arts = self._team_filter_artifacts(
                     store.list_artifacts({"project_id": pid})
                 )
-                self._json(
-                    [_artifact_json(a) for a in artifact_index.offered_artifacts(arts)]
-                )
+                offered = artifact_index.offered_artifacts(arts)
+                marks = store.artifact_role_marks(a["artifact_id"] for a in offered)
+                self._json([_artifact_json(a, marks) for a in offered])
                 return
             m = re.fullmatch(r"/frames/([^/]+)/execution-log", sub)
             if m and method == "GET":
@@ -19551,6 +19997,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 self._json(runner.executions.snapshot(m.group(1)))
                 return
+            # After a failed turn the messages queued behind it wait for the
+            # user (M-31); this is their "run them".
+            m = re.fullmatch(r"/frames/([^/]+)/execution-queue/resume", sub)
+            if m and method == "POST":
+                if store.get_frame(m.group(1)) is None:
+                    raise GatewayError(404, "session not found")
+                released = runner.executions.release_held(m.group(1))
+                self._json({"ok": True, "frame_id": m.group(1), "released": released})
+                return
             m = re.fullmatch(r"/frames/([^/]+)/context", sub)
             if m and method == "GET":
                 self._json(runner.workbench.context(m.group(1)))
@@ -19618,6 +20073,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 self._json(result)
                 return
+            # M-73: delete a branch that is neither the active one nor the main
+            # line. `branches/` sits inside the group on purpose: the response
+            # capture files a path under the matching route with the most
+            # literal characters outside groups, and a bare
+            # `/frames/([^/]+)/branches/([^/]+)` would out-rank, and so take
+            # over, `branches/checkpoints`, `branches/revert` and
+            # `branches/revert-preview` (tests/test_session_branch_delete.py).
+            m = re.fullmatch(r"/frames/([^/]+)/(?:branches/([^/]+))", sub)
+            if m and method == "DELETE":
+                frame_id = m.group(1)
+                frame = store.get_frame(frame_id)
+                if frame is None:
+                    raise GatewayError(404, "session not found")
+                self._json(
+                    runner.delete_session_branch(
+                        frame_id,
+                        str(frame.get("project_id") or "default"),
+                        unquote(m.group(2)),
+                    )
+                )
+                return
             m = re.fullmatch(
                 r"/frames/([^/]+)/(?:checkpoints|branches/checkpoints)", sub
             )
@@ -19666,6 +20142,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         400,
                         "provide exactly one fork source",
                     )
+                # VIEW-2b: the branch ends just before the question, which the
+                # client puts back in the composer to be asked again.
+                before_source = body.get("before_source", False)
+                if not isinstance(before_source, bool):
+                    raise GatewayError(400, "before_source must be a boolean")
+                if before_source and not body.get("from_message_id"):
+                    raise GatewayError(
+                        400, "before_source applies only to from_message_id"
+                    )
                 try:
                     result = runner.mutate_session_domain(
                         fid,
@@ -19678,6 +20163,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             from_message_id=body.get("from_message_id"),
                             branch_id=body.get("branch_id"),
                             name=body.get("name"),
+                            before_source=before_source,
                         ),
                     )
                 except CursorCheckpointUnavailable as error:
@@ -20043,8 +20529,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 rec = store.set_priority(
                     m.group(1), int(self._body().get("priority", 0))
                 )
+                marks = store.artifact_role_marks([m.group(1)])
                 self._json(
-                    {"ok": True, "artifact": _artifact_json(rec) if rec else None}
+                    {
+                        "ok": True,
+                        "artifact": _artifact_json(rec, marks) if rec else None,
+                    }
                 )
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/versions", sub)
@@ -20339,6 +20829,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/agents/([^/]+)/enabled", sub)
             if m and method in ("PUT", "PATCH"):
                 name = unquote(m.group(1))
+                if store.get_agent(name, include_disabled=True) is None:
+                    # EXPLORE is SCOUT now (owner decision 31).
+                    name = canonical_specialist_name(name)
                 enabled = bool(self._body().get("enabled", True))
                 # The GET sibling answers 404 for a name no known agent has,
                 # while this route wrote a capability row for ANY name and
@@ -20352,13 +20845,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 ):
                     self._json({"error": "unknown agent"}, 404)
                     return
-                state = store.set_capability_enabled(
-                    "specialist",
-                    name,
-                    enabled,
-                    scope="global",
-                    metadata={"source": "web"},
-                )
+                # Under the former name too: a switch saved as EXPLORE is
+                # read together with SCOUT's (`specialist_state_names`).
+                for state_name in specialist_state_names(name):
+                    state = store.set_capability_enabled(
+                        "specialist",
+                        state_name,
+                        enabled,
+                        scope="global",
+                        metadata={"source": "web"},
+                    )
                 self._json(
                     {
                         "ok": True,
@@ -20371,7 +20867,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/agents/([^/]+)", sub)
             if m and method == "GET":
                 name = unquote(m.group(1))
-                for a in self._agents_payload():
+                agents = self._agents_payload()
+                if not any(a["name"] == name for a in agents):
+                    name = canonical_specialist_name(name)  # EXPLORE → SCOUT
+                for a in agents:
                     if a["name"] == name:
                         self._json(a)
                         return
@@ -20468,7 +20967,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if method == "POST":
                     body = self._body()
                     try:
-                        _save_shared_agent_plan_key(body.get("agent_plan_key"))
+                        _save_shared_agent_plan_key(_agent_plan_key_from_body(body))
                     except ValueError as error:
                         raise GatewayError(400, str(error)) from error
                     self._json({"ok": True, **_doubao_search_config_payload()})
@@ -20598,7 +21097,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if method in ("POST", "PUT", "PATCH"):
                     body = self._body()
-                    key = body.get("agent_plan_key")
+                    key = _agent_plan_key_from_body(body)
                     try:
                         _save_shared_agent_plan_key(key)
                     except ValueError as error:
@@ -21157,7 +21656,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
             if sub.split("?")[0] == "/memory" and method == "GET":
                 # Explicit or scoped: the cross-project view is a real
-                # feature (Customize -> Memory asks for it by name), but
+                # feature (Settings -> Memory asks for it by name), but
                 # it must never be what a caller gets for saying nothing.
                 pid = (q.get("project_id") or ["default"])[0]
                 self._team_guard_memory_scope(pid)
@@ -21238,7 +21737,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if sub in ("/memory/categories", "/memory/context") and method == "GET":
                 # Explicit or scoped: the cross-project view is a real
-                # feature (Customize -> Memory asks for it by name), but
+                # feature (Settings -> Memory asks for it by name), but
                 # it must never be what a caller gets for saying nothing.
                 pid = (q.get("project_id") or ["default"])[0]
                 self._team_guard_memory_scope(pid)
@@ -21446,7 +21945,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- payload builders ------------------------------------------
         def _models_payload(self) -> dict:
-            payload = model_profiles.models_payload(_default_model["id"])
+            payload = model_profiles.models_payload(
+                _default_model["id"],
+                hide_endpoint=team_policy.hides_instance_endpoint(self),
+            )
             payload["credential_missing"] = runner.llm_credential_missing()
             return payload
 
@@ -21459,7 +21961,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # repair for the drift above, which is now fixed where the drift
             # started -- at the seed -- rather than by a later route happening
             # to be visited. Keeping a dead correction reads as coverage.
-            payload, _ = model_profiles.profiles_payload()
+            payload, _ = model_profiles.profiles_payload(
+                hide_endpoint=team_policy.hides_instance_endpoint(self)
+            )
             return payload
 
         def _skills_catalog(self, disabled: set[str]) -> list[dict]:
@@ -21472,7 +21976,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 out.append(
                     {
                         **a,
-                        "enabled": capability_state.is_enabled("specialist", a["name"]),
+                        "enabled": all(
+                            capability_state.is_enabled("specialist", state_name)
+                            for state_name in specialist_state_names(a["name"])
+                        ),
                         "parameters": {},
                         "systemPrompt": None,
                         "userHidden": False,
@@ -22007,6 +22514,8 @@ _APPROVAL_CARD_FIELDS = (
     "suggested_patterns",
     "scopes",
     "sub_agent",
+    "sub_agent_name",
+    "sub_agent_task",
     "dangerous",
     "choices",
     "policy_review_kind",
@@ -22291,7 +22800,9 @@ def _message_artifact_refs(message: dict) -> list[dict]:
     return projected
 
 
-def _artifact_json(a: dict) -> dict:
+def _artifact_json(a: dict, marks: Mapping[str, str] | None = None) -> dict:
+    """``marks``: `Store.artifact_role_marks`, a recorded role that wins over
+    the filename (owner decision 33: a plan's JSON is a process file)."""
     return {
         "id": a["artifact_id"],
         "artifact_id": a["artifact_id"],
@@ -22308,7 +22819,9 @@ def _artifact_json(a: dict) -> dict:
         # the UI can label it "uploaded" instead of "generated".
         "is_user_upload": bool(a.get("is_user_upload", 0)),
         # deliverable | process | internal, decided in one place (ART-4).
-        "role": artifact_index.artifact_role(a.get("filename")),
+        "role": artifact_index.artifact_role(
+            a.get("filename"), (marks or {}).get(str(a["artifact_id"]))
+        ),
     }
 
 
@@ -22625,7 +23138,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     # the daemon must not mutate the user's Python environment — this used to
     # call ensure_core(background=True), which resolved ~23 unpinned names
     # against PyPI and installed them with --break-system-packages on a thread
-    # nobody was watching. The UI surfaces the plan (Customize → Compute) and
+    # nobody was watching. The UI surfaces the plan (Settings → Compute) and
     # `openai4s setup` applies it.
     try:
         if cfg.roadmap_features.stage1_trusted_delivery:
@@ -22649,12 +23162,17 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
 
             plan = preinstall.core_plan()
             if plan["missing"]:
+                # One note, not a warning: the first line a fresh ./setup.sh
+                # install printed was a truncated list of "not installed"
+                # packages and a pointer at `openai4s setup` (conda, four
+                # environments), which read as a broken install.
                 print(
-                    f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
-                    f"installed: {', '.join(plan['missing'][:6])}"
-                    f"{' …' if len(plan['missing']) > 6 else ''}\n"
-                    f"[openai4s] startup does not install packages. "
-                    f"{MISSING_ENVIRONMENTS_REMEDY}",
+                    f"[openai4s] note: {len(plan['missing'])} optional scientific "
+                    f"package(s) are not installed in this Python: "
+                    f"{', '.join(plan['missing'])}. Nothing else is affected: a "
+                    f"cell that imports one fails until it is installed, and the "
+                    f"agent asks before installing one. Startup does not install "
+                    f"packages. {MISSING_ENVIRONMENTS_REMEDY}",
                     file=sys.stderr,
                 )
     except Exception as error:  # noqa: BLE001 - diagnostics must never block startup
@@ -23144,7 +23662,7 @@ for _e in entries:
           % (_e['accession'], _e['organism'], len(_e['sequence']), _mark))
 """
 _DEMO_MCP = r"""
-# Cell 2/6 -- the bundled MCP connector (Customize -> Connectors), on real inputs.
+# Cell 2/6 -- the bundled MCP connector (Settings -> Connectors), on real inputs.
 try:
     _total = sum(len(e['sequence']) for e in entries)
     _calc = host.mcp.call('example', 'calc',
@@ -23189,6 +23707,10 @@ ax.set_xlabel('residue position')
 ax.set_ylabel('mean hydropathy')
 ax.legend(loc='upper right', fontsize=8)
 plt.tight_layout()
+# Saved under a name that says what it is (SCI-02: the summary called it the
+# hydropathy figure while the file was the auto-captured figure_cell3_1.png).
+fig.savefig('hydropathy_profile.png', dpi=150)
+plt.close(fig)
 print('rendered hydropathy profile for %s (%d residues) via %s'
       % (ref['accession'], len(_seq), api_source))
 """
@@ -23353,7 +23875,11 @@ try:
             pdb_text = _raw
             struct_source = 'RCSB PDB entry %s (live download)' % pdb_id
 except Exception as _exc:
-    struct_source = 'unavailable (RCSB API unreachable: %s)' % _exc
+    # The report is for people: the reason in words, the exception here.
+    print('RCSB PDB request failed:', _exc)
+    struct_source = 'not fetched this run (the RCSB PDB API %s)' % (
+        "server's certificate could not be verified on this machine"
+        if 'CERTIFICATE' in str(_exc).upper() else 'could not be reached')
 
 if pdb_text:
     open('nif3_structure.pdb', 'w').write(pdb_text)
@@ -23482,6 +24008,17 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
         frame_id=fid,
         content=example_session.copy(language, "prompt"),
     )
+    # An open page shows the question live, as it does a turn's (SCI-03).
+    runner.hub.emitter(fid)(
+        {
+            "type": "user_message",
+            "frame_id": fid,
+            "message_id": demo_user_message.get("message_id"),
+            "role": "user",
+            "content": example_session.copy(language, "prompt"),
+            "created_at": _iso(demo_user_message.get("created_at")),
+        }
+    )
     runner._capture_cursor_checkpoint_best_effort(  # noqa: SLF001
         fid,
         source_kind="message",
@@ -23503,7 +24040,9 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> dict[str, int] |
     for index, (code, _material) in enumerate(demo_plan, start=1):
         label = f"cell {index}/{len(demo_plan)}"
         try:
-            outcome = runner.run_repl(fid, "proj_example", code)
+            # Their own origin: shown in the conversation as cell cards, live
+            # and on reload, and not screened as the agent's (SCI-03).
+            outcome = runner.run_repl(fid, "proj_example", code, origin="example")
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             cell_failures.append(f"{label}: {type(exc).__name__}: {exc}")

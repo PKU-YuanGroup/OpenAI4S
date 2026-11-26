@@ -17,8 +17,10 @@ capabilities:
       - europepmc.org
       - clinicaltrials.gov
       - api.typesafe.ai
-      # web_search: the hosts of every engine it can be configured to use,
-      # so loading this Skill does not switch web search off. Subdomains
+      # This list limits only this Skill's own helpers (kernel.py); the rest
+      # of the session keeps its network policy. web_search: the hosts of
+      # every engine it can be configured to use, so a search a helper
+      # makes is not refused. Subdomains
       # match by suffix (www.bing.com, html./lite.duckduckgo.com,
       # www.mojeek.com). export.arxiv.org answers arXiv-id queries.
       - ollama.com
@@ -50,7 +52,7 @@ metadata:
       privacy_url: https://openalex.org/OpenAlex_privacy_policy.pdf
     # Experimental literature_check: research question, paper passages, and
     # claims are sent to TypeSafe Jev at api.typesafe.ai when the capability
-    # is enabled in Customize → Experimental. info_url. verified 2026-09-20
+    # is enabled in Settings → Experimental. info_url. verified 2026-09-20
     - kind: service
       name: TypeSafe
       info_url: https://docs.typesafe.ai/
@@ -107,7 +109,7 @@ Before saving the artifact, run `style_pass(draft)` once on the full markdown. F
 
 ## Semantic evidence check (experimental)
 
-Use these helpers when writing a review from retrieved passages, or when checking that a draft's claims still match the sources they cite. Quote location and number/unit comparison run in code; `host.judge` is asked only about semantic relationship. This is experimental: turn on `literature_check` under Customize → Experimental (the master experimental-judgment switch must also be on). When the capability is off, the helpers return `status: "disabled"` and do not raise; `verify_dois`, `crossref_lookup`, `search_openalex`, `expand_citations`, `extract_dois`, and `style_pass` are unchanged.
+Use these helpers when writing a review from retrieved passages, or when checking that a draft's claims still match the sources they cite. Quote location and number/unit comparison run in code; `host.judge` is asked only about semantic relationship. This is experimental: turn on `literature_check` under Settings → Experimental (the master experimental-judgment switch must also be on). When the capability is off, the helpers return `status: "disabled"` and do not raise; `verify_dois`, `crossref_lookup`, `search_openalex`, `expand_citations`, `extract_dois`, and `style_pass` are unchanged.
 
 `supports` means only that the source text supports this sentence; it does **not** mean the sentence has been scientifically proven. `not_found` is not evidence of fabrication — PDF extraction or OCR can change wording enough that a real quote no longer matches. Numbers and units are compared in code, not by the judge.
 

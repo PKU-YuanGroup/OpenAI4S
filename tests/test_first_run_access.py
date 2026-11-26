@@ -348,7 +348,8 @@ def test_startup_auth_banner_names_the_recovery_and_brackets_ipv6():
     wild = local_auth.startup_auth_banner("0.0.0.0", 9, team_mode=True)
     assert single == (
         "[openai4s] access token required.\n"
-        "  sign in: run `openai4s url` on this host to print a sign-in link"
+        "  sign in: run `openai4s url` to print a sign-in link "
+        "(in the OpenAI4S folder without it on PATH: `uv run openai4s url`)"
     )
     assert team == "[openai4s] team mode: sign in at http://[::1]:8760/login"
     assert wild == "[openai4s] team mode: sign in at http://localhost:9/login"
@@ -414,7 +415,9 @@ def test_foreground_serve_logs_omit_the_access_token(tmp_path, monkeypatch, caps
     _streams_omit(token, captured)
     assert f"openai4s listening at http://127.0.0.1:{cfg.port}/" in captured.out
     assert "(model=" in captured.out
-    assert _SINGLE_HINT in captured.out
+    # The gateway's startup notice (stubbed out here) is the one sign-in line;
+    # serve printing its own as well showed it twice in two wordings (CLI-9).
+    assert "sign in" not in captured.out + captured.err
 
 
 def test_team_foreground_serve_points_at_login(tmp_path, monkeypatch, capsys):
@@ -428,7 +431,9 @@ def test_team_foreground_serve_points_at_login(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     _streams_omit(token, captured)
-    assert f"sign in: http://127.0.0.1:{cfg.port}/login" in captured.out
+    assert f"openai4s listening at http://127.0.0.1:{cfg.port}/" in captured.out
+    # /login is named once, by the gateway's team-mode notice (stubbed here).
+    assert "sign in" not in captured.out + captured.err
     assert "openai4s url" not in captured.out
 
 

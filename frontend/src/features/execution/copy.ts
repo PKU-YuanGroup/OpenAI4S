@@ -1,3 +1,4 @@
+import { copyLookup, type CopyTable } from "../../i18n/copy";
 import { LANG } from "../../i18n/runtime";
 
 const COPY = {
@@ -40,6 +41,25 @@ const COPY = {
     evidenceReasonCellFailed: "Producing Cell did not succeed",
     evidenceReasonCellOtherFrame: "Producing Cell belongs to another sub-agent",
     evidenceReasonNoCellReceipt: "No Cell receipt",
+    downloadTitle: "Saved by the download tool, not by code",
+    downloadUrl: "Source URL",
+    downloadAt: "Downloaded",
+    downloadSize: "Size",
+    downloadSha: "SHA-256",
+    downloadApproval: "Approval",
+    approvalOnce: "You approved this download",
+    approvalConversation: "You allowed {0} for this session",
+    approvalProject: "You allowed {0} for this project",
+    approvalGlobal: "You always allow {0}",
+    approvalNoPrompt: "Not asked: an existing rule or the network settings allowed it",
+    // I18N-3: the environment tab's chips and package table.
+    envKind: "Environment",
+    envName: "Env",
+    envPackages: "Packages",
+    envPackage: "Package",
+    envVersion: "Version",
+    execNote:
+      "Code actually run by this session and its delegated sub-agents — failed and interrupted cells included. This is execution history, not Artifacts / deliverables.",
   },
   zh: {
     invalid: "响应未包含有效的溯源记录。",
@@ -55,7 +75,7 @@ const COPY = {
     unknownEnvironment: "未记录",
     packages: "已记录的包",
     evidenceScope:
-      "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子代理。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子代理完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。",
+      "仅核对版本记录、sha256 记录、快照文件存在与大小，以及生产者为该子智能体。若记录了生产单元，则要求该单元成功；没有单元回执的版本仍可能通过。核对发生在子智能体完成时，面板打开期间不会重新核对。未重新计算内容哈希；不代表科学结论或统计有效性。",
     evidenceSummary: "版本与归属已核对 {0} · 证据不足 {1}",
     evidenceUnavailable: "证据不可用",
     evidenceTruncated: "仅显示前 {0} 项 / 共 {1} 项",
@@ -71,18 +91,112 @@ const COPY = {
     evidenceCaptureVersionCreated: "新版本",
     evidenceCaptureSameCell: "同一单元",
     evidenceCaptureReused: "复用已有版本",
-    evidenceReasonOtherFrame: "版本不属于该子代理",
+    evidenceReasonOtherFrame: "版本不属于该子智能体",
     evidenceReasonNoChecksum: "无 sha256 记录",
     evidenceReasonNoSnapshot: "无快照路径",
     evidenceReasonSnapshotMissing: "快照文件不存在",
     evidenceReasonSizeMismatch: "快照大小与记录不符",
     evidenceReasonCellNotRecorded: "未找到生产单元记录",
     evidenceReasonCellFailed: "生产单元未成功",
-    evidenceReasonCellOtherFrame: "生产单元属于其他子代理",
+    evidenceReasonCellOtherFrame: "生产单元属于其他子智能体",
     evidenceReasonNoCellReceipt: "无单元回执",
+    downloadTitle: "由下载工具保存，未经过代码",
+    downloadUrl: "来源网址",
+    downloadAt: "下载时间",
+    downloadSize: "大小",
+    downloadSha: "SHA-256",
+    downloadApproval: "批准方式",
+    approvalOnce: "你批准了这次下载",
+    approvalConversation: "你允许本会话访问 {0}",
+    approvalProject: "你允许本项目访问 {0}",
+    approvalGlobal: "你始终允许访问 {0}",
+    approvalNoPrompt: "未询问：已有规则或联网设置允许了它",
+    envKind: "运行环境",
+    envName: "环境名",
+    envPackages: "软件包",
+    envPackage: "软件包",
+    envVersion: "版本",
+    // I18N-4: the generated dictionary's nb.exec.note says 子代理.
+    execNote: "这是主会话与被委派子智能体实际执行过的代码——含失败与中断的单元。这是执行记录，不是产物或交付物。",
   },
 };
 
 export function provenanceT(key: keyof typeof COPY.en, ...args: unknown[]): string {
   return COPY[LANG === "zh" ? "zh" : "en"][key].replace(/\{(\d+)\}/g, (_, n: string) => String(args[Number(n)] ?? ""));
 }
+
+/**
+ * M-73: switching branches. Activation stopped the kernel without a word, then
+ * said "error: … inspect Recovery" when the branch's variables could not all
+ * be rebuilt; these say what happens and what did not come back.
+ */
+const BRANCH: CopyTable = {
+  zh: {
+    "branch.activateConfirm":
+      "切换到分支「{0}」？\n\n内核会重启，内存中的变量（数据表、模型等）会丢失；对话、Notebook、工作区文件和产物都换成这个分支的。当前分支会保留，可以随时切回来。",
+    "branch.switched": "已切换到分支「{0}」。",
+    "branch.switchedGap": "已切换到分支「{0}」。这些变量没有恢复：{1}。",
+    "branch.switchedGapAll": "已切换到分支「{0}」。内存中的变量没有全部恢复。",
+    "branch.kernelGap": "这些变量没有恢复：{0}。只有可以安全重新运行的单元会被自动重放。",
+    "branch.kernelGapAll": "内存中的变量没有全部恢复。只有可以安全重新运行的单元会被自动重放。",
+    "branch.restoreKernel": "重启内核并恢复",
+    "branch.restoreKernelTitle": "从这个分支的检查点重新启动内核，并重新运行可以安全重放的单元。",
+    "branch.restoring": "正在恢复…",
+    "branch.restored": "内核已恢复，变量与这个分支的检查点一致。",
+    "branch.restoreFailed": "恢复没有完成：{0}",
+    "branch.main": "主线",
+    "branch.sidebarLabel": "这个会话的分支",
+    "branch.sidebarCurrent": "当前分支：{0}",
+    "branch.sidebarSwitch": "切换到分支「{0}」（会先确认）",
+    "branch.sidebarCannot": "这个分支还没有可以切换过去的检查点",
+    "branch.cp.message": "提问时 · {0}",
+    "branch.cp.beforeMessage": "提问前 · {0}",
+    "branch.cp.cell": "单元运行后 · {0}",
+    "branch.cp.other": "{0} · {1}",
+    "recovery.what.restore": "重启内核，并按检查点重新运行可以安全重放的单元。",
+    "recovery.what.retry": "再试一次上次没有完成的恢复。",
+    "recovery.what.restart_fresh": "启动一个空的新内核：变量清空，对话、Notebook 和文件保留。",
+    "recovery.why.busy": "恢复正在进行，请稍候。",
+    "recovery.why.active": "内核正在运行，不需要恢复。",
+    "recovery.why.notRetryable": "只有上次恢复没有完成时才能重试。",
+    "recovery.why.revertFirst": "要先完成工作区回退的恢复。",
+    "recovery.why.noCheckpoint": "还没有可以用来恢复的检查点。",
+    "recovery.why.checkpoint": "这个检查点没有可用的内核启动记录，不能用来恢复内核。可以用「全新重启」开始一个空内核。",
+    "recovery.why.other": "现在不能执行。",
+  },
+  en: {
+    "branch.activateConfirm":
+      "Switch to branch “{0}”?\n\nThe kernel restarts and its in-memory variables (data frames, models, …) are lost; the conversation, Notebook, workspace files and artifacts become that branch's. The current branch is kept and you can switch back at any time.",
+    "branch.switched": "Switched to branch “{0}”.",
+    "branch.switchedGap": "Switched to branch “{0}”. These variables were not restored: {1}.",
+    "branch.switchedGapAll": "Switched to branch “{0}”. Not all in-memory variables were restored.",
+    "branch.kernelGap": "These variables were not restored: {0}. Only cells that are safe to run again are replayed automatically.",
+    "branch.kernelGapAll": "Not all in-memory variables were restored. Only cells that are safe to run again are replayed automatically.",
+    "branch.restoreKernel": "Restart kernel and restore",
+    "branch.restoreKernelTitle": "Starts the kernel again from this branch's checkpoint and re-runs the cells that are safe to replay.",
+    "branch.restoring": "Restoring…",
+    "branch.restored": "The kernel was restored; its variables match this branch's checkpoint.",
+    "branch.restoreFailed": "The restore did not finish: {0}",
+    "branch.main": "Main line",
+    "branch.sidebarLabel": "This session's branches",
+    "branch.sidebarCurrent": "Current branch: {0}",
+    "branch.sidebarSwitch": "Switch to branch “{0}” (asks first)",
+    "branch.sidebarCannot": "This branch has no checkpoint to switch to yet",
+    "branch.cp.message": "When a question was asked · {0}",
+    "branch.cp.beforeMessage": "Just before a question · {0}",
+    "branch.cp.cell": "After a cell ran · {0}",
+    "branch.cp.other": "{0} · {1}",
+    "recovery.what.restore": "Restarts the kernel and re-runs the cells the checkpoint marks safe to replay.",
+    "recovery.what.retry": "Tries the last unfinished recovery again.",
+    "recovery.what.restart_fresh": "Starts an empty kernel: variables are cleared; the conversation, Notebook and files are kept.",
+    "recovery.why.busy": "A recovery is running; wait for it to finish.",
+    "recovery.why.active": "The kernel is running; nothing to recover.",
+    "recovery.why.notRetryable": "Retry is for a recovery that did not finish.",
+    "recovery.why.revertFirst": "Finish recovering the workspace revert first.",
+    "recovery.why.noCheckpoint": "There is no checkpoint to recover from yet.",
+    "recovery.why.checkpoint": "This checkpoint has no usable kernel start-up record, so the kernel cannot be rebuilt from it. “Restart fresh” starts an empty kernel.",
+    "recovery.why.other": "Not available right now.",
+  },
+};
+
+export const branchT = copyLookup(BRANCH);

@@ -442,6 +442,50 @@ describe("stopped turn marker", () => {
       expect(node.querySelectorAll(".md")).toHaveLength(1);
     }
   });
+
+  it("offers Continue beside the stop marker, which sends 继续 to this session (CHAT-8)", async () => {
+    await setLang("zh");
+    currentId.value = "stopped-frame";
+    const send = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("send", send);
+    startStream();
+    feed("text", marker.chunk, marker);
+    const wrap = live().wrap as unknown as FakeEl;
+    const button = wrap.querySelector(".msg-continue")!;
+    expect(button.textContent).toBe("继续");
+    expect(button.classList.contains("outline-btn")).toBe(true);
+    const click = button.onclick as () => Promise<void>;
+    // A draft in the composer is the user's: the button refuses, visibly.
+    const composer = new FakeEl("textarea") as FakeEl & { value: string; focus: () => void };
+    composer.id = "composer";
+    composer.value = "half a sentence";
+    composer.focus = vi.fn();
+    doc.body.appendChild(composer);
+    await click();
+    expect(send).not.toHaveBeenCalled();
+    expect(composer.focus).toHaveBeenCalledTimes(1);
+    composer.value = "";
+    await click();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toBe("继续");
+    // A newer message follows: the old marker's button no longer sends, and retires.
+    renderStored({ role: "user", content: "next question", message_id: "m-2" });
+    await click();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(wrap.querySelectorAll(".msg-continue")).toHaveLength(0);
+    // Reopened, the stored marker offers it too, in English in the English UI.
+    await setLang("en");
+    const stored = renderStored({
+      role: "assistant",
+      content: "_Stopped by user._",
+      cancelled: { reason: "user", request_id: "req-2" },
+    }) as unknown as FakeEl;
+    const again = stored.querySelector(".msg-continue")!;
+    expect(again.textContent).toBe("Continue");
+    await (again.onclick as () => Promise<void>)();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]![0]).toBe("Continue");
+  });
 });
 
 /**
@@ -688,4 +732,115 @@ describe("stored plan-mode rows reopen as what the user wrote", () => {
       }
     });
   }
+});
+
+// M-37: a lost connection said "try again" with nothing to press, the support
+// ID stood in the bubble and again under the composer, and a turn that failed
+// on its model setup before running anything lost the question it was asked.
+describe("a turn that failed on the model service", () => {
+  function hintLine(): FakeEl {
+    const line = new FakeEl("div");
+    line.id = "composer-hint";
+    doc.body.appendChild(line);
+    return line;
+  }
+
+  function asked(text: string): FakeEl {
+    const bubble = new FakeEl("div");
+    bubble.className = "msg user";
+    bubble.dataset.sentText = text;
+    doc.host.appendChild(bubble);
+    return bubble;
+  }
+
+  function composerBox(value = ""): FakeEl & { value: string; focus: () => void } {
+    const box = new FakeEl("textarea") as FakeEl & { value: string; focus: () => void };
+    box.id = "composer";
+    box.value = value;
+    box.focus = vi.fn();
+    doc.body.appendChild(box);
+    return box;
+  }
+
+  it("offers Retry on a lost connection, says the ID once, and keeps the line under the composer empty", async () => {
+    vi.stubGlobal("Node", FakeEl);
+    currentId.value = "net-frame";
+    const send = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("send", send);
+    const line = hintLine();
+    const composer = composerBox();
+    asked("Compute the mean");
+    startStream();
+    feed("text", "The model service could not be reached.\n", { type: "text_chunk", block_type: "text" });
+    const wrap = live().wrap as unknown as FakeEl;
+    turnDone("failed", { code: "llm_network", request_id: "req-net" });
+
+    const retry = wrap.querySelector(".turn-retry")!;
+    expect(retry.textContent).toBe("Retry");
+    expect(wrap.querySelector(".turn-open-models")).not.toBeNull();
+    expect(wrap.querySelector(".msg-failure-meta")!.dataset.requestId).toBe("req-net");
+    expect(line.textContent).toBe("");
+    // Retry is the way to try again: the question is not put back as well.
+    expect(composer.value).toBe("");
+
+    await (retry.onclick as () => Promise<void>)();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toContain("completed work");
+  });
+
+  it("puts the question back when a settings failure ran nothing, and only then", () => {
+    vi.stubGlobal("Node", FakeEl);
+    currentId.value = "key-frame";
+    const line = hintLine();
+    const composer = composerBox();
+    asked("Compute the mean");
+    startStream();
+    feed("text", "No API key is configured for the model.\n", { type: "text_chunk", block_type: "text" });
+    turnDone("failed", { code: "llm_no_credential", request_id: "req-key" });
+    expect(composer.value).toBe("Compute the mean");
+    expect(line.textContent).toBe("");
+
+    // A turn that already ran a cell is not offered again as is.
+    composer.value = "";
+    startStream();
+    cellHeader();
+    turnDone("failed", { code: "llm_quota_exhausted", request_id: "req-quota" });
+    expect(composer.value).toBe("");
+
+    // Nor does it replace a draft the user started.
+    composer.value = "my next question";
+    startStream();
+    turnDone("failed", { code: "llm_no_credential", request_id: "req-key2" });
+    expect(composer.value).toBe("my next question");
+  });
+
+  it("keeps a short line without the ID for any other failure shown in the conversation", () => {
+    expect(failureHint({ code: "internal_error", request_id: "req-x" }, true)).toBe(
+      "This turn failed. Please try again.",
+    );
+    expect(failureHint({ code: "llm_network", request_id: "req-x" }, true)).toBe("");
+    // Not shown in the conversation: the line still says what to do, with the ID.
+    expect(failureHint({ code: "llm_network", request_id: "req-x" })).toContain("req-x");
+    expect(failureHint({ code: "llm_network", request_id: "req-x" })).toContain("passing network problem");
+  });
+
+  // SYNC-16: the bubble said "Stopped repeating actions…" with Continue, and the
+  // line under the composer said it again in other words, with the ID again.
+  it("leaves the line under the composer empty after a stop the bubble explains", () => {
+    vi.stubGlobal("Node", FakeEl);
+    currentId.value = "loop-frame";
+    const line = hintLine();
+    startStream();
+    feed("text", "Stopped repeating actions: the model read growth_assay.csv 3 times.\n", {
+      type: "text_chunk",
+      block_type: "text",
+    });
+    const wrap = live().wrap as unknown as FakeEl;
+    turnDone("failed", { code: "no_progress", request_id: "req-loop" });
+    expect(wrap.querySelectorAll(".turn-continue")).toHaveLength(1);
+    expect(line.textContent).toBe("");
+    for (const code of ["llm_stream_timeout", "llm_deadline_exceeded", "no_progress"]) {
+      expect(failureHint({ code, request_id: "req-loop" }, true)).toBe("");
+    }
+  });
 });

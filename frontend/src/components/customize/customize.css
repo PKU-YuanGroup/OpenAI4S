@@ -130,6 +130,17 @@
   line-height: 1.5;
   color: var(--text-400);
 }
+/* M-26: the exact command that restarts the daemon with the other egress mode. */
+#cust .egress-restart-cmd {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: 8px;
+  background: var(--bg-100, #f5f0e8);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 #cust .search-engines-head {
   padding: 20px 0 6px;
 }
@@ -181,6 +192,25 @@
   font-size: 14px;
   color: var(--text-400);
 }
+/* SCI-04: an action's outcome, under the control that started it. */
+#cust .cust-action-status {
+  flex-basis: 100%;
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+/* Empty but still rendered: a live region that appears with its text is not
+   reliably announced. */
+#cust .cust-action-status:empty {
+  margin-top: 0;
+}
+#cust .cust-action-status.ok {
+  color: var(--success-text);
+}
+#cust .cust-action-status.err {
+  color: var(--danger);
+}
 #cust .skill-lbl {
   margin-top: 10px;
   font-size: 14px;
@@ -212,6 +242,81 @@
 #cust .skill-net .ds {
   overflow-wrap: anywhere;
 }
+/* SCI-06: a skill's name opens its full description, needs and SKILL.md. */
+#cust .skill-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+#cust .skill-name:hover span {
+  text-decoration: underline;
+}
+#cust .skill-desc {
+  cursor: pointer;
+}
+#cust .skill-detail {
+  margin-top: 6px;
+  font-size: 14px;
+  color: var(--text-200);
+  overflow-wrap: anywhere;
+}
+#cust .skill-detail-fact {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-400);
+}
+#cust .skill-detail-head {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-000);
+}
+#cust .skill-doc {
+  max-height: 420px;
+  overflow: auto;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius, 8px);
+  font-size: 13px;
+}
+/* A recipe preview, not a page: headings stay near body size. */
+#cust .skill-doc h1,
+#cust .skill-doc h2 {
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1.3;
+  margin: 0.9em 0 0.4em;
+}
+#cust .skill-doc h3,
+#cust .skill-doc h4 {
+  font-size: 14px;
+  margin: 0.8em 0 0.3em;
+}
+#cust .skill-doc > :first-child {
+  margin-top: 0;
+}
+#cust .skill-use {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* At phone width the label would squeeze the description into a sliver; the
+   button keeps its name through aria-label. */
+@media (max-width: 560px) {
+  #cust .skill-use span {
+    display: none;
+  }
+}
 #cust .cust-input {
   min-height: 40px;
   padding: 8px 14px;
@@ -232,6 +337,18 @@
 }
 #cust .cust-content .solid-btn.small:disabled {
   color: var(--text-400, #6c6a64);
+}
+/* SYNC-29: "Check for updates" / "Force a fresh check" broke into two lines of
+   small text in English; they keep their width and stack instead. */
+#cust .update-check-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: none;
+}
+#cust .update-check-actions .outline-btn {
+  white-space: nowrap;
+  justify-content: center;
 }
 /* A button right after a field matches the field's height. */
 #cust .cust-input + .solid-btn,
@@ -269,6 +386,36 @@
   font-size: 24px;
   pointer-events: auto;
 }
+/* M-84: the nested editor scrolls; its Save stays in view at the bottom
+   instead of half under the box's edge on a short window. */
+#cust .cust-nested-box .form-actions {
+  position: sticky;
+  bottom: -24px;
+  margin-bottom: -24px;
+  padding: 12px 0 24px;
+  background: var(--bg, #faf9f5);
+}
+/* "Save as Skill": the session's steps, each of which can be left out. */
+#cust .skill-steps {
+  margin: 4px 0 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+#cust .skill-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-200);
+}
+#cust .skill-step input {
+  margin-top: 3px;
+}
 .prof-cap[data-state="true"] {
   color: var(--success-text, inherit);
 }
@@ -282,6 +429,29 @@
   margin-bottom: 12px;
   font-size: 13px;
   color: var(--text-300, inherit);
+}
+/* What the last action reported (TEAM-23): a line under the tab body, so it
+   is in view wherever the tab is scrolled. */
+#cust .cust-notice {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 10px 20px;
+  border-top: 1px solid var(--border, #e6dfd8);
+  background: var(--bg-100, #f5f0e8);
+  color: var(--text-200, inherit);
+  font-size: 13px;
+  line-height: 1.4;
+}
+#cust .cust-notice.err {
+  background: var(--danger-bg, #f6e2de);
+  color: var(--danger, inherit);
+}
+#cust .cust-notice > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 @media (max-width: 900px) {
   #cust .modal-head {
@@ -302,11 +472,59 @@
   #cust .cust-tab {
     white-space: nowrap;
   }
+  /* SYNC-22: say that the tab strip scrolls. A shadow shows at each edge
+     that has more tabs beyond it (the `local` covers hide it at an end). */
+  #cust .cust-tabs {
+    background:
+      linear-gradient(to right, var(--bg-100, #f5f0e8) 30%, transparent) left / 32px 100% no-repeat local,
+      linear-gradient(to left, var(--bg-100, #f5f0e8) 30%, transparent) right / 32px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgba(20, 20, 19, 0.22), transparent) left / 14px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgba(20, 20, 19, 0.22), transparent) right / 14px 100% no-repeat scroll;
+    background-color: var(--bg-100, #f5f0e8);
+  }
+  /* SYNC-22: the touch-target rule (style.css, ≥40px) turned the 38×22
+     switch into a 40px disc with on/off told apart by colour alone. The pill
+     keeps its shape; a transparent border carries the 40px target and the
+     negative margin keeps the row's layout. */
+  #cust .toggle {
+    box-sizing: content-box;
+    width: 38px;
+    height: 22px;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    border: 9px solid transparent;
+    background-clip: padding-box;
+    margin: -9px;
+  }
   #cust .cust-content {
     padding: 24px 20px;
   }
   #cust .cust-h {
     margin-right: 0;
     font-size: 32px;
+  }
+}
+@media (max-width: 480px) {
+  /* SYNC-22: a row's control goes under its description instead of
+     squeezing it to a 60px column cut mid-word. */
+  #cust .cust-row:not(.prof-row) {
+    flex-wrap: wrap;
+  }
+  #cust .cust-row:not(.prof-row) > .info {
+    flex: 1 1 200px;
+  }
+  /* Add rows (memory, connectors, compute) wrap instead of pushing Save off
+     the screen. */
+  #cust .job-submit {
+    flex-wrap: wrap;
+  }
+  #cust .job-submit > input,
+  #cust .job-submit > textarea {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  #cust .job-submit > select {
+    max-width: 100%;
   }
 }

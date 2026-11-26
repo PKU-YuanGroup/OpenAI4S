@@ -63,6 +63,12 @@ export type OnboardingStatus = {
   provider_presets: ProviderPreset[];
   local_model_catalog: LocalDiscovery;
   environment: StandardReadiness | null;
+  /**
+   * May this reader save the model setup? `false` for a team member: the
+   * wizard is an admin's and is not shown to them (TEAM-10). A daemon that
+   * does not send the field is a single-user one, so absent reads as `true`.
+   */
+  can_configure: boolean;
 };
 
 function dropSecretKeys(row: Record<string, unknown>): Record<string, unknown> {
@@ -107,5 +113,6 @@ export function sanitizeOnboardingStatus(raw: unknown): OnboardingStatus {
     provider_presets: readProviderPresets(row.provider_presets),
     local_model_catalog: sanitizeLocalModelDiscovery(row.local_model_catalog),
     environment: sanitizeStandardProfileReadiness(row.environment),
+    can_configure: row.can_configure !== false,
   };
 }

@@ -69,6 +69,7 @@ vi.mock("../../features/customize/host", async (importOriginal) => ({
   hint: mocks.hint,
 }));
 
+import { teamUser } from "../../features/chrome/team-identity";
 import { currentId } from "../../stores/session";
 import { PermissionsTab } from "./PermissionsTab";
 
@@ -254,5 +255,118 @@ describe("PermissionsTab without a session", () => {
       "cust.perm.scope.project",
       "cust.perm.scope.global",
     ]);
+  });
+});
+
+// PERM-3: 30+ rows of raw tool names became collapsible groups.
+describe("PermissionsTab groups", () => {
+  beforeEach(() => {
+    currentId.value = null;
+    serve(() => Promise.resolve(response({ ok: true })));
+  });
+
+  it("groups a scope's rules by what they govern, with what they amount to", async () => {
+    render();
+    await settle();
+    const tree = render();
+    const groups = withClass(tree, "perm-grp");
+    expect(groups.map((node) => node.type)).toEqual(["details", "details"]);
+    expect(groups.map((node) => node.props!["data-category"])).toEqual(["write", "install"]);
+    expect(withClass(tree, "perm-grp-h").map(text)).toEqual([
+      "Writing files · All allowed · 1 rule",
+      "Packages and environments · Needs approval · 1 rule",
+    ]);
+    // The raw tool name and pattern are inside the group, not on its header.
+    expect(withClass(groups[1], "perm-rtool").map(text)).toEqual(["env_setup"]);
+    expect(withClass(groups[1], "perm-rpat mono").map(text)).toEqual(["*"]);
+    // The add-rule form and Restore defaults stay.
+    expect(withClass(tree, "perm-rule perm-add")).toHaveLength(1);
+    expect(find(tree, (node) => node.type === "button" && text(node) === "cust.perm.resetBtn")).not.toBeNull();
+  });
+});
+
+// PERM-1: package installs ask every time, so no allow rule is written for one.
+describe("PermissionsTab and package installs", () => {
+  beforeEach(() => {
+    currentId.value = null;
+    serve(() => Promise.resolve(response({ ok: true })));
+  });
+
+  const addRow = (tree: unknown) => find(tree, (node) => node.props?.class === "perm-rule perm-add")!;
+
+  it("does not save an allow rule for installs, and says why", async () => {
+    render();
+    await settle();
+    let row = addRow(render());
+    const inputs = findAll(row, (node) => node.type === "input");
+    (inputs[0]!.props!.onInput as (e: unknown) => void)({ target: { value: "env_setup" } });
+    row = addRow(render());
+    (find(row, (node) => node.type === "select")!.props!.onChange as (e: unknown) => void)({
+      target: { value: "allow" },
+    });
+    row = addRow(render());
+    // The allow choice is off for an install, with the reason beside it.
+    const allowOption = find(row, (node) => node.type === "option" && node.props?.value === "allow")!;
+    expect(allowOption.props!.disabled).toBe(true);
+    expect(text(row)).toContain("Package installs ask every time");
+    await (find(row, (node) => node.type === "button")!.props!.onClick as () => Promise<void>)();
+    await settle();
+    expect(mocks.fetch.mock.calls.some((call) => (call[1] as RequestInit | undefined)?.method === "POST")).toBe(
+      false,
+    );
+    expect(mocks.hint).toHaveBeenCalledWith(expect.stringContaining("Package installs ask every time"), true);
+  });
+
+  it("locks the allow choice on an install rule", async () => {
+    render();
+    await settle();
+    const selects = findAll(render(), (node) => node.type === "select" && node.props?.class === "perm-dec");
+    const allowDisabled = (select: Node) =>
+      !!find(select, (node) => node.type === "option" && node.props?.value === "allow")!.props!.disabled;
+    // write_file *, env_setup *, then the add row.
+    expect(selects.map(allowDisabled)).toEqual([false, true, false]);
+  });
+});
+
+// TEAM-23: Restore defaults and the global tier answered a member with 403
+// `admin_only` and nothing on screen.
+describe("PermissionsTab for a team member", () => {
+  beforeEach(() => {
+    currentId.value = null;
+    serve(() => Promise.resolve(response({ error: "admin only", code: "admin_only" }, 403)));
+  });
+  afterEach(() => {
+    teamUser.value = null;
+  });
+  const selects = (tree: unknown) =>
+    findAll(tree, (node) => node.type === "select" && node.props?.class === "perm-dec");
+
+  const resetButton = (tree: unknown) =>
+    find(tree, (node) => node.type === "button" && text(node) === "cust.perm.resetBtn")!;
+
+  it("locks the global tier and Restore defaults, with the reason", async () => {
+    teamUser.value = { username: "bob", role: "member" };
+    render();
+    await settle();
+    const tree = render();
+    expect(resetButton(tree).props!.disabled).toBe(true);
+    expect(text(tree)).toMatch(/Only an administrator can restore/);
+    // The two global rules are shown, locked, with no delete and no add row.
+    expect(selects(tree).map((node) => !!node.props!.disabled)).toEqual([true, true]);
+    expect(withClass(tree, "icon-ghost")).toHaveLength(0);
+    expect(withClass(tree, "perm-rule perm-add")).toHaveLength(0);
+    expect(findAll(tree, (node) => "data-admin-only" in (node.props || {}))).toHaveLength(1);
+  });
+
+  it("leaves everything editable for an admin", async () => {
+    teamUser.value = { username: "alice", role: "admin" };
+    render();
+    await settle();
+    const tree = render();
+    expect(resetButton(tree).props!.disabled).toBe(false);
+    expect(selects(tree).map((node) => !!node.props!.disabled)).toEqual([false, false, false]);
+    expect(withClass(tree, "icon-ghost")).toHaveLength(2);
+    expect(withClass(tree, "perm-rule perm-add")).toHaveLength(1);
+    expect(findAll(tree, (node) => "data-admin-only" in (node.props || {}))).toHaveLength(0);
   });
 });

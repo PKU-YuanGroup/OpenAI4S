@@ -14,6 +14,7 @@ agent knows something it was never told.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Iterable, Sequence
 
@@ -70,6 +71,30 @@ def select(
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Return the memory texts to inject, and what was left out and why.
 
+    See :func:`select_with_rows`, which also returns the memories themselves.
+    """
+    _rows, kept, dropped = select_with_rows(
+        memories,
+        max_items=max_items,
+        max_chars=max_chars,
+        max_total=max_total,
+        retention_ms=retention_ms,
+        now_ms=now_ms,
+    )
+    return kept, dropped
+
+
+def select_with_rows(
+    memories: Iterable[Any],
+    *,
+    max_items: int = MAX_MEMORIES,
+    max_chars: int = MAX_MEMORY_CHARS,
+    max_total: int = MAX_TOTAL_CHARS,
+    retention_ms: int = RETENTION_MS,
+    now_ms: int | None = None,
+) -> tuple[list[Any], list[str], list[dict[str, Any]]]:
+    """The memories kept, their texts to inject, and what was left out and why.
+
     Order is preserved: the store hands these back newest-first, and truncating
     from the end means what gets dropped is the oldest, which is the choice a
     user would make. Re-ranking by length would silently prefer terse memories
@@ -82,6 +107,7 @@ def select(
     Retention is checked first, before any budget: an expired memory must not
     consume one of the fifty slots a live one could have used.
     """
+    kept_rows: list[Any] = []
     kept: list[str] = []
     dropped: list[dict[str, Any]] = []
     total = 0
@@ -135,10 +161,70 @@ def select(
                 {"reason": "budget_exhausted", "limit": max_total, "preview": label}
             )
             continue
+        kept_rows.append(memory)
         kept.append(text)
         total += len(text)
         del index
-    return kept, dropped
+    return kept_rows, kept, dropped
+
+
+#: How much of each applied memory a turn records for the conversation's
+#: "N memories applied" list (M-81): enough to recognise it, not a copy.
+APPLIED_PREVIEW_CHARS = 120
+
+
+def applied(rows: Iterable[Any]) -> list[dict[str, Any]]:
+    """What a turn records about the memories its system prompt carried.
+
+    Recorded when the prompt is built rather than looked up later: a memory
+    edited or deleted afterwards must not change what an earlier turn says it
+    was given.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text = " ".join(str(row.get("content") or "").split())
+        if not text:
+            continue
+        out.append(
+            {
+                "memory_id": str(row.get("memory_id") or ""),
+                "block": str(row.get("block") or "general"),
+                "preview": text[:APPLIED_PREVIEW_CHARS],
+            }
+        )
+    return out
+
+
+def message_memories(message: dict) -> list[dict[str, Any]]:
+    """The applied memories a stored user message recorded, projected.
+
+    Allowlisted like the message's other metadata projections.
+    """
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, dict) or not isinstance(raw.get("memories"), list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw["memories"][:MAX_MEMORIES]:
+        if not isinstance(item, dict):
+            continue
+        preview = str(item.get("preview") or "")[:APPLIED_PREVIEW_CHARS]
+        if not preview:
+            continue
+        out.append(
+            {
+                "memory_id": str(item.get("memory_id") or "")[:128],
+                "block": str(item.get("block") or "general")[:32],
+                "preview": preview,
+            }
+        )
+    return out
 
 
 def render(kept: Sequence[str], dropped: Sequence[dict[str, Any]]) -> str:
@@ -166,12 +252,16 @@ def render(kept: Sequence[str], dropped: Sequence[dict[str, Any]]) -> str:
 
 
 __all__ = [
+    "APPLIED_PREVIEW_CHARS",
     "MAX_MEMORIES",
     "MAX_MEMORIES_PER_SCOPE",
     "MAX_MEMORY_CHARS",
     "MAX_TOTAL_CHARS",
     "RETENTION_DAYS",
     "RETENTION_MS",
+    "applied",
+    "message_memories",
     "render",
     "select",
+    "select_with_rows",
 ]

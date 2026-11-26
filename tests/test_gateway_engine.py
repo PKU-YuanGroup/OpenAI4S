@@ -2636,7 +2636,7 @@ def test_streamed_deltas_hide_fences_and_precede_tool_and_terminal_events(
     visible = "".join(event["chunk"] for event in text_events)
     # Anything after the action fence was generated before the cell ran and
     # therefore cannot be a trustworthy result narration.
-    assert visible == "Before.\n"
+    assert visible == "Before.\n\n"
     assert "host.submit_output" not in visible
 
     reset_index = next(
@@ -2944,6 +2944,9 @@ def test_native_finalize_after_streamed_prose_starts_a_new_paragraph(
         "finalize_response",
         {
             "summary": "Printed mean petal length per species.",
+            # A completion that says more than the reply is still rendered
+            # after it (CHAT-1 drops only a bare summary/bullets recap).
+            "findings": ["Virginica petals are the longest"],
             "completion_bullets": ["Printed means"],
         },
     )
@@ -2962,10 +2965,85 @@ def test_native_finalize_after_streamed_prose_starts_a_new_paragraph(
     assert result["status"] == "completed"
     live = _live_text(hub)
     assert "gradient.Printed" not in live
-    assert "gradient.\n\nPrinted mean petal length" in live
+    # A blank line (or more -- the renderer skips extras) before the completion.
+    assert re.search(r"gradient\.\n[ \t]*\n\s*Printed mean petal length", live), repr(
+        live
+    )
     contents = [m["content"] for m in runner.store.list_messages(frame_id)]
     assert contents[-2] == _GRADIENT_PROSE
     assert contents[-1].startswith("Printed mean petal length")
+
+
+def test_a_finalize_reply_that_answered_is_stored_once(monkeypatch, tmp_path):
+    """CHAT-1: "你好，你是谁？" got its answer and then a second assistant message,
+    "向用户介绍了 openai4s …" -- the `finalize_response` summary paraphrasing
+    the reply in the third person. With nothing but summary and bullets, the
+    reply that already answered is the whole answer, live and stored."""
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+    prose = "你好！我是 openai4s，一个自主科学研究助手。你现在手头有什么任务？"
+    call = _native_call(
+        "finalize-1",
+        "finalize_response",
+        {
+            "summary": "向用户介绍了 openai4s 自主科学研究助手的身份与核心能力。",
+            "completion_bullets": ["介绍了助手身份与运行环境"],
+        },
+    )
+    reply, _assistant = _native_reply(prose, [call])
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg, kwargs
+        on_delta(prose)
+        return reply
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+
+    result = runner.run_message(frame_id, "default", "你好，你是谁？")
+
+    assert result["status"] == "completed"
+    assert "向用户介绍了" not in _live_text(hub)
+    assistant = [
+        m["content"]
+        for m in runner.store.list_messages(frame_id)
+        if m["role"] == "assistant"
+    ]
+    assert assistant == [prose]
+
+
+def test_the_completion_leaves_out_files_the_turn_deleted(monkeypatch, tmp_path):
+    """NB-6: the agent cleaned up its intermediate files, and the completion
+    still listed them under 表与数据 / 过程文件."""
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, _hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+
+    def finish_after_cleanup(state, emit, visible):
+        del visible
+        for name in ("final_table.csv", "scratch_table.csv"):
+            target = state.workspace / name
+
+            def write(target=target):
+                target.write_text("gene,value\nA,1\n", encoding="utf-8")
+                return "ok", True
+
+            runner._invoke_control_with_artifacts(
+                state, SimpleNamespace(name="write_file"), emit, write
+            )
+        (state.workspace / "scratch_table.csv").unlink()
+        state.last_engine_completion = {
+            "output": {"summary": "Kept the final table.", "findings": ["A is 1"]}
+        }
+        state.last_model_prose = ""
+        return "submitted"
+
+    monkeypatch.setattr(runner, "_loop", finish_after_cleanup)
+
+    result = runner.run_message(frame_id, "default", "clean up the intermediates")
+
+    assert result["status"] == "completed"
+    final = runner.store.list_messages(frame_id)[-1]["content"]
+    assert "final_table.csv" in final
+    assert "scratch_table.csv" not in final
 
 
 def test_submit_output_cell_after_single_newline_prose_starts_a_new_paragraph(

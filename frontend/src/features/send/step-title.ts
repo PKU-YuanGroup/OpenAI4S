@@ -10,11 +10,13 @@
  */
 
 import { LANG } from "../../i18n/runtime";
+import { summaryCopy, summaryCount } from "./copy";
 
 type Rule = [RegExp, string];
 
 /** Most specific first: the first match wins. */
 const TITLE_ZH: Rule[] = [
+  [/^Reviewer$/, "审阅"],
   [/^Searching the web$/, "搜索网页"],
   [/^Reading project file (.+)$/, "读取项目文件 $1"],
   [/^Reading history for (.+)$/, "读取 $1 的历史"],
@@ -59,10 +61,13 @@ const TITLE_ZH: Rule[] = [
 const UNIT_ZH: Record<string, string> = {
   artifact: "个产物",
   byte: "字节",
+  change: "处修改",
   char: "个字符",
+  child: "个子智能体",
   database: "个数据库",
   domain: "个域名",
   entry: "条",
+  env: "个运行环境",
   entrie: "条",
   file: "个文件",
   item: "项",
@@ -97,10 +102,105 @@ export function stepTitleText(title: string): string {
   return apply(TITLE_ZH, plain) ?? plain;
 }
 
+function partNumber(value: unknown): number | null {
+  const n = typeof value === "number" ? value : Number.NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+function partString(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+/** One part of a structured summary in the UI language, or null when it is not one this build knows. */
+function summaryPartText(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const part = raw as Record<string, unknown>;
+  const key = partString(part.key);
+  const n = partNumber(part.n);
+  switch (key) {
+    case "count":
+      return n == null ? null : summaryCount(n, partString(part.unit));
+    case "text":
+      return partString(part.text);
+    case "failed": {
+      const reason = partString(part.reason);
+      return reason ? summaryCopy("failedReason", { reason }) : summaryCopy("failed");
+    }
+    case "lines":
+      return summaryCopy("lines", {
+        from: String(partNumber(part.from) ?? ""),
+        to: String(partNumber(part.to) ?? ""),
+        total: String(partNumber(part.total) ?? ""),
+      });
+    case "pastEnd":
+      return summaryCopy("pastEnd", { total: String(partNumber(part.total) ?? "") });
+    case "charsRead":
+    case "missing":
+      return n == null ? null : summaryCopy(key, { n: n.toLocaleString("en-US") });
+    case "networkLimited":
+    case "helpersLimited": {
+      const domains = n == null ? null : summaryCount(n, "domain");
+      return domains == null ? null : summaryCopy(key, { n: domains });
+    }
+    case "switched":
+    case "recommend":
+      return summaryCopy(key, { name: partString(part.name) });
+    case "installed": {
+      const names = Array.isArray(part.names) ? part.names.map(partString).filter(Boolean) : [];
+      return summaryCopy(key, { name: names.join(", ") });
+    }
+    case "delegate":
+      return summaryCopy("delegate." + partString(part.status)) ?? partString(part.status);
+    case "delegateCount": {
+      if (n == null) return null;
+      const word = summaryCopy("delegate." + partString(part.status)) ?? partString(part.status);
+      return `${n} ${word}`;
+    }
+    default:
+      return summaryCopy(key);
+  }
+}
+
+/**
+ * CHAT-6: a step's structured summary (`output.summary_parts`, from
+ * `host_dispatch._step_end_view`) in the UI language, its parts joined by
+ * " · ". Null when there are none or one is not known to this build: the
+ * card then shows the English line through `stepSummaryText`.
+ */
+export function stepSummaryFromParts(parts: unknown): string | null {
+  if (!Array.isArray(parts) || !parts.length) return null;
+  const words: string[] = [];
+  for (const part of parts) {
+    const word = summaryPartText(part);
+    if (word == null) return null;
+    if (word) words.push(word);
+  }
+  return words.length ? words.join(" · ") : null;
+}
+
+/** Legacy one-word summaries the host sends (records stored before CHAT-6). */
+const WORD_ZH: Record<string, string> = {
+  "no match": "没有匹配",
+  failed: "失败",
+  loaded: "已加载",
+  ready: "就绪",
+  saved: "已保存",
+  done: "完成",
+  active: "已启用",
+  "not installed": "未安装",
+  "rolled back": "已回滚",
+  "restored as new version": "已恢复为新版本",
+  inspected: "已查看",
+  folded: "结构预测完成",
+};
+
 export function stepSummaryText(summary: string): string {
   if (LANG === "en" || !summary) return summary;
-  if (summary === "no match") return "没有匹配";
-  if (summary === "failed") return "失败";
+  if (WORD_ZH[summary]) return WORD_ZH[summary]!;
+  // M-75: the Reviewer card's own states.
+  if (summary === "Review unavailable") return "审阅未完成";
+  if (summary === "No issues found") return "未发现问题";
+  if (summary === "Review cancelled") return "审阅已取消";
   const failed = /^failed: ([\s\S]+)$/.exec(summary);
   if (failed) return "失败：" + failed[1];
   const exit = /^exit (-?\d+)(?: · ([\d,]+) file changes?)?$/.exec(summary);
@@ -112,5 +212,24 @@ export function stepSummaryText(summary: string): string {
   if (past) return `已超出文件末尾（共 ${past[1]} 行）`;
   const counted = /^([\d,]+) ([a-z]+?)s?$/.exec(summary);
   if (counted && UNIT_ZH[counted[2]!]) return `${counted[1]} ${UNIT_ZH[counted[2]!]}`;
+  // CHAT-6: the composite lines of records stored before `summary_parts`.
+  const envs = /^([\d,]+) envs?, ([\d,]+) missing$/.exec(summary);
+  if (envs) return `${envs[1]} ${UNIT_ZH.env} · 缺少 ${envs[2]} 个软件包`;
+  const read = /^([\d,]+) chars? read$/.exec(summary);
+  if (read) return `已读取 ${read[1]} 个字符`;
+  const limited = /^network limited to ([\d,]+) domains?$/.exec(summary);
+  if (limited) return `网络限于 ${limited[1]} 个域名`;
+  const helpers = /^helpers limited to ([\d,]+) domains?$/.exec(summary);
+  if (helpers) return `辅助代码联网限于 ${helpers[1]} 个域名`;
+  const use = /^use (.+)$/.exec(summary);
+  if (use) return "建议使用 " + use[1];
+  const installed = /^installed (.+)$/.exec(summary);
+  if (installed) return "已安装 " + installed[1];
+  // "6 results · you.com", "loaded · network limited to 2 domains": each part on its own.
+  if (summary.includes(" · ")) {
+    const parts = summary.split(" · ");
+    const said = parts.map((part) => stepSummaryText(part));
+    if (said.some((part, index) => part !== parts[index])) return said.join(" · ");
+  }
   return summary;
 }

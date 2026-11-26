@@ -146,9 +146,10 @@ Neighbours: {neighbours}
 - Reserve top-left ~10×6 mm clear for the composer's panel letter. Do NOT draw your own.
 - **section 9 Render-then-verify:** after savefig, (a) `from PIL import Image; assert
   Image.open('panel_{letter}.png').size==({w},{h})` — if not, you used tight_layout/
-  constrained_layout/bbox-tight somewhere, undo it; (b) collect every visible `Text`
-  window_extent and assert none overlaps another, crosses a spine, or exceeds the canvas.
-  Fix and re-save until both pass — do not ship a panel that fails either check.
+  constrained_layout/bbox-tight somewhere, undo it; (b) call the loaded `figure-style`
+  module's `layout_issues(fig, 'panel_{letter}', bbox_inches=None)` (savefig.bbox is None
+  here). Check (a) must pass. For (b), re-render only while it returns `rerender=True`
+  (at most two rounds); then keep the panel and report what is left under `limitations`.
 - Design rules {rules_ref} apply in full.
 
 `host.save_artifact('panel_{letter}.png')`; return `figure_filename` and `labels_used`."""

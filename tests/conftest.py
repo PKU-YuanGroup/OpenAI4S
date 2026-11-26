@@ -191,6 +191,12 @@ for _name in (
 # response captures already run it; a lab run opts back in by exporting the
 # checkout path (``OPENAI4S_OPENMHS=third_party/OpenMHS``).
 os.environ.setdefault("OPENAI4S_OPENMHS", "off")
+# `init`, `doctor` and `setup` speak Chinese under a Chinese locale (CLI-35),
+# and the suite asserts their English prose. A developer or runner whose
+# `LANG` is `zh_CN.UTF-8` must not turn those assertions red, so the CLI's own
+# override pins English here and per test below; subprocesses inherit it. The
+# language tests set or delete it themselves.
+os.environ["OPENAI4S_LANG"] = "en"
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
@@ -441,6 +447,8 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     # exercise the live discovery path replaces the source seam explicitly;
     # nothing gets there by forgetting to.
     monkeypatch.setenv("OPENAI4S_UPDATE_SOURCE", "offline")
+    # Re-applied per test — see the module-level default (CLI-35).
+    monkeypatch.setenv("OPENAI4S_LANG", "en")
     for name in ("OPENAI4S_UPDATE_INDEX", "OPENAI4S_CHANNEL", "OPENAI4S_BUNDLE_ID"):
         monkeypatch.delenv(name, raising=False)
     # A developer's git-ignored .env (loaded at import) may configure web sharing;

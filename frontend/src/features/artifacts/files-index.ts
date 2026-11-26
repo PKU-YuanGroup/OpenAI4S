@@ -76,6 +76,15 @@ const KIND_RULES: ReadonlyArray<
     ["py", "r", "sh", "bash", "js", "ts", "sql", "jl", "m", "c", "cpp", "h", "java", "rs", "go", "yaml", "yml", "toml"],
     ["text/x-python", "text/x-r", "application/x-sh"],
   ],
+  // SCI-26: molecules, structures, sequences and alignments were all "other".
+  [
+    "structure",
+    [
+      "pdb", "cif", "mmcif", "ent", "xyz", "mol", "mol2", "sdf", "smi", "smiles",
+      "fasta", "fa", "faa", "fna", "fastq", "fq", "aln", "a2m", "a3m", "sto", "stockholm", "gb", "gbk",
+    ],
+    ["chemical/"],
+  ],
 ];
 
 /** The human category of one file (ART-12). */
@@ -370,7 +379,7 @@ export function setFilesOrigin(value: FilesOrigin): void {
   dropFilesCursor();
 }
 
-const KINDS: readonly FilesKind[] = ["", "table", "image", "report", "code", "other"];
+const KINDS: readonly FilesKind[] = ["", "table", "image", "report", "code", "structure", "other"];
 
 export function setFilesKind(value: string): void {
   filesKind.value = (KINDS as readonly string[]).includes(value) ? (value as FilesKind) : "";

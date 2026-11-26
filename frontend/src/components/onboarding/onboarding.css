@@ -219,6 +219,13 @@
   gap: 8px;
   margin-top: 12px;
 }
+/* ONB-2: the search card's own buttons (Apply, use the model's key). */
+#onboarding .onb-search-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 #onboarding .onb-actions > .solid-btn {
   margin-left: auto;
 }
@@ -296,6 +303,18 @@
   color: var(--text-200, #3d3d3a);
   font-size: 14px;
   line-height: 1.55;
+}
+/* M-5: the Test step's result in words, and the one-click-away details. */
+#onboarding .onb-ok {
+  margin-top: 10px;
+  color: var(--success-text, inherit);
+  font-size: 14px;
+}
+.standard-readiness-card details > summary,
+.standard-readiness-remediation > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-300, inherit);
 }
 @media (max-width: 900px) {
   #onboarding .onb-box {

@@ -5,7 +5,7 @@ import { copyFailedText } from "../chrome/clipboard";
 import * as transcript from "../sessions/transcript";
 import { renderStored as renderOlderPage } from "../sessions/transcript";
 import * as messageComponents from "./components";
-import { currentId, _openGen, historyContent, historyLoad, msgCursor, msgHasEarlier } from "../../stores/session";
+import { currentId, _openGen, historyContent, historyLoad, msgCursor, msgHasEarlier, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { branchState } from "../../stores/timeline";
 import { loadEarlierMessages } from "../sessions/messages";
@@ -455,13 +455,42 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.hint.textContent).toContain(copyFailedText());
   });
 
-  it.each(ROW_RENDERERS)("%s: Edit fills the composer and grows it to fit", (_name, render) => {
-    const row = render({ role: "assistant", content: "Edit me." }) as unknown as RowEl;
-    const edit = row.querySelector(".msg-actions")!.children[3]!;
-    edit.onclick!();
-    expect(doc.composer.value).toBe("Edit me.");
-    expect(doc.composer.style.height).toBe("64px");
-    expect(doc.composer.focused).toBe(1);
+  it.each(ROW_RENDERERS)("%s: an answer offers Copy and a rating, not Edit (M-71, SYNC-26)", (_name, render) => {
+    doc.composer.value = "my draft";
+    const row = render({ role: "assistant", content: "An answer." }) as unknown as RowEl;
+    const buttons = row.querySelector(".msg-actions")!.children;
+    expect(buttons.map((b) => b.attrs["data-icon"])).toEqual(["copy", "thumbs-up", "thumbs-down"]);
+    expect(buttons.map((b) => b.attrs["aria-label"])).toEqual(buttons.map((b) => b.title));
+    expect(buttons.slice(1).map((b) => b.attrs["aria-pressed"])).toEqual(["false", "false"]);
+    // Nothing on the row writes into the composer.
+    expect(doc.composer.value).toBe("my draft");
+  });
+
+  it.each(ROW_RENDERERS)("%s: a 👎 asks why, optionally, and says the feedback stays on this computer (M-72)", (_name, render) => {
+    currentId.value = "frame-1";
+    const posts: Array<{ key?: string; rating?: unknown; reason?: unknown }> = [];
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {
+      posts.push(JSON.parse(String(init?.body || "{}")));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") });
+    });
+    const row = render({ role: "assistant", content: "Answer B." }) as unknown as RowEl;
+    const [, up, down] = row.querySelector(".msg-actions")!.children as [RowEl, RowEl, RowEl];
+    down.onclick!();
+    expect(down.attrs["aria-pressed"]).toBe("true");
+    expect(doc.hint.textContent).toContain("Saved on this computer");
+    const box = row.querySelector(".msg-feedback")!;
+    expect(box.querySelector(".mf-note")!.textContent).toContain("not sent anywhere");
+    (box.querySelector(".mf-reason") as unknown as { value: string }).value = "  used the wrong column ";
+    box.querySelector(".outline-btn")!.onclick!();
+    expect(posts.at(-1)).toEqual({ key: posts[0]!.key, rating: "down", reason: "used the wrong column" });
+    expect(row.querySelector(".msg-feedback")).toBeNull();
+    // A 👍 instead closes the question; the rating is all it sends.
+    down.onclick!();
+    up.onclick!();
+    expect(row.querySelector(".msg-feedback")).toBeNull();
+    expect(posts.at(-1)).toEqual({ key: posts[0]!.key, rating: "up" });
+    expect(up.attrs["aria-pressed"]).toBe("true");
+    expect(down.attrs["aria-pressed"]).toBe("false");
   });
 
   it("the first page, load-earlier and the live turn share one row implementation", () => {
@@ -786,9 +815,10 @@ describe("stored rows, first page and older page alike", () => {
     expect(button.getAttribute("aria-label")).toBeNull();
     expect(doc.hint.getAttribute("aria-live")).toBe("polite");
     expect(doc.hint.textContent).toContain(historyT("history.forkMessage.busy"));
+    // VIEW-2: the branch is named with the question's first 20 characters.
     expect(posts).toEqual([{
       url: "/api/v1/frames/frame-1/branches/fork",
-      body: { from_message_id: "msg-exact" },
+      body: { from_message_id: "msg-exact", name: "Why does the control…" },
     }]);
     release(new Response(JSON.stringify({ branch_id: "br-new", name: "alt" }), { status: 200 }));
     await first;
@@ -907,6 +937,72 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.composer.value).not.toBe("");
     expect(doc.composer.style.height).toBe("64px");
     expect(doc.composer.focused).toBe(1);
+  });
+
+  it("示例项目's empty session offers the example until it has been run, and opens it once started (ONB-4)", async () => {
+    const opened: unknown[][] = [];
+    vi.stubGlobal("openConversation", (...args: unknown[]) => {
+      opened.push(args);
+    });
+    let seeded = false;
+    const posts: unknown[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(JSON.parse(String(init.body || "{}")));
+        return new Response(JSON.stringify({ seeded: false, running: true, frame_id: "f-example", project_id: "proj_example" }));
+      }
+      return new Response(JSON.stringify({ seeded, running: false, frame_id: seeded ? "f-example" : null }));
+    });
+    const settle = async () => {
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    // Another project: no example card.
+    project.value = "p-other";
+    renderEmptySession();
+    await settle();
+    expect(doc.messages.querySelector(".es-example")).toBeNull();
+    // 示例项目, not run yet: the card, which starts it and opens its session.
+    doc.messages.children.length = 0;
+    project.value = "proj_example";
+    renderEmptySession();
+    await settle();
+    const card = doc.messages.querySelector(".es-example")!;
+    expect(card).not.toBeNull();
+    const button = card.querySelector(".solid-btn")!;
+    button.onclick!();
+    await settle();
+    expect(posts).toEqual([expect.objectContaining({ confirm: true })]);
+    expect(opened).toEqual([["f-example", "proj_example"]]);
+    // Already run: the empty session is the generic one.
+    seeded = true;
+    doc.messages.children.length = 0;
+    renderEmptySession();
+    await settle();
+    expect(doc.messages.querySelector(".es-example")).toBeNull();
+  });
+
+  it("the literature starter does not name an internal tool (SET-4)", async () => {
+    for (const lang of ["zh", "en"] as const) {
+      await setLang(lang);
+      doc.messages.children.length = 0;
+      renderEmptySession();
+      const prompts = doc.messages.querySelectorAll(".es-chip-p").map((node) => node.textContent);
+      expect(prompts.some((text) => text.includes("web_search"))).toBe(false);
+      expect(prompts[0]).toBe(historyT("starter.litReview.prompt"));
+      expect(prompts[0]).toMatch(lang === "zh" ? /^在网上检索/ : /^Search the web for/);
+    }
+  });
+
+  it("offers no starters under a read-only imported copy's banner (M-66)", () => {
+    const banner = new RowEl("div");
+    banner.id = "imported-banner";
+    doc.body.appendChild(banner);
+    renderEmptySession();
+    expect(doc.messages.querySelector(".es-chip")).toBeNull();
+    const note = doc.messages.querySelector(".empty-session")!;
+    expect(note.textContent).toContain(historyT("history.importedEmpty.title"));
+    expect(note.textContent).toContain(historyT("history.importedEmpty.sub"));
   });
 });
 

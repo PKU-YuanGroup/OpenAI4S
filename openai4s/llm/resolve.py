@@ -1,7 +1,7 @@
 """The one place that answers "which model will this install actually use?".
 
 The daemon's process config is only the base. What a turn really sends is that
-config plus the Customize → Models settings held in the store, plus whatever
+config plus the Settings → Models settings held in the store, plus whatever
 model the session itself selected. Two callers need that answer — the runtime
 that sends the request, and `doctor`, which exists to tell a user whether
 sending will work — and they had two separate implementations of it.
@@ -22,7 +22,7 @@ import ipaddress
 from typing import Any
 from urllib.parse import urlsplit
 
-#: The settings Customize → Models writes. `llm_api_key` is deliberately absent:
+#: The settings Settings → Models writes. `llm_api_key` is deliberately absent:
 #: after migration that row holds a broker reference rather than a key, so it
 #: must be read through `get_secret_setting`, never `get_setting`.
 _PLAIN_SETTINGS = ("llm_model", "llm_base_url", "llm_provider")
@@ -80,7 +80,7 @@ def keyless_endpoint(provider: str, model: str, base_url: str) -> bool:
 
 
 def store_overrides(store: Any) -> dict[str, str]:
-    """The Customize → Models settings, read defensively.
+    """The Settings → Models settings, read defensively.
 
     A store that cannot be read yields no overrides rather than an exception:
     both callers are on paths that must still produce an answer.
@@ -110,7 +110,7 @@ def store_overrides(store: Any) -> dict[str, str]:
 def resolve_llm_config(
     base: Any, store: Any = None, *, model_override: str | None = None
 ) -> Any:
-    """base config + Customize → Models overrides + the session's chosen model.
+    """base config + Settings → Models overrides + the session's chosen model.
 
     When the PROVIDER is overridden the base provider's concrete base_url,
     model and key must NOT be inherited, or requests go to the wrong endpoint

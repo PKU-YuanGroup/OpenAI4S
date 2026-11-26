@@ -11,7 +11,7 @@
  */
 
 import { effect, untracked } from "@preact/signals";
-import { LANG } from "../../i18n/runtime";
+import { LANG, onLanguageChange } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { actionTimeline } from "../../stores/timeline";
@@ -25,17 +25,32 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     usageParts:
       "Tokens this session has used so far: {0} new input · {1} cached input · {2} output{3}. Cached input is context sent again and read from the provider's cache.",
     usageReasoning: " (of which {0} reasoning)",
+    turnParts: "The latest turn: {0}{1} new input · {2} cached input{3} · {4} output.",
+    turnCall: "1 model call · ",
+    turnCalls: "{0} model calls · ",
+    turnCacheShare: " ({0}% of its input)",
     tokens: "{0} tokens",
+    tokensTurn: "{0} tokens · +{1} this turn",
+    heavyTurn:
+      "This turn has used more than {0} tokens. If it keeps repeating itself without running code, press Stop (■ beside the message box).",
+    heavyReason: "over {0} tokens this turn",
     minutes: "{0} min {1} s",
     seconds: "{0} s",
   },
   zh: {
     clockTitle: "本回合已运行 {0}",
-    usageTitle: "本会话累计用量：输入 {0} · 输出 {1} tokens。点击查看明细。",
+    usageTitle: "本会话累计用量：输入 {0} · 输出 {1} token。点击查看明细。",
     usageParts:
-      "本会话累计用量：新输入 {0} · 缓存输入 {1} · 输出 {2}{3} tokens。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
+      "本会话累计用量：新输入 {0} · 缓存输入 {1} · 输出 {2}{3} token。缓存输入是重复发送、由模型服务从缓存读取的上下文。",
     usageReasoning: "（其中推理 {0}）",
-    tokens: "{0} tokens",
+    turnParts: "最近一轮：{0}新输入 {1} · 缓存输入 {2}{3} · 输出 {4}。",
+    turnCall: "1 次模型调用 · ",
+    turnCalls: "{0} 次模型调用 · ",
+    turnCacheShare: "（占输入的 {0}%）",
+    tokens: "{0} token",
+    tokensTurn: "{0} token · 本轮 +{1}",
+    heavyTurn: "本轮已用超过 {0} token。如果它一直在重复、没有运行代码，可以点停止（输入框旁的 ■）。",
+    heavyReason: "本轮已超过 {0} token",
     minutes: "{0} 分 {1} 秒",
     seconds: "{0} 秒",
   },
@@ -124,17 +139,129 @@ export function usageBreakdown(timeline: unknown, fid: string | null): UsageBrea
   return { fresh: Math.max(0, sum.input - sum.cached), cached: sum.cached, output: sum.output, reasoning: sum.reasoning };
 }
 
+type TimelineRow = { turn_id?: unknown; kind?: unknown; usage?: Record<string, unknown> | null };
+
+/**
+ * The ledger kinds recorded for one model reply each (`package_diagnosis.py`'s
+ * REPLY_KINDS): a tool batch, a Cell, a finalize, or a prose-only reply.
+ */
+const MODEL_CALL_KINDS = new Set(["code", "native_tools", "finalize", "no_action"]);
+
+export type TurnUsage = UsageBreakdown & { total: number; calls: number };
+
+/**
+ * M-18: what the latest turn added. A session total of "936k tokens" said
+ * nothing about the turn just run. The latest turn is the turn of the
+ * timeline's last row; its model calls are summed when the whole turn is in
+ * the loaded window (its own user row is there, or nothing is earlier).
+ * CHAT-2: and counted -- an 18-minute turn was 36 calls nobody could see.
+ */
+export function latestTurnUsage(timeline: unknown, fid: string | null): TurnUsage | null {
+  const view = timeline as { root_frame_id?: unknown; has_earlier?: unknown; groups?: unknown } | null;
+  if (!view || !fid || view.root_frame_id !== fid || !Array.isArray(view.groups)) return null;
+  const rows = view.groups as TimelineRow[];
+  const turn = [...rows].reverse().find((row) => row && typeof row.turn_id === "string" && row.turn_id)?.turn_id;
+  if (!turn) return null;
+  const own = rows.filter((row) => row && row.turn_id === turn);
+  if (view.has_earlier === true && !own.some((row) => row.kind === "user")) return null;
+  const sum = { input: 0, cached: 0, output: 0, reasoning: 0 };
+  let calls = 0;
+  for (const row of own) {
+    if (MODEL_CALL_KINDS.has(String(row.kind))) calls += 1;
+    const usage = row.usage;
+    if (!usage) continue;
+    sum.input += Number(usage.input_tokens) || 0;
+    sum.cached += Number(usage.cache_read) || 0;
+    sum.output += Number(usage.output_tokens) || 0;
+    sum.reasoning += Number(usage.reasoning_tokens) || 0;
+  }
+  const total = sum.input + sum.output;
+  if (!(total > 0)) return null;
+  return {
+    fresh: Math.max(0, sum.input - sum.cached),
+    cached: sum.cached,
+    output: sum.output,
+    reasoning: sum.reasoning,
+    total,
+    calls,
+  };
+}
+
+/**
+ * SET-5: the whole prompt of this session's latest model call (`input_tokens`
+ * includes what was read from the cache), from the loaded action timeline;
+ * null when the timeline is another session's or holds no model call.
+ */
+export function latestPromptTokens(fid: string | null, timeline: unknown = actionTimeline.value): number | null {
+  const view = timeline as { root_frame_id?: unknown; groups?: unknown } | null;
+  if (!view || !fid || view.root_frame_id !== fid || !Array.isArray(view.groups)) return null;
+  const rows = view.groups as TimelineRow[];
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const input = Number(rows[index]?.usage?.input_tokens) || 0;
+    if (input > 0) return input;
+  }
+  return null;
+}
+
+/** The tooltip's line for the latest turn: its calls, its input split, its output. */
+function turnLine(turn: TurnUsage): string {
+  const calls = turn.calls === 1 ? copy("turnCall") : turn.calls > 1 ? copy("turnCalls", turn.calls) : "";
+  const input = turn.fresh + turn.cached;
+  // The cache share is of the turn's input (`input_tokens` includes the cached part).
+  const share = input > 0 && turn.cached > 0 ? copy("turnCacheShare", Math.round((turn.cached / input) * 100)) : "";
+  return copy(
+    "turnParts",
+    calls,
+    turn.fresh.toLocaleString(),
+    turn.cached.toLocaleString(),
+    share,
+    turn.output.toLocaleString(),
+  );
+}
+
 /** The frame's own totals, kept for the tooltip's fallback wording. */
 let lastTotals: { fid: string; input: number; output: number } | null = null;
 
-/** The chip's tooltip: the breakdown when the timeline can give one, else input / output. */
+/**
+ * SYNC-6: a small task spun for minutes and 690k tokens with nothing on screen
+ * changing colour. Past this many tokens in the running turn the chip turns
+ * amber and its title says Stop is there.
+ */
+export const HEAVY_TURN_TOKENS = 200_000;
+
+/**
+ * The chip: the session's total and what the latest turn added (M-18); its
+ * tooltip the breakdown when the timeline can give one, else input / output.
+ */
 export function paintUsageTitle(): void {
   if (typeof document === "undefined") return;
   const node = document.getElementById("session-usage");
   const totals = lastTotals;
   if (!node || !totals || totals.fid !== currentId.value) return;
+  const turn = latestTurnUsage(actionTimeline.value, totals.fid);
+  // The frame's totals are re-read now and then, the timeline arrives live:
+  // never "0 tokens · +1.3k this turn".
+  const sum = Math.max(totals.input + totals.output, turn ? turn.total : 0);
+  node.classList.toggle("hidden", !(sum > 0));
+  const total = formatTokens(sum);
+  const text = turn ? copy("tokensTurn", total, formatTokens(turn.total)) : copy("tokens", total);
   const parts = usageBreakdown(actionTimeline.value, totals.fid);
-  node.title = parts
+  const latest = turn ? " " + turnLine(turn) : "";
+  // Only while it runs: Stop is what the warning is for.
+  const heavy = !!(running.value && turn && turn.total > HEAVY_TURN_TOKENS);
+  node.classList.toggle("heavy", heavy);
+  if (heavy) {
+    // CHAT-2: the amber chip says why on its face, not only in its tooltip.
+    node.textContent = text + " · ";
+    const reason = document.createElement("span");
+    reason.className = "session-usage-reason";
+    reason.textContent = copy("heavyReason", formatTokens(HEAVY_TURN_TOKENS));
+    node.appendChild(reason);
+  } else {
+    node.textContent = text;
+  }
+  const heavyLine = heavy ? copy("heavyTurn", formatTokens(HEAVY_TURN_TOKENS)) + " " : "";
+  node.title = heavyLine + (parts
     ? copy(
         "usageParts",
         parts.fresh.toLocaleString(),
@@ -142,7 +269,7 @@ export function paintUsageTitle(): void {
         parts.output.toLocaleString(),
         parts.reasoning ? copy("usageReasoning", parts.reasoning.toLocaleString()) : "",
       )
-    : copy("usageTitle", totals.input.toLocaleString(), totals.output.toLocaleString());
+    : copy("usageTitle", totals.input.toLocaleString(), totals.output.toLocaleString())) + latest;
 }
 
 let usageSeq = 0;
@@ -167,9 +294,6 @@ export async function refreshSessionUsage(): Promise<void> {
   if (seq !== usageSeq || currentId.value !== fid) return;
   const input = Number(frame.input_tokens || 0);
   const output = Number(frame.output_tokens || 0);
-  const total = input + output;
-  node.classList.toggle("hidden", !(total > 0));
-  node.textContent = copy("tokens", formatTokens(total));
   lastTotals = { fid, input, output };
   paintUsageTitle();
 }
@@ -213,6 +337,35 @@ export function bindTurnProgress(onUsageClick?: () => void): void {
   // The timeline is read after the session opens and again as the turn goes on.
   effect(() => {
     void actionTimeline.value;
-    untracked(() => paintUsageTitle());
+    untracked(() => followTimeline());
   });
+  // SYNC-20: the chip and the clock are painted text, not data-i18n; a
+  // language switch says them again (no request: the totals have not moved).
+  onLanguageChange(() => {
+    paintUsageTitle();
+    paintTurnClock();
+  });
+}
+
+let lastTurnTotal = -1;
+let usageRefresh: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * A model call landed in the timeline: the session's totals moved too, so
+ * they are re-read soon. Only while a turn runs -- that is when model calls
+ * land. An idle timeline change (the session opened, the timeline searched,
+ * folded or paged) costs nothing: the chip is already never below the turn,
+ * and the turn's end re-reads the totals anyway.
+ */
+function followTimeline(): void {
+  paintUsageTitle();
+  const turn = latestTurnUsage(actionTimeline.value, currentId.value);
+  const total = turn ? turn.total : 0;
+  if (total === lastTurnTotal) return;
+  lastTurnTotal = total;
+  if (usageRefresh || !running.value) return;
+  usageRefresh = setTimeout(() => {
+    usageRefresh = null;
+    void refreshSessionUsage();
+  }, 500);
 }

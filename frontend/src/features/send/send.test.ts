@@ -245,7 +245,8 @@ describe("send() submission receipts (NV-01)", () => {
   const sentId = () => String(posts()[0]?.body.client_request_id || "");
   const receiptPath = () => `/frames/frame_1/message-admissions/${sentId()}`;
   const lastHint = () => {
-    const kids = nodes["composer-hint"]!.children as FakeEl[];
+    // An error line ends with its dismiss button (SYNC-29); the text is before it.
+    const kids = (nodes["composer-hint"]!.children as FakeEl[]).filter((k) => k.className !== "hint-dismiss");
     return String((kids[kids.length - 1] as FakeEl | undefined)?.textContent || "");
   };
   const flush = async () => {

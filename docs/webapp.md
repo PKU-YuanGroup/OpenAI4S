@@ -159,7 +159,7 @@ scripts.
   interpreter path.
 - **Standard environment readiness (opt-in)** — with the Stage 1 flag enabled,
   persistent dashboard and conversation banners show when the `standard`
-  Python/R pair is missing or cannot be verified. Customize → Compute lists all
+  Python/R pair is missing or cannot be verified. Settings → Compute lists all
   missing environments and packages and gives the one instruction the CLI
   banner and `doctor` give: copy-only `openai4s setup` for missing
   environments, single packages through Compute; the browser never installs
@@ -323,7 +323,7 @@ product affordances remain intentionally partial:
 | Standalone Jupyter adapter | Optional `openai4s-python` / `openai4s-r` KernelSpecs and a lazy `ipykernel` wire bridge are available outside the daemon. They use independent namespaces and do not attach to Web-session Host RPC, artifacts, ledger, queue, or recovery. |
 | Scientific renderer registry | Safe catalog and version-bound descriptor routes are implemented and drive dedicated 2D chemistry, genome, sequence/MSA, and LaTeX UI components. Descriptors stay bound to immutable Artifact versions and provenance. |
 | Variable Inspector | Manual Python/R namespace refresh is implemented through a dedicated idle-only protocol request. It never starts a worker, never runs a Cell, avoids custom repr/active bindings/promises, and fails closed while Busy/Restoring/Ended. Fingerprints are bounded samples, not namespace snapshots. |
-| Local model discovery | Customize → Models scans a fixed literal-loopback catalogue with proxies and redirects disabled. Results are suggestions only; a user must explicitly add a profile. Unknown local model capabilities stay conservative until explicitly configured. |
+| Local model discovery | Settings → Models scans a fixed literal-loopback catalogue with proxies and redirects disabled. Results are suggestions only; a user must explicitly add a profile. Unknown local model capabilities stay conservative until explicitly configured. |
 | Context composition / security panels | Safe session-specific REST projections and frontend containers are implemented. Sandbox status aggregates the Python/R workers that actually started and takes the weaker claim when they differ; it remains `not_started` only until neither language has run a self-test. |
 | Delegation durability and policy | A session-wide persisted tree owns the spawn budget, child progress/results, cancellation propagation, and turn-boundary steering inbox. Child model/steps/permission/capability restrictions are enforced at both native-tool catalog and Host RPC boundaries and may not widen their parent's ceiling. Daemon restart preserves the tree but truthfully marks unfinished children `stopped: daemon_restart`; it does not claim process continuation. |
 | Session export/import | Deterministic hashed packages and the dashboard/session-menu UI are implemented. Packages preserve branch-owned conversation, complete canonical provider groups, Revert projection metadata, Notebook/Artifact/lineage state, evidence-review history and checkpoint plan/review/memory snapshots. Import rejects traversal, duplicate/symlink entries, tampering, compression/size/secret violations, never overwrites an existing session, never starts a Kernel, and remains durably quarantined until a confirmed fresh restart. |
@@ -391,7 +391,7 @@ back that same set together; no schema or migration change is involved.
 ### Files filtering and pages / 文件筛选与分页
 
 Files combines filename, a human type (Tables, Images, Reports & documents,
-Code, Other — the same table on the client and in `GET .../artifact-index?kind=`)
+Code, Structures & sequences, Other — the same table on the client and in `GET .../artifact-index?kind=`)
 and Uploaded/Generated filters. The cards,
 displayed count, empty message and Load more all describe the same result. A
 session starts at 50 files and adds 50 per click; changing any filter or the
@@ -409,7 +409,7 @@ refuses a name already in use (`409 artifact_exists`). The Viewer's single **Cop
 link** copies the full URL. Late responses and
 artifact events from a previous session cannot replace the current cards.
 
-Files 可组合文件名、按人能读懂的类型（表格、图片、报告与文档、代码、其他；前端与
+Files 可组合文件名、按人能读懂的类型（表格、图片、报告与文档、代码、结构与序列、其他；前端与
 `GET .../artifact-index?kind=` 用同一张表）及上传/生成来源筛选。卡片、显示数量、空状态和
 「加载更多」基于同一结果。会话首次显示 50 项，每次再加载 50 项；改变筛选、
 会话或范围会重置第一页。刷新保留已请求的容量，包括尚未填满的最后一页。

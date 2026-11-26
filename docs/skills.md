@@ -103,7 +103,7 @@ treated as usable.
 A default-off [semantic judgment layer](experimental-judgment.md) can send
 Skill text, paper passages, or selected data rows to TypeSafe Jev
 (`api.typesafe.ai`, hosted in the United States) when you enable it under
-Customize → General and acknowledge the disclosure. Affected Skills:
+Settings → General and acknowledge the disclosure. Affected Skills:
 
 | Skill | What changes when the matching capability is on |
 | --- | --- |
@@ -125,9 +125,23 @@ nothing. `OPENAI4S_EXPERIMENTAL_JUDGMENT=0` is the kill switch.
    (`scripts/check_directory_readmes.py` enforces it) and run
    `python scripts/render_skill_install_sections.py` to stamp the pair's
    Install section; `tests/test_skills_installer_contract.py` fails until you do.
-4. That's it — the loader discovers it on the next run and surfaces its one-line summary to the agent. Bundled skills (`origin: openai4s`) are read-only; skills you author or import are editable from the UI (**Customize → Skills**).
+4. That's it — the loader discovers it on the next run and surfaces its one-line summary to the agent. Bundled skills (`origin: openai4s`) are read-only; skills you author or import are editable from the UI (**Settings → Skills**).
 
 GPU/model Skills (`requirements: [gpu]`) run their heavy step on a remote GPU through [`host.compute`](compute.md); everything else runs directly in the kernel.
+
+### Network manifest
+
+A Skill declares its network in frontmatter (`capabilities.network.mode`: `none`,
+`host_only` with a `domains` list, or `raw_required`). A `host_only` list limits
+only the requests the Skill's **own helper code** (its `kernel.py`) makes through
+the Host: a helper's `host.web_fetch` / `host.web_search` / `host.bash` URL /
+`host.request_network_access` outside the list is refused before it is sent,
+and approving it cannot widen the list. The rest of the session is not limited:
+native tools (`web_fetch`, `web_search`, `science_search`), the agent's own Cell
+code and its `host.bash` keep the session's ordinary network policy. Loading a
+`host_only` Skill still needs a kernel whose sandbox blocks raw network, so the
+helpers cannot go around the Host; `raw_required` Skills are refused in this
+version. See [security.md](security.md) for how a call is attributed.
 
 ## Three different things a Skill can give an agent
 

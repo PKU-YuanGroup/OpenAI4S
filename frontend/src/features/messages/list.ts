@@ -13,7 +13,7 @@
 
 import { effect } from "@preact/signals";
 import { t } from "../../i18n/runtime";
-import { currentId, feedback as feedbackSignal } from "../../stores/session";
+import { currentId, feedback as feedbackSignal, project as currentProject } from "../../stores/session";
 import { permCards, running, stepEls, stream as liveStream } from "../../stores/stream";
 import { branchState } from "../../stores/timeline";
 import { filesT } from "../artifacts/copy";
@@ -34,14 +34,21 @@ import { api } from "../sessions/api";
 import { hint, reportFailure } from "../sessions/chrome";
 import { grow } from "../sessions/dom";
 import { iconEl } from "../sessions/icon";
+import { teamT } from "../chrome/team-copy";
+import { teamUser } from "../chrome/team-identity";
 import { historyT } from "./copy";
+import { renderSentAttachments } from "./attachments";
+import { renderMemoriesMark } from "./memories";
 import { el, messagesHost } from "./dom";
 import { continueMarker, failureMeta, isContinuePrompt } from "./failure";
+import { EXAMPLE_PROJECT, mountExampleCard } from "./example";
 import { embedArtifactFigures } from "./figures";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { planModeRequestText, planSeed, planSeedMarker } from "./planPrompt";
+import { resayProgress } from "./progress";
 import { cancelledIdentity, stoppedMarker } from "./stopped";
+import { cellCardOnScreen, chatCells, renderStoredCell, type StoredCell } from "./cellCard";
 import { dropEmptyProse, openTurnGroup, placeCardInTurn, turnTextKey, type TurnGroup } from "./turnGroup";
 
 export const INITIAL_RENDER_BATCH = 40;
@@ -49,7 +56,7 @@ export const INITIAL_RENDER_BATCH = 40;
 export type HistoryItem = {
   t: number;
   seq: number;
-  kind: "msg" | "step" | "perm";
+  kind: "msg" | "step" | "perm" | "cell";
   v: unknown;
 };
 
@@ -62,6 +69,10 @@ export type StoredMessage = {
   artifact_refs?: unknown;
   /** The pins the message was sent with (SYNC-5). */
   annotations?: unknown;
+  /** The uploads the message was sent with (M-10): `{artifact_id, name}` each. */
+  attachments?: unknown;
+  /** The saved memories that turn's prompt carried (M-81). */
+  memories?: unknown;
   failure?: { request_id?: unknown; code?: unknown; output_committed?: unknown } | null;
   cancelled?: { request_id?: unknown; execution_id?: unknown; reason?: unknown } | null;
   review_status?: unknown;
@@ -129,22 +140,53 @@ function feedbackBag(): Record<string, unknown> {
   return next;
 }
 
-function sendFeedback(key: string, rating: string | null): void {
+/**
+ * Store a rating (and a 👎's optional reason) with the session. It is kept in
+ * this daemon's database and nowhere else (M-72): the line says so instead of
+ * a bare "Recorded".
+ */
+function sendFeedback(key: string, rating: string | null, reason?: string): void {
   if (!currentId.value) return;
   const bag = feedbackBag();
   if (rating) bag[key] = rating;
   else delete bag[key];
   api("/frames/" + currentId.value + "/feedback", {
     method: "POST",
-    body: JSON.stringify({ key, rating }),
+    body: JSON.stringify(reason ? { key, rating, reason } : { key, rating }),
   }).catch(() => {});
   hint(
-    rating === "up"
-      ? t("toast.feedbackUp")
-      : rating === "down"
-        ? t("toast.feedbackDown")
-        : t("toast.feedbackCancelled"),
+    historyT(
+      reason
+        ? "history.feedback.reasonSaved"
+        : rating === "up"
+          ? "history.feedback.up"
+          : rating === "down"
+            ? "history.feedback.down"
+            : "history.feedback.cleared",
+    ),
   );
+}
+
+/** After a 👎: what went wrong, if the user wants to say (M-72). */
+function feedbackReasonBox(key: string, done: () => void): HTMLElement {
+  const box = el("div", "msg-feedback");
+  const label = el("label", "mf-label", historyT("history.feedback.reasonLabel"));
+  const area = el("textarea", "mf-reason") as HTMLTextAreaElement;
+  area.rows = 2;
+  area.maxLength = 2000;
+  area.placeholder = historyT("history.feedback.reasonPlaceholder");
+  label.appendChild(area);
+  box.appendChild(label);
+  const save = el("button", "outline-btn", historyT("history.feedback.reasonSave")) as HTMLButtonElement;
+  save.type = "button";
+  save.onclick = () => {
+    const reason = area.value.trim();
+    if (reason) sendFeedback(key, "down", reason);
+    done();
+  };
+  box.appendChild(save);
+  box.appendChild(el("div", "mf-note", historyT("history.feedback.where")));
+  return box;
 }
 
 /**
@@ -182,33 +224,45 @@ export function addMsgActions(wrap: HTMLElement, text: string): void {
   (tdn as HTMLButtonElement).type = "button";
   tdn.title = t("msgAction.thumbsDown");
   paintIcon(tdn, "thumbs-down");
+  // SYNC-26: an icon button is named, and a rating says whether it is on.
+  copy.setAttribute("aria-label", copy.title);
+  tup.setAttribute("aria-label", tup.title);
+  tdn.setAttribute("aria-label", tdn.title);
+  const pressed = (): void => {
+    tup.setAttribute("aria-pressed", String(tup.classList.contains("on")));
+    tdn.setAttribute("aria-pressed", String(tdn.classList.contains("on")));
+  };
+  pressed();
+  let reasonBox: HTMLElement | null = null;
+  const closeReason = (): void => {
+    reasonBox?.remove();
+    reasonBox = null;
+  };
   tup.onclick = () => {
     const on = !tup.classList.contains("on");
     tup.classList.toggle("on", on);
     tdn.classList.remove("on");
+    pressed();
+    closeReason();
     sendFeedback(key, on ? "up" : null);
   };
   tdn.onclick = () => {
     const on = !tdn.classList.contains("on");
     tdn.classList.toggle("on", on);
     tup.classList.remove("on");
+    pressed();
+    closeReason();
     sendFeedback(key, on ? "down" : null);
+    if (on) {
+      reasonBox = feedbackReasonBox(key, closeReason);
+      row.parentNode?.insertBefore(reasonBox, row.nextSibling ?? null);
+    }
   };
-  const edit = el("button");
-  (edit as HTMLButtonElement).type = "button";
-  edit.title = t("common.edit");
-  paintIcon(edit, "pencil");
-  edit.onclick = () => {
-    const c = document.getElementById("composer") as HTMLTextAreaElement | null;
-    if (!c) return;
-    c.value = text || "";
-    grow();
-    c.focus();
-  };
+  // M-71 / SYNC-26: no "Edit" on an answer. It poured the turn's raw Markdown
+  // into the composer, overwriting the draft, with nothing to say why.
   row.appendChild(copy);
   row.appendChild(tup);
   row.appendChild(tdn);
-  row.appendChild(edit);
   wrap.appendChild(row);
 }
 
@@ -328,13 +382,21 @@ function forkMessageControl(messageId: string): HTMLElement {
     if (messageForkPending(frameId, messageId)) return;
     const busy = historyT("history.forkMessage.busy");
     const owner = frameId + "\0" + messageId;
-    button.setAttribute("aria-disabled", "true");
-    button.setAttribute("aria-busy", "true");
-    button.textContent = busy;
-    button.title = busy;
-    hint(busy, false, true);
-    busyHintOwner = owner;
-    return forkFromMessage(frameId, messageId).then(
+    // VIEW-2: the question as its bubble shows it names the branch and goes
+    // back into the composer once the branch is open.
+    const wrap = row.parentNode as HTMLElement | null;
+    const shown = wrap && typeof wrap.querySelector === "function" ? wrap.querySelector(".bubble") : null;
+    const question = String((shown && shown.textContent) || (wrap && wrap.dataset && wrap.dataset.sentText) || "");
+    // Busy once the request really goes out: a switch asks its confirm first.
+    const creating = () => {
+      button.setAttribute("aria-disabled", "true");
+      button.setAttribute("aria-busy", "true");
+      button.textContent = busy;
+      button.title = busy;
+      hint(busy, false, true);
+      busyHintOwner = owner;
+    };
+    return forkFromMessage(frameId, messageId, { question, onCreating: creating }).then(
       (result) => {
         settleForkButton(button, frameId, owner, busy, label, result);
         return result;
@@ -397,13 +459,17 @@ export function renderStored(
     w.appendChild(b);
     renderMessageRefChips(w, m.artifact_refs);
     renderProjectRefChips(w, text);
+    renderSentAttachments(w, m.attachments);
     renderAnnotationChip(w, m.annotations);
+    renderMemoriesMark(w, m.memories);
     if (canForkFromMessage(m) && typeof m.message_id === "string") {
       w.appendChild(forkMessageControl(m.message_id));
     }
   } else {
     const md = el("div", "md");
-    md.innerHTML = renderMd(text);
+    // Decision 30: a server progress row in the UI language; the stored row
+    // (`_messageText`, Copy) is unchanged.
+    md.innerHTML = renderMd(resayProgress(text));
     embedArtifactFigures(md);
     w.appendChild(md);
     if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
@@ -616,9 +682,19 @@ export function historyTurns(): HistoryTurns {
     }) as unknown as ParentNode;
 
   const add = (item: HistoryItem, target: ParentNode): void => {
+    if (item.kind === "cell") {
+      renderStoredCell(item.v as StoredCell, cardSink(target, item.t));
+      return;
+    }
     if (item.kind !== "msg") {
       const render = item.kind === "perm" ? renderStoredPermissionImpl : renderStoredStepImpl;
       if (render) render(item.v, cardSink(target, item.t));
+      // As live: a step after a Cell's card makes that card its quieter head
+      // (`send/step.ts` `demoteToolCard`).
+      if (item.kind === "step" && group) {
+        const cells = group.wrap.querySelectorAll(":scope > .activity");
+        cells[cells.length - 1]?.classList.add("has-steps");
+      }
       return;
     }
     const m = item.v as StoredMessage;
@@ -653,10 +729,35 @@ export function historyTurns(): HistoryTurns {
       review = { status: String(status), truth };
     }
     if (m.failure && m.failure.request_id) failure = m.failure;
-    run.push(text);
+    // Decision 30: shown in the UI language; the rating key and Copy read the
+    // stored row, so they do not change with the language.
+    run.push(resayProgress(text));
     prose.push(text);
   };
   return { add, end };
+}
+
+/**
+ * The prose key a reload gives the newest turn of `rows` (oldest first), as
+ * `historyTurns` assembles it: the assistant rows after the last user row, up
+ * to a stopped marker that closes it. Null when the page does not reach that
+ * turn's question (its start is on an earlier page).
+ */
+export function lastStoredTurnKey(rows: StoredMessage[]): string | null {
+  const prose: string[] = [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const m = rows[i] as StoredMessage;
+    const text = messageText(m);
+    if (!text.trim()) continue;
+    if (m.role === "user") return turnTextKey(prose.join("\n\n"));
+    // A stopped marker ends its turn: rows after it are a turn of their own.
+    if (cancelledIdentity(m.cancelled)) {
+      if (prose.length) return turnTextKey(prose.join("\n\n"));
+      continue;
+    }
+    prose.unshift(text);
+  }
+  return null;
 }
 
 /**
@@ -684,7 +785,12 @@ function historyNode(node: Element): boolean {
 export function prependHistory(
   host: HTMLElement,
   older: StoredMessage[],
-  held: { messages: StoredMessage[]; steps: Array<Record<string, unknown>>; approvals?: Array<Record<string, unknown>> },
+  held: {
+    messages: StoredMessage[];
+    steps: Array<Record<string, unknown>>;
+    approvals?: Array<Record<string, unknown>>;
+    cells?: StoredCell[];
+  },
 ): void {
   const live = (liveStream.value as { wrap?: HTMLElement } | null)?.wrap || null;
   const kids = Array.from(host.children) as HTMLElement[];
@@ -699,13 +805,22 @@ export function prependHistory(
   const firstUser = held.messages.find((m) => m.role === "user" && messageText(m).trim());
   const inLive = (item: HistoryItem): boolean => {
     if (!live || item.kind === "msg") return false;
+    if (item.kind === "cell") {
+      const card = cellCardOnScreen((item.v as StoredCell).producing_cell_id);
+      return !!card && live.contains(card);
+    }
     const row = item.v as { step_id?: unknown; decision_id?: unknown };
     const registry = (item.kind === "perm" ? permCards.value : stepEls.value) as Record<string, { card?: Node } | undefined>;
     const card = registry[String(item.kind === "perm" ? row.decision_id : row.step_id)]?.card;
     return !!card && live.contains(card);
   };
   const items: HistoryItem[] = [];
-  for (const item of interleaveHistory([...older, ...held.messages], held.steps.filter(chatStep), held.approvals)) {
+  for (const item of interleaveHistory(
+    [...older, ...held.messages],
+    held.steps.filter(chatStep),
+    held.approvals,
+    held.cells,
+  )) {
     if (firstUser && item.v === firstUser) break;
     if (!inLive(item)) items.push(item);
   }
@@ -803,12 +918,28 @@ export function cancelFramedRender(): void {
 /** app.js:7226-7232. Starter chips use existing i18n keys (no new keys). */
 export function renderEmptySession(host: ParentNode | null = messagesHost()): void {
   if (!host) return;
+  // M-66: a read-only imported copy (its banner is up) is not a place to
+  // "Start a new analysis": the starters filled a composer that cannot send.
+  if (typeof document !== "undefined" && document.getElementById("imported-banner")) {
+    const note = el("div", "empty-session readonly-copy");
+    note.appendChild(el("div", "es-title", historyT("history.importedEmpty.title")));
+    note.appendChild(el("div", "es-sub", historyT("history.importedEmpty.sub")));
+    host.appendChild(note);
+    return;
+  }
   const wrap = el("div", "empty-session");
   wrap.appendChild(el("div", "es-title", t("empty.title")));
   wrap.appendChild(el("div", "es-sub", t("empty.sub")));
+  // ONB-4: 示例项目's empty session offers the example until it has been run.
+  if (currentProject.value === EXAMPLE_PROJECT) {
+    const slot = el("div", "es-example-slot");
+    wrap.appendChild(slot);
+    mountExampleCard(slot);
+  }
   const chips = el("div", "es-chips");
   const starters = [
-    { title: t("starter.litReview.title"), prompt: t("starter.litReview.prompt") },
+    // SET-4: worded without the internal tool name (messages/copy.ts).
+    { title: t("starter.litReview.title"), prompt: historyT("starter.litReview.prompt") },
     { title: t("starter.dataAnalysis.title"), prompt: t("starter.dataAnalysis.prompt") },
     { title: t("starter.proteinModel.title"), prompt: t("starter.proteinModel.prompt") },
     { title: t("starter.phylo.title"), prompt: t("starter.phylo.prompt") },
@@ -847,7 +978,9 @@ export function renderMissingSession(
   const wrap = el("div", "empty-session missing-session");
   wrap.setAttribute("role", "alert");
   wrap.appendChild(el("div", "es-title", historyT("history.missing.title")));
-  wrap.appendChild(el("div", "es-sub", historyT("history.missing.sub")));
+  // In team mode the usual reason is a session its owner keeps private, or a
+  // project this login is not in: the API answers 404 either way (TEAM-26).
+  wrap.appendChild(el("div", "es-sub", teamUser.value ? teamT("team.missing.sub") : historyT("history.missing.sub")));
   const actions = el("div", "missing-actions");
   const button = (label: string, onClick: () => void): void => {
     const b = el("button", "outline-btn", label) as HTMLButtonElement;
@@ -865,8 +998,14 @@ export function interleaveHistory(
   msgs: StoredMessage[],
   steps: Array<{ created_at?: number; seq?: number; [key: string]: unknown }>,
   approvals: Array<{ created_at?: unknown; [key: string]: unknown }> = [],
+  cells: StoredCell[] = [],
 ): HistoryItem[] {
   const items: HistoryItem[] = [];
+  // A Cell's card appears when it starts: before the steps it makes (a tie
+  // with one of them goes to the Cell) and after the prose that announced it.
+  for (const cell of chatCells(cells)) {
+    items.push({ t: Number(cell.started_at), seq: -1, kind: "cell", v: cell });
+  }
   for (const mm of msgs) {
     items.push({
       t: new Date(String(mm.created_at || "")).getTime() || 0,
@@ -923,10 +1062,42 @@ export function showLiveUserMessage(
     !row.dataset.messageId &&
     ((requestId && row.dataset.requestId === requestId) ||
       (executionId && row.dataset.executionId === executionId)));
+  const fork = typeof m.fork_checkpoint_id === "string" ? m.fork_checkpoint_id : null;
+  if (own && own.dataset.queuePreview) {
+    // Drawn from the queue's 160-character preview (timeline/queue.ts): its
+    // turn started, so the whole message takes its place, as a reload shows it.
+    const full = renderStored(
+      {
+        role: "user",
+        content: m.content,
+        created_at: m.created_at,
+        message_id: id || undefined,
+        fork_checkpoint_id: fork,
+        artifact_refs: m.artifact_refs,
+        annotations: m.annotations,
+      },
+      host,
+    );
+    if (full && own.parentNode) {
+      // Still the bubble of that execution, for "now running your queued message".
+      if (executionId) full.dataset.executionId = executionId;
+      own.parentNode.insertBefore(full, own);
+      own.remove();
+    }
+    return full;
+  }
   if (own) {
+    // Its turn started, so it was not dropped either (a late queue event can say so).
+    own.classList.remove("cancelled");
     if (id) own.dataset.messageId = id;
     // Its turn is running now; it is no longer waiting in the queue.
     own.classList.remove("queued");
+    // M-81: which saved memories this turn's prompt carried, as a reload shows.
+    renderMemoriesMark(own, m.memories);
+    // SYNC-5: the branch point a reload shows under the question, live too.
+    if (canForkFromMessage({ message_id: id, fork_checkpoint_id: fork }) && !own.querySelector(".msg-fork")) {
+      own.appendChild(forkMessageControl(id));
+    }
     return own;
   }
   (host as ParentNode).querySelector?.(":scope > .empty-session")?.remove();
@@ -936,8 +1107,11 @@ export function showLiveUserMessage(
       content: m.content,
       created_at: m.created_at,
       message_id: id || undefined,
+      fork_checkpoint_id: fork,
       artifact_refs: m.artifact_refs,
       annotations: m.annotations,
+      attachments: m.attachments,
+      memories: m.memories,
     },
     host,
   );

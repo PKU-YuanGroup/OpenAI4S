@@ -4,20 +4,22 @@
 
 已经装了 1.0.1、要升到它之后的版本的，先读下一节。已经装了 1.0.0、要升到 1.0.1 的，读「升级到 1.0.1」。已经装了 0.3.1、要升到 1.0.0 的，读「升级到 1.0.0」；从 0.3.1 直接升到 1.0.1 的，「升级到 1.0.0」和「升级到 1.0.1」两节都要读，第一次打开数据库时会把 schema 从 35 一次迁到 43。已经装了 0.3.0、要升到 0.3.1 的，读「升级到 0.3.1」。数据库仍在 0.2.x 的，0.3.1 会在一次打开里把它一直迁到 schema 35：到 schema 32 为止的步骤读「从 0.2.x 升级到 0.3.0」，33 到 35 读「升级到 0.3.1」。跨多个版本升级也是一样：第一次打开会跑完中间所有的迁移，所以要从你所装版本的下一个版本那一节读起，一直读到要安装的版本。从 0.3.0 直接升到 1.0.1 的，也会经过改写已落盘 judge 行的 schema 33（见「升级到 0.3.1」）。1.0.1 之后的每个版本发布前都会实测一条升级路径；实测了哪些数据、哪个通道，以及如何回退，见本页末尾的「发版前如何实测升级」。
 
-## 升级到 1.0.1 之后的版本（schema 43 → 44）
+## 升级到 1.0.1 之后的版本（schema 43 → 45）
 
 先停守护进程（`openai4s stop`，再用 `openai4s status` 确认），在没有任何进程运行时复制整个数据目录，包括 `openai4s.db-wal` 或 `openai4s.db-journal`，做法与下面 1.0.1 一节相同。
 
-第一个打开数据库的命令会把它从 schema 43 迁到 44。迁移 44 只新建一张表（一开始是空的），并在 `schema_migrations` 里记一行；1.0.1 存下的任何表、索引或行都不会被读取、改动或删除：
+第一个打开数据库的命令会把它从 schema 43 迁到 45。迁移 44 新增一个可为空的列，迁移 45 新建一张表（一开始是空的），两者各在 `schema_migrations` 里记一行；1.0.1 存下的任何行都不会被改写或删除：
 
 | 版本 | 新增内容 |
 | --- | --- |
-| 44 | `message_admissions`：普通消息的提交回执。`POST /frames/{fid}/message` 的应答丢失时，浏览器据此查询结果，而不是把这一轮再发一次 |
+| 44 | `execution_log_inlined_script`：`execution_log` 的 `inlined_script` 列。代码只是运行一个工作区脚本的单元（`exec(open("x.py").read())`、`runpy.run_path`、`%run`、R 的 `source("x.R")`）会记下该脚本运行时的内容（最多 256 KB），所以文件之后被改写或删除，Notebook 和两种 `.ipynb` 导出仍能显示并重新运行它。升级前记录的单元保持 NULL |
+| 45 | `message_admissions`：普通消息的提交回执。`POST /frames/{fid}/message` 的应答丢失时，浏览器据此查询结果，而不是把这一轮再发一次 |
 
-这条升级路径——1.0.1 的 Linux x86_64 安装包写入数据，新安装包迁移并回读，再把迁移前的副本恢复、由 1.0.1 重新读取——就是这次发布前实测过的那一条，见本页末尾的「发版前如何实测升级」。要回到 1.0.1：停守护进程，恢复你复制的那份数据目录；1.0.1 遇到 schema 44 的数据库会在写入任何内容之前以 `future_schema` 拒绝打开。
+这条升级路径——1.0.1 的 Linux x86_64 安装包写入数据，新安装包迁移并回读，再把迁移前的副本恢复、由 1.0.1 重新读取——就是发布前实测的那一条，见本页末尾的「发版前如何实测升级」。要回到 1.0.1：停守护进程，恢复你复制的那份数据目录；1.0.1 遇到 schema 45 的数据库会在写入任何内容之前以 `future_schema` 拒绝打开。
 
 API 客户端能看到的变化：
 
+- `GET /frames/{fid}/execution-log` 的每个条目和每个 `notebook_cell_finished` 事件都带 `inlined_script`，其他单元为 null。
 - `POST /frames/{fid}/message` 可选接收 `client_request_id`（32 位小写十六进制，须 `wait:false`，且不带 `annotation_ids`），此时 202 会带上 `admission_state`；`GET /frames/{fid}/message-admissions/{client_request_id}` 回答它后来怎样了。不带这个字段的请求得到与 1.0.1 完全相同的响应。
 - 模型服务拒绝请求时，公开失败信息的 `code` 改为按能证实的原因命名：`llm_authentication_failed`（HTTP 401）、`llm_access_denied`（403）、`llm_model_unavailable`（404 且服务的机器码为 `model_not_found`）、`llm_request_target_not_found`（其他 404）、`llm_endpoint_unreachable`（请求发出前连接被拒绝或域名无法解析）。1.0.1 里 401 和 403 都是 `llm_auth_rejected`，404 是 `llm_model_not_found`；这两个旧码只在同样的服务机器码出现在其他状态码上时保留。1.0.1 已存下的失败记录保持原来的码。
 - `GET /onboarding` 新增 `completed_explicitly`；`complete` 的含义不变。

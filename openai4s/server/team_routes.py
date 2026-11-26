@@ -23,8 +23,16 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from openai4s.storage.team import check_new_password
+
 from . import contract
-from .team_auth import TEAM_COOKIE, RateLimited, public_user
+from .team_auth import (
+    TEAM_COOKIE,
+    AccountDisabled,
+    RateLimited,
+    WrongPassword,
+    public_user,
+)
 
 _LOGIN = contract.RouteSpec("auth.login", "POST", r"/auth/login", mutates=True)
 _LOGOUT = contract.RouteSpec("auth.logout", "POST", r"/auth/logout", mutates=True)
@@ -48,8 +56,33 @@ _CLEAR_MY_KEY = contract.RouteSpec(
     "auth.me.llm_key.clear", "DELETE", r"/auth/me/llm-key", mutates=True
 )
 
+#: A user's own password (TEAM-22): self-service, so under `/auth/me` like
+#: the key. A member could only use the CLI-generated password forever or ask
+#: an admin at the host. Not a guest path: the gateway's guest gate keeps a
+#: replay-only account to sign-in, sign-out and who-am-I.
+_MY_PASSWORD = contract.RouteSpec(
+    "auth.me.password", "POST", r"/auth/me/password", mutates=True
+)
+
+#: The sessions this login may open in the replay viewer (TEAM-28): what a
+#: guest lands on, instead of an empty box asking for a session id they have
+#: no way to know. A guest path (the gateway's guest gate names it).
+_MY_REPLAYS = contract.RouteSpec(
+    "auth.me.replays", "GET", r"/auth/me/replays", mutates=False
+)
+
 ROUTES = contract.validate_routes(
-    (_CLEAR_MY_KEY, _LOGIN, _LOGOUT, _ME, _MY_KEY, _REDEEM, _SET_MY_KEY)
+    (
+        _CLEAR_MY_KEY,
+        _LOGIN,
+        _LOGOUT,
+        _ME,
+        _MY_KEY,
+        _MY_PASSWORD,
+        _MY_REPLAYS,
+        _REDEEM,
+        _SET_MY_KEY,
+    )
 )
 
 _PATH_PREFIX = "/auth/"
@@ -137,6 +170,84 @@ def _audit_key_change(store: Any, identity: Any, provider: str, action: str) -> 
         pass
 
 
+def _client_ip(self) -> str:
+    try:
+        return str(self.client_address[0])
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _handle_my_password(self, team_auth: Any) -> bool:
+    """Change the signed-in user's own password (TEAM-22)."""
+    identity = getattr(self, "_team_identity", None)
+    if team_auth is None:
+        self._json({"error": "team mode is disabled", "code": "team_off"}, 403)
+        return True
+    if identity is None:
+        self._json({"error": "login required", "code": "login_required"}, 401)
+        return True
+    if identity.kind != "user":
+        # The loopback CLI's service identity has no account row; its
+        # credential is the access-token file.
+        self._json(
+            {"error": "this identity has no password", "code": "no_password"}, 400
+        )
+        return True
+    body = self._body() or {}
+    current = str(body.get("current_password") or "")
+    new = str(body.get("new_password") or "")
+    try:
+        token = team_auth.change_password(identity, current, new, _client_ip(self))
+    except ValueError as e:
+        self._json({"error": str(e), "code": "weak_password"}, 400)
+        return True
+    except RateLimited as e:
+        self._json({"error": str(e), "code": "rate_limited"}, 429)
+        return True
+    except WrongPassword as e:
+        self._json({"error": str(e), "code": "wrong_password"}, 403)
+        return True
+    _json_with_cookie(self, {"ok": True}, team_auth.cookie_header(token))
+    return True
+
+
+def _handle_my_replays(self, team_auth: Any, store: Any) -> bool:
+    """The sessions this login may replay, newest first (TEAM-28).
+
+    Every id is checked with `session_replayable_by`, the same predicate the
+    replay route itself applies, and the title goes through the sanitizer the
+    replay projection uses for it -- so the list shows nothing the viewer
+    would not.
+    """
+    from .session_package import _sanitize
+
+    identity = getattr(self, "_team_identity", None)
+    if team_auth is None:
+        self._json({"error": "team mode is disabled", "code": "team_off"}, 403)
+        return True
+    if identity is None:
+        self._json({"error": "login required", "code": "login_required"}, 401)
+        return True
+    user = {"id": identity.user_id, "role": identity.role, "kind": identity.kind}
+    rows: list[dict] = []
+    for session_id in store.team.replay_candidates(user):
+        if not store.team.session_replayable_by(session_id, user):
+            continue
+        frame = store.get_frame(session_id)
+        if frame is None or (frame.get("root_frame_id") or session_id) != session_id:
+            continue
+        rows.append(
+            {
+                "session_id": session_id,
+                "name": _sanitize(frame.get("name") or frame.get("task_summary")),
+                "updated_at": frame.get("updated_at"),
+            }
+        )
+    rows.sort(key=lambda row: -int(row.get("updated_at") or 0))
+    self._json({"sessions": rows[:200]})
+    return True
+
+
 def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
     """Answer an auth route, or report that this group does not own it."""
     if not sub.startswith(_PATH_PREFIX):
@@ -158,9 +269,23 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
         except RateLimited as e:
             self._json({"error": str(e), "code": "rate_limited"}, 429)
             return True
+        except AccountDisabled:
+            # Only reachable with the right password, so it is not the
+            # enumeration oracle the sentence below guards against: it tells
+            # the account's owner that retrying, or a new password, will not
+            # help -- an administrator has to enable the account.
+            self._json(
+                {
+                    "error": "this account is disabled; ask an administrator",
+                    "code": "account_disabled",
+                },
+                403,
+            )
+            return True
         if result is None:
-            # One sentence for wrong password, unknown user, and disabled
-            # account alike — the difference is an attacker's question.
+            # One sentence for wrong password and unknown user alike (and a
+            # disabled account with a wrong password) — the difference is an
+            # attacker's question.
             self._json({"error": "invalid username or password"}, 401)
             return True
         token, user = result
@@ -170,6 +295,10 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
             team_auth.cookie_header(token),
         )
         return True
+    if _MY_PASSWORD.match(method, sub):
+        return _handle_my_password(self, team_auth)
+    if _MY_REPLAYS.match(method, sub):
+        return _handle_my_replays(self, team_auth, store)
     if _LOGOUT.match(method, sub):
         if team_auth is None:
             self._json({"error": "team mode is disabled", "code": "team_off"}, 403)
@@ -211,6 +340,13 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
             return True
         if store.team.get_user_by_username(username) is not None:
             self._json({"error": f"username {username!r} already exists"}, 409)
+            return True
+        # Before the invite is consumed, like the username: a password that
+        # is too short must not burn a single-use token either.
+        try:
+            check_new_password(password)
+        except ValueError as e:
+            self._json({"error": str(e), "code": "weak_password"}, 400)
             return True
         invite = store.governance.redeem_invite(token)
         if invite is None:

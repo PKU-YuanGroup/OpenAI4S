@@ -55,13 +55,35 @@ describe("M-01 wizard state machine", () => {
   it("the step rail jumps to project without going back, and marks only what was decided", () => {
     const listed = run([
       { type: "hydrate", complete: false },
-      { type: "choosePath", path: PATH },
+      // TEAM-10: step 1 is ticked once the choice is saved.
+      { type: "choosePath", path: PATH, saved: true },
     ]);
     expect(listed.decided).toEqual(["path"]);
     const jumped = reduceWizard(listed, { type: "goto", step: "project" });
     expect(jumped.surface).toBe("wizard");
     expect(jumped.step).toBe("project");
     expect(jumped.providerRequests).toBe(0);
+  });
+
+  it("ticks step 1 only once the choice is saved, not on a radio click (TEAM-10)", () => {
+    const picked = run([{ type: "hydrate", complete: false }, { type: "choosePath", path: PATH }]);
+    expect(picked.decided).not.toContain("path");
+    // A refused Continue: still not ticked.
+    const refused = reduceWizard(picked, { type: "fail", message: "refused", requestId: "" });
+    expect(refused.decided).not.toContain("path");
+    // Continue succeeded: the wizard moves on and step 1 is done.
+    expect(reduceWizard(picked, { type: "next" }).decided).toContain("path");
+    // A profile that is already saved and active is a decided step 1.
+    expect(reduceWizard(picked, { type: "choosePath", path: PATH, saved: true }).decided).toContain("path");
+  });
+
+  it("says who may change the setup instead of a bare admin_only refusal (TEAM-10)", () => {
+    const refusal = wizardErrorFromUnknown(
+      new ApiError({ error: "admin only", code: "admin_only", request_id: "req-7" }, 403),
+    );
+    expect(refusal.requestId).toBe("");
+    expect(formatWizardError(refusal)).not.toContain("admin only");
+    expect(formatWizardError(refusal)).toMatch(/administrator|管理员/);
   });
 
   it("errors keep the request id in the display string", () => {
@@ -172,11 +194,36 @@ describe("M-01 wizard state machine", () => {
     expect(unselected.receipt).toBeNull();
   });
 
+  it("ticks Test only for a reachable result, never while the probe is still running", () => {
+    const receipt = { native_tool_call: "true", streaming: "true", stale: false, native_completion: true, reachable: true } as const;
+    const testing = run([
+      { type: "choosePath", path: PATH, saved: true },
+      { type: "next" },
+      { type: "startTest" },
+    ]);
+    // "Contacting the endpoint..." is on screen: no result yet, so no tick.
+    expect(testing.decided).not.toContain("test");
+    // An unreachable endpoint (or a request that threw) is not a passed test.
+    const failed = reduceWizard(testing, { type: "testResult", receipt: null, detail: "refused", reachable: false });
+    expect(failed.decided).not.toContain("test");
+    expect(failed.probeDetail).toBe("refused");
+    const ok = reduceWizard(testing, { type: "testResult", receipt, detail: "", reachable: true });
+    expect(ok.decided).toContain("test");
+    // Continue past the step without a passing test still records the decision.
+    const skipped = reduceWizard(failed, { type: "next" });
+    expect(skipped.decided).toContain("test");
+    expect(skipped.step).toBe("readiness");
+  });
+
   it("will not grow decided past the four required steps", () => {
+    const receipt = { native_tool_call: "true", streaming: "true", stale: false, native_completion: true, reachable: true } as const;
     let state = INITIAL_WIZARD;
     for (const step of REQUIRED_STEPS) {
-      state = reduceWizard(state, { type: "choosePath", path: PATH });
-      if (step === "test") state = reduceWizard(state, { type: "startTest" });
+      state = reduceWizard(state, { type: "choosePath", path: PATH, saved: true });
+      if (step === "test") {
+        state = reduceWizard(state, { type: "startTest" });
+        state = reduceWizard(state, { type: "testResult", receipt, detail: "", reachable: true });
+      }
       if (step === "readiness") state = reduceWizard(state, { type: "markReadinessSeen" });
       if (step === "project") state = reduceWizard(state, { type: "markProjectOpened" });
     }

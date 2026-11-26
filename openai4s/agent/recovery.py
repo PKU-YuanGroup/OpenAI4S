@@ -35,6 +35,10 @@ def recovery_message(
                 "replies came back empty, with no text or action (the model "
                 "may be spending its whole completion budget on reasoning)"
             ),
+            "announced_cell_repeat": (
+                "replies kept saying a code cell would run but sent tool calls "
+                "instead, so no code ran"
+            ),
         }.get(progress_reason or "", "repeated actions made no progress")
         names = _tool_identifiers(tool_names)[:8]
         target = " Recent tool identifiers: " + ", ".join(names) + "." if names else ""
@@ -113,7 +117,14 @@ def progress_stop_detail(
     if progress_reason == "same_target":
         tools = _tool_identifiers([getattr(circuit, "same_target_tool", None)])
         target = str(getattr(circuit, "same_target_path", "") or "")
-    elif progress_reason in {"long_text_repeat", "empty_reply_repeat"}:
+    elif progress_reason in {
+        "long_text_repeat",
+        "empty_reply_repeat",
+        "announced_cell_repeat",
+    }:
+        # The calls sent instead of the cell differ from reply to reply and
+        # already have their own step cards; the last reply's are not "what
+        # repeated".
         tools = []
     return {
         "reason": progress_reason,
@@ -162,6 +173,9 @@ def _what_repeated(detail: Mapping[str, Any], language: str) -> str:
             return f"模型{times}给出几乎相同的长文本，没有执行任何动作"
         if reason == "empty_reply_repeat":
             return f"模型{times}返回空回复，没有文字也没有动作"
+        if reason == "announced_cell_repeat":
+            often = f" {count} 次" if count > 1 else "反复"
+            return f"模型{often}说要运行单元，却每次都只发了工具调用，没有运行任何代码"
         return ""
     tool = ", ".join(tools)
     times = f"{count} times in a row" if count > 1 else "repeatedly"
@@ -192,6 +206,12 @@ def _what_repeated(detail: Mapping[str, Any], language: str) -> str:
         )
     if reason == "empty_reply_repeat":
         return f"the model returned an empty reply {times}, with no text and no action"
+    if reason == "announced_cell_repeat":
+        often = f"{count} times" if count > 1 else "repeatedly"
+        return (
+            f"the model said {often} that it would run a code cell, but sent "
+            "only tool calls and no code ran"
+        )
     return ""
 
 

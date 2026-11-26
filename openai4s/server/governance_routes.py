@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from openai4s.storage.team import LastAdminError, check_new_password
+
 from . import contract
 from .team_auth import public_user
 
@@ -26,6 +28,9 @@ _USERS = contract.RouteSpec("team.users", "GET", r"/team/users", mutates=False)
 _USER_ADD = contract.RouteSpec("team.users.add", "POST", r"/team/users", mutates=True)
 _USER_DISABLE = contract.RouteSpec(
     "team.users.disable", "POST", r"/team/users/([^/]+)/disable", mutates=True
+)
+_USER_ENABLE = contract.RouteSpec(
+    "team.users.enable", "POST", r"/team/users/([^/]+)/enable", mutates=True
 )
 _USER_RESET = contract.RouteSpec(
     "team.users.reset",
@@ -71,6 +76,7 @@ _QUOTA_UNKNOWN_CLEAR = contract.RouteSpec(
 ROUTES = contract.validate_routes(
     (
         _USER_DISABLE,
+        _USER_ENABLE,
         _USER_RESET,
         _USERS,
         _USER_ADD,
@@ -122,14 +128,24 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
         if user is None:
             self._json({"error": "no such user"}, 404)
             return True
-        store.team.set_disabled(user["id"], True)
+        try:
+            store.team.set_disabled(user["id"], True)
+        except LastAdminError as e:
+            # With no enabled admin nobody can reach this panel again; the
+            # only way back would be the host's CLI.
+            self._json({"error": str(e), "code": "last_admin"}, 409)
+            return True
         # Their own LLM credentials go with the account (M4-1). A key that
         # outlives the account it belongs to is a key nobody is watching,
         # and the row is the only thing that would ever have named its slot
         # again — leaving it behind makes the credential unreachable *and*
-        # unrevocable, which is the worst of both.
+        # unrevocable, which is the worst of both. Re-enabling the account
+        # does not bring the key back: its owner enters it again.
+        cleared = 0
         try:
-            store.user_keys.delete_all_for_user(user["id"], secrets=store.secrets)
+            cleared = store.user_keys.delete_all_for_user(
+                user["id"], secrets=store.secrets
+            )
         except Exception:  # noqa: BLE001 — disabling must still land
             pass
         store.team.audit(
@@ -138,7 +154,30 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
             user_id=user["id"],
             target=user["username"],
         )
-        self._json({"ok": True, "user": public_user(user)})
+        self._json(
+            {
+                "ok": True,
+                "user": {**public_user(user), "disabled": True},
+                "llm_keys_cleared": int(cleared or 0),
+            }
+        )
+        return True
+    m = _USER_ENABLE.match(method, sub)
+    if m:
+        # The other half of disable: without it a mistyped name was a
+        # permanent lockout whose only way out was a second account.
+        user = store.team.get_user(m.group(1))
+        if user is None:
+            self._json({"error": "no such user"}, 404)
+            return True
+        store.team.set_disabled(user["id"], False)
+        store.team.audit(
+            actor=_actor(self),
+            action="user_enable",
+            user_id=user["id"],
+            target=user["username"],
+        )
+        self._json({"ok": True, "user": {**public_user(user), "disabled": False}})
         return True
     m = _USER_RESET.match(method, sub)
     if m:
@@ -154,6 +193,11 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
 
             generated = _secrets.token_urlsafe(12)
             password = generated
+        try:
+            check_new_password(password)
+        except ValueError as e:
+            self._json({"error": str(e), "code": "weak_password"}, 400)
+            return True
         store.team.set_password(user["id"], password)
         store.team.audit(
             actor=_actor(self),
@@ -172,12 +216,23 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
         return True
     if _USER_ADD.match(method, sub):
         body = self._body()
+        password = str(body.get("password") or "")
+        generated = None
+        if not password:
+            # As `openai4s user add` and the reset route do: no password
+            # given means one is generated and answered exactly once, so the
+            # admin panel can add a person without inventing a password.
+            import secrets as _secrets
+
+            generated = _secrets.token_urlsafe(12)
+            password = generated
+        display_name = str(body.get("display_name") or "").strip() or None
         try:
             user = store.team.create_user(
                 username=str(body.get("username") or ""),
-                password=str(body.get("password") or ""),
+                password=check_new_password(password),
                 role=str(body.get("role") or "member"),
-                display_name=body.get("display_name"),
+                display_name=display_name,
             )
         except ValueError as e:
             self._json({"error": str(e)}, 400)
@@ -188,7 +243,10 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
             user_id=user["id"],
             target=user["username"],
         )
-        self._json({"user": public_user(user)}, 201)
+        created: dict = {"user": public_user(user)}
+        if generated is not None:
+            created["password"] = generated  # its only appearance
+        self._json(created, 201)
         return True
 
     m = _MEMBER_PUT.match(method, sub)

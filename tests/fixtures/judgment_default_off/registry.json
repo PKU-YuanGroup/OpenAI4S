@@ -280,6 +280,11 @@
           "description": "Prebuilt environment to switch to.",
           "minLength": 1,
           "type": "string"
+        },
+        "reason": {
+          "description": "Optional: one sentence on why this step needs that environment. Shown to the user when the switch asks for approval.",
+          "maxLength": 300,
+          "type": "string"
         }
       },
       "required": [
@@ -402,6 +407,11 @@
             "HEAD"
           ],
           "type": "string"
+        },
+        "offset": {
+          "description": "Start this many characters into the document, to read on from a truncated result's next_offset.",
+          "minimum": 0,
+          "type": "integer"
         },
         "timeout": {
           "description": "Seconds to wait before giving up (default 30).",

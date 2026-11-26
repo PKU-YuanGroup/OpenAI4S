@@ -19,6 +19,7 @@ vi.mock("../../features/artifacts/boot", () => ({ finishArtifactsBoot: () => und
 vi.mock("../../features/messages/components", () => ({ HistoryLoadStatus: () => null }));
 vi.mock("./ModelSelect", () => ({ ModelKeyNotice: () => null, ModelSelect: () => null }));
 
+import { TeamChip } from "../../features/chrome/team-chip";
 import { Shell } from "./Shell";
 
 type VNode = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
@@ -64,6 +65,19 @@ function paintAt(pathname: string): unknown {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+// SET-1 (owner decision 38): the session sidebar had two entries called
+// Settings opening the same modal on the same tab -- the labelled nav item
+// and an unlabelled gear at the bottom. The gear is gone; the nav item and
+// the dashboard's own Settings button stay.
+describe("one Settings entry per view", () => {
+  it("keeps the sidebar's labelled Settings item and the dashboard's, without the bottom gear", () => {
+    const tree = paintAt("/");
+    expect(byId(tree, "settings-gear")).toBeNull();
+    expect(byId(tree, "customize-btn")).not.toBeNull();
+    expect(byId(tree, "dash-settings")).not.toBeNull();
+  });
 });
 
 describe("the Shell repainted after a language switch", () => {
@@ -242,5 +256,41 @@ describe("the nodes the ported islands look up", () => {
       (button?.props?.onClick as () => void)();
     }
     expect(opened).toEqual(["compute", "compute"]);
+  });
+});
+
+/** Every vnode of component `type`, with the class lists of its ancestors. */
+function ofType(
+  tree: unknown,
+  type: unknown,
+  trail: string[][] = [],
+  found: { node: VNode; trail: string[][] }[] = [],
+): { node: VNode; trail: string[][] }[] {
+  if (Array.isArray(tree)) {
+    tree.forEach((child) => ofType(child, type, trail, found));
+    return found;
+  }
+  if (!tree || typeof tree !== "object") return found;
+  const node = tree as VNode;
+  if (node.type === type) found.push({ node, trail });
+  ofType(node.props?.children, type, [...trail, classes(node)], found);
+  return found;
+}
+
+/**
+ * TEAM-21: the user chip, the sign-out and the admin entry were appended to
+ * `<body>` by `ensureTeamDom()`, after the Shell, where the dashboard covered
+ * them. The Shell renders them itself now, in both views.
+ */
+describe("the signed-in user in team mode", () => {
+  it("is rendered by the Shell: in the dashboard header and in the sidebar foot", () => {
+    const chips = ofType(paintAt("/"), TeamChip);
+    expect(chips.map(({ node }) => node.props?.placement).sort()).toEqual(["dash", "side"]);
+    const home = (placement: string): string[] =>
+      chips.find(({ node }) => node.props?.placement === placement)!.trail.flat();
+    expect(home("dash")).toContain("dash-actions");
+    expect(home("dash")).toContain("dashboard");
+    expect(home("side")).toContain("side-foot");
+    expect(home("side")).toContain("workspace");
   });
 });

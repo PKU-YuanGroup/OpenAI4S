@@ -8,7 +8,8 @@ import { startOnboarding } from "./boot";
 import { writeResumeMarker } from "./machine";
 import type { OnboardingStatus } from "./status";
 
-const status = (complete: boolean) => ({ complete }) as OnboardingStatus;
+const status = (complete: boolean, canConfigure = true) =>
+  ({ complete, can_configure: canConfigure }) as OnboardingStatus;
 
 describe("startOnboarding", () => {
   it("does not load the wizard for a completed setup", async () => {
@@ -21,6 +22,12 @@ describe("startOnboarding", () => {
     const mount = vi.fn(async () => {});
     await startOnboarding(async () => status(false), mount);
     expect(mount).toHaveBeenCalledOnce();
+  });
+
+  it("never loads the admin's wizard for a team member (TEAM-10)", async () => {
+    const mount = vi.fn(async () => {});
+    await startOnboarding(async () => status(false, false), mount);
+    expect(mount).not.toHaveBeenCalled();
   });
 
   it("loads the wizard when the status cannot be read, so it can say so", async () => {
@@ -49,6 +56,7 @@ describe("startOnboarding after a reload part-way through the wizard (NV-04)", (
     ({
       complete: true,
       completed_explicitly: false,
+      can_configure: true,
       profiles: [{ id: "mp-saved", name: "Saved" }],
       active_id: "mp-saved",
       ...overrides,
@@ -73,6 +81,13 @@ describe("startOnboarding after a reload part-way through the wizard (NV-04)", (
     const mount = vi.fn(async () => {});
     await startOnboarding(async () => saved({ active_id: "" }), mount);
     expect(mount).toHaveBeenCalledOnce();
+  });
+
+  it("never loads it for a team member who may not configure, marker or not", async () => {
+    writeResumeMarker("mp-saved");
+    const mount = vi.fn(async () => {});
+    await startOnboarding(async () => saved({ can_configure: false }), mount);
+    expect(mount).not.toHaveBeenCalled();
   });
 
   it("does not load it for a configured install this tab holds no marker for", async () => {

@@ -131,7 +131,7 @@ to one server's virtual environment. The token resolves to the current daemon
 interpreter only when the connector is spawned. Startup migrates matching legacy
 built-in rows while leaving arbitrary custom commands unchanged.
 
-Adding a connector from **Customize → Connectors** enables its configuration;
+Adding a connector from **Settings → Connectors** enables its configuration;
 it does not eagerly start the server. Discovery or the first call starts it
 lazily. Editing launch configuration disconnects the cached process so the next
 operation starts the updated command. Environment values are write-only in the

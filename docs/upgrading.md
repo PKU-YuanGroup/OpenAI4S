@@ -4,8 +4,7 @@
 
 An install that is already on 1.0.1 reads the next section before the first
 start of the release after it. An install that is already on 1.0.0 reads
-"Upgrading to 1.0.1" before the first
-start of 1.0.1. An install that is already on 0.3.1 reads "Upgrading to 1.0.0"
+"Upgrading to 1.0.1" before the first start of 1.0.1. An install that is already on 0.3.1 reads "Upgrading to 1.0.0"
 before the first start of 1.0.0; one that goes straight to 1.0.1 reads that
 section and "Upgrading to 1.0.1", and its first open migrates schema 35 to 43.
 An install that is already on 0.3.0 reads "Upgrading to 0.3.1" before the first
@@ -20,30 +19,34 @@ tested on one upgrade path before it is published; "How a release tests the
 upgrade" at the end of this page says which data and which channel that covers
 and how to roll back.
 
-## Upgrading to the release after 1.0.1 (schema 43 → 44)
+## Upgrading to the release after 1.0.1 (schema 43 → 45)
 
 Stop the daemon (`openai4s stop`, then check `openai4s status`) and copy the
 whole data directory while nothing is running, including any
 `openai4s.db-wal` or `openai4s.db-journal` file, exactly as for 1.0.1 below.
 
-The first command that opens the database migrates it from schema 43 to 44.
-Migration 44 creates one table, which starts empty, and records itself in
-`schema_migrations`; no table, index or row that 1.0.1 stored is read,
-altered or removed:
+The first command that opens the database migrates it from schema 43 to 45.
+Migration 44 adds one nullable column and migration 45 creates one table,
+which starts empty; each records itself in `schema_migrations`, and no row
+that 1.0.1 stored is rewritten or removed:
 
 | Version | Adds |
 | --- | --- |
-| 44 | `message_admissions`: submission receipts for plain messages, so a browser whose `POST /frames/{fid}/message` answer was lost asks what happened instead of sending the turn again |
+| 44 | `execution_log_inlined_script`: the `inlined_script` column of `execution_log`. A Cell whose code only runs a workspace script (`exec(open("x.py").read())`, `runpy.run_path`, `%run`, R `source("x.R")`) keeps that script as it was when it ran, up to 256 KB, so the Notebook and both `.ipynb` exports still show and re-run it after the file is edited or deleted. Cells recorded before the upgrade keep NULL |
+| 45 | `message_admissions`: submission receipts for plain messages, so a browser whose `POST /frames/{fid}/message` answer was lost asks what happened instead of sending the turn again |
 
 This upgrade path — data written by the 1.0.1 Linux x86_64 bundle, migrated
 and read back by the new bundle, then the pre-migration copy restored and read
-by 1.0.1 again — is the one the release ran before it was published; see
+by 1.0.1 again — is the one the release runs before it is published; see
 "How a release tests the upgrade" at the end of this page. To go back to
 1.0.1, stop the daemon and restore the copy you made: 1.0.1 refuses a schema
-44 database with `future_schema` before it writes anything.
+45 database with `future_schema` before it writes anything.
 
 What an API client sees change:
 
+- Each entry of `GET /frames/{fid}/execution-log` and each
+  `notebook_cell_finished` event carry `inlined_script`, which is null for
+  every other Cell.
 - `POST /frames/{fid}/message` accepts an optional `client_request_id`
   (32 lowercase hex characters, `wait:false`, no `annotation_ids`), and its
   202 then carries `admission_state`. `GET /frames/{fid}/message-admissions/{client_request_id}`

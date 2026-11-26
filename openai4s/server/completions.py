@@ -6,7 +6,7 @@ import ast
 import json
 import re
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from openai4s.agent.actions import (
     Action,
@@ -76,6 +76,36 @@ def cancellation_marker(reason: str, language: str = "en") -> str:
     return "_已由用户停止。_" if zh else "_Stopped by user._"
 
 
+def llm_retry_notice(error: Any, attempt: int, language: str = "en") -> str:
+    """The live line shown while a failed model request is being sent again.
+
+    Without it a retry is indistinguishable from a hang: the turn just sits
+    there for the backoff and the second attempt. Built from the error's
+    class and status only, never from its text.
+    """
+    from openai4s.llm.models import llm_failure_code
+
+    zh = language == "zh"
+    count = max(2, int(attempt))
+    if llm_failure_code(error) == "llm_stream_timeout":
+        return (
+            f"_模型长时间没有返回数据，正在重新请求（第 {count} 次）…_"
+            if zh
+            else f"_The model sent nothing for too long; asking again (attempt {count})…_"
+        )
+    if getattr(error, "status", None) is not None:
+        return (
+            f"_模型服务暂时繁忙，正在重试（第 {count} 次）…_"
+            if zh
+            else f"_The model service is busy; retrying (attempt {count})…_"
+        )
+    return (
+        f"_与模型服务的连接中断，正在重试（第 {count} 次）…_"
+        if zh
+        else f"_The connection to the model was interrupted; retrying (attempt {count})…_"
+    )
+
+
 def action_narration(
     action: Action | None, language: str = "en", *, opening: bool = True
 ) -> str:
@@ -95,10 +125,12 @@ def action_narration(
         if is_completion_only_cell(action):
             return ""
         label = "R" if action.language == "r" else "Python"
+        # SCI-35: "an R cell", not "a R cell".
+        article = "an" if label == "R" else "a"
         return (
             f"我已经准备好一个 {label} 单元，正在执行；真实输出会持续记录到 Notebook。"
             if zh
-            else f"I have prepared a {label} cell and am running it now; its actual output will be recorded in the Notebook."
+            else f"I have prepared {article} {label} cell and am running it now; its actual output will be recorded in the Notebook."
         )
     if not isinstance(action, NativeToolBatch) or not action.calls:
         return ""
@@ -219,6 +251,13 @@ def outcome_narration(
     if refusal is not None:
         return _refusal_narration(refusal, zh)
     if error:
+        missing = _missing_package_hint(error, zh)
+        if missing:
+            return (
+                f"这个单元运行出错：`{error}`。{missing}"
+                if zh
+                else f"This cell failed: `{error}`. {missing}"
+            )
         return (
             f"这个单元运行出错：`{error}`。智能体会根据这条报错修正后重试。"
             if zh
@@ -300,6 +339,70 @@ def outcome_narration(
             "warnings or errors; see the Notebook."
         )
     return "\n".join(parts)
+
+
+_MISSING_MODULE = re.compile(r"No module named '(?P<module>[A-Za-z_][\w.]*)'")
+_MISSING_R_PACKAGE = re.compile(
+    r"there is no package called [‘'`\"](?P<package>[A-Za-z][\w.]*)[’'`\"]"
+)
+#: Import names whose package is called something else ("Bio" is installed as
+#: biopython): a newcomer cannot guess these from the error.
+_PACKAGE_OF_MODULE = {
+    "Bio": "biopython",
+    "sklearn": "scikit-learn",
+    "skimage": "scikit-image",
+    "PIL": "pillow",
+    "cv2": "opencv-python",
+    "yaml": "pyyaml",
+    "bs4": "beautifulsoup4",
+    "dateutil": "python-dateutil",
+    "Crypto": "pycryptodome",
+    "docx": "python-docx",
+    "pptx": "python-pptx",
+}
+
+
+def _missing_package_hint(error: str, zh: bool) -> str:
+    """The next step for a cell that failed on a package it does not have.
+
+    SCI-32: ``No module named 'Bio'`` and R's ``there is no package called
+    'Seurat'`` were shown with no way forward, and nothing said that ``Bio``
+    is installed as ``biopython``. Installing stays the agent's to ask for
+    (owner decision 1); R has no installer in a session (decision 12).
+    """
+    match = _MISSING_MODULE.search(error)
+    if match:
+        module = match.group("module").split(".")[0]
+        package = _PACKAGE_OF_MODULE.get(module, module)
+        if zh:
+            what = (
+                f"`{module}` 由 `{package}` 包提供，当前环境没有安装。"
+                if package != module
+                else f"当前环境没有安装 `{package}` 包。"
+            )
+            return what + "智能体安装前会先询问你；也可以在 设置 → 计算 里安装。"
+        what = (
+            f"`{module}` is installed as the `{package}` package, which this "
+            "environment does not have."
+            if package != module
+            else f"This environment does not have the `{package}` package."
+        )
+        return (
+            what + " The agent asks before installing it; you can also install it "
+            "in Settings → Compute."
+        )
+    match = _MISSING_R_PACKAGE.search(error)
+    if match:
+        package = match.group("package")
+        return (
+            f"当前 R 环境没有 `{package}` 包。会话里不能安装 R 包：运行 `openai4s setup` "
+            "构建托管的 R 环境，或在本机 R 里安装后选用它。"
+            if zh
+            else f"This R environment does not have the `{package}` package. R packages "
+            "cannot be installed from a session: run `openai4s setup` to build the "
+            "managed R environment, or install it in your own R and select that."
+        )
+    return ""
 
 
 #: The omission marker ``agent.runtime._budgeted`` puts into a long section.
@@ -603,8 +706,19 @@ def completion_message(
     language: str = "en",
     require_fallback: bool = True,
     trusted_delivery: bool = False,
+    role_marks: Mapping[str, str] | None = None,
+    answered_in_reply: bool = False,
 ) -> str:
-    """Render a submitted result into a durable, human-facing final message."""
+    """Render a submitted result into a durable, human-facing final message.
+
+    ``role_marks`` is `Store.artifact_role_marks` for ``artifacts``: a role the
+    server recorded wins over the filename (a plan's JSON is a process file).
+
+    ``answered_in_reply`` says the reply that completed (a ``finalize_response``
+    call) already streamed its own user-visible answer. Its summary and bullets
+    can then only restate that answer, so nothing is rendered unless the
+    completion carries findings, metrics, limitations or artifacts.
+    """
     spec = completion if isinstance(completion, dict) else {}
     output = spec.get("output", completion)
     bullets = spec.get("completion_bullets") or []
@@ -633,14 +747,28 @@ def completion_message(
         if fallback and _normalized(fallback) not in previous:
             parts.append(fallback)
 
+    # SCI-15: "Completed work" was the third telling of the same identifiers,
+    # after the summary and the findings. A bullet whose words those already
+    # carry is left out; one that says something new stays.
+    said = _content_tokens(" ".join([previous_text, *parts]))
     fresh_bullets = [
         str(item).strip()
         for item in bullets
-        if str(item).strip() and _normalized(str(item)) not in previous
+        if str(item).strip()
+        and _normalized(str(item)) not in previous
+        and not _already_said(str(item), said)
     ]
     bullets_at = len(parts)  # the list goes here, once the artifacts are known
 
-    artifact_lines = _artifact_lines(artifacts, trusted_delivery=trusted_delivery)
+    artifact_lines = _artifact_lines(
+        artifacts, trusted_delivery=trusted_delivery, role_marks=role_marks
+    )
+    if answered_in_reply and not structured and not artifact_lines:
+        # CHAT-1: "你好，你是谁？" was answered in 819 characters and then
+        # followed by a second message, "向用户介绍了 openai4s ...": the
+        # summary paraphrased the reply in the third person, so no substring
+        # check could catch it. The structured completion stays for audit.
+        return ""
     # ART-8: scripts, logs and copies of inputs are how the result was made,
     # not the result; listing them with the figures and tables buried the
     # deliverables. They stay linked, on one line after the deliverables.
@@ -695,6 +823,79 @@ def completion_message(
     if not parts and require_fallback:
         return "任务已完成。" if zh else "The task is complete."
     return "\n\n".join(parts)
+
+
+_WORD = re.compile(r"[a-z0-9][a-z0-9._'-]*")
+_CJK_RUN = re.compile(r"[㐀-䶿一-鿿]+")
+_FILLER_WORDS = frozenset(
+    "the and with from into for its their this that was were are has have had "
+    "via all each both".split()
+)
+#: The share of a bullet's words the message must already carry to drop it.
+_ALREADY_SAID = 0.7
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Words of three or more characters, and Chinese character pairs."""
+    lowered = str(text or "").lower()
+    tokens = {
+        word.strip("._'-")
+        for word in _WORD.findall(lowered)
+        if len(word.strip("._'-")) >= 3 and word.strip("._'-") not in _FILLER_WORDS
+    }
+    for run in _CJK_RUN.findall(lowered):
+        tokens.update(run[index : index + 2] for index in range(max(1, len(run) - 1)))
+    return tokens
+
+
+def _already_said(bullet: str, said: set[str]) -> bool:
+    tokens = _content_tokens(bullet)
+    return bool(tokens) and len(tokens & said) >= _ALREADY_SAID * len(tokens)
+
+
+def unfinished_turns_since(messages: Iterable[dict]) -> int | None:
+    """When the trailing run of turns that did not finish began, else ``None``.
+
+    ``messages`` are a session's stored rows from before the current turn's
+    user message. A turn is a user row and the assistant rows after it; it did
+    not finish when one of them carries ``failure`` or ``cancelled`` metadata,
+    or when nothing answered it at all. The answer is the ``created_at`` of the
+    first user row of the trailing unfinished turns.
+
+    M-59: a task cut into three turns by two failures ended with a summary
+    whose artifact list held only the third turn's files; the survival curve
+    the user had asked for came from the second. The completion's artifact
+    delta starts there instead.
+    """
+    rows = sorted(
+        (row for row in messages if isinstance(row, dict)),
+        key=lambda row: int(row.get("seq") or 0),
+    )
+    turns: list[list[Any]] = []  # [user created_at, answered, unfinished]
+    for row in rows:
+        if row.get("role") == "user":
+            turns.append([row.get("created_at"), False, False])
+            continue
+        if not turns or row.get("role") != "assistant":
+            continue
+        turns[-1][1] = True
+        metadata = row.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except ValueError:
+                metadata = None
+        if isinstance(metadata, dict) and (
+            metadata.get("failure") or metadata.get("cancelled")
+        ):
+            turns[-1][2] = True
+    since: int | None = None
+    for created_at, answered, unfinished in reversed(turns):
+        if answered and not unfinished:
+            break
+        if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
+            since = int(created_at)
+    return since
 
 
 def _summary_text(output: Any) -> str:
@@ -756,17 +957,75 @@ def _structured_body(value: Any) -> str:
 _SNAKE_KEY = re.compile(r"[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+")
 
 
-def _readable_key(key: str) -> str:
-    """``cox_tmb_HR_low`` reads as "cox tmb HR low" (ART-8); prose keys stay."""
+#: A unit a snake_case metric key ends in, as written there (case matters:
+#: ``uM`` is a concentration, ``um`` a length) -> as a reader writes it.
+#: Single letters are left out: ``_s``, ``_h`` or ``_C`` name groups as often.
+_KEY_UNITS = {
+    "Da": "Da",
+    "kDa": "kDa",
+    "bp": "bp",
+    "kb": "kb",
+    "Mb": "Mb",
+    "nm": "nm",
+    "um": "µm",
+    "mm": "mm",
+    "cm": "cm",
+    "ms": "ms",
+    "sec": "s",
+    "min": "min",
+    "days": "days",
+    "mg": "mg",
+    "ug": "µg",
+    "ng": "ng",
+    "kg": "kg",
+    "mL": "mL",
+    "ml": "mL",
+    "uL": "µL",
+    "ul": "µL",
+    "nM": "nM",
+    "uM": "µM",
+    "mM": "mM",
+    "pM": "pM",
+    "degC": "°C",
+    "Hz": "Hz",
+    "kHz": "kHz",
+    "ppm": "ppm",
+    "pct": "%",
+    "percent": "%",
+    "rpm": "rpm",
+}
 
-    return key.replace("_", " ") if _SNAKE_KEY.fullmatch(key) else key
+
+def _readable_key(key: str) -> str:
+    """``cox_tmb_HR_low`` reads as "cox tmb HR low" (ART-8); prose keys stay.
+
+    A trailing unit is set apart (SCI-24): ``peptide_avg_MW_Da`` reads as
+    "peptide avg MW (Da)", not as if Da were part of the name.
+    """
+
+    if not _SNAKE_KEY.fullmatch(key):
+        return key
+    head, _, last = key.rpartition("_")
+    unit = _KEY_UNITS.get(last)
+    if unit:
+        return f"{head.replace('_', ' ')} ({unit})"
+    return key.replace("_", " ")
 
 
 def _compact_value(value: Any) -> str:
     if isinstance(value, float) and not isinstance(value, bool):
-        # 0.42712345 -> 0.4271; exponent forms stay as repr, which is clearer.
-        short = format(value, ".4g")
-        return short if "e" not in short else repr(value)
+        # SCI-24: the value as the agent submitted it. Four significant figures
+        # turned 1019.14 Da into 1019 beside prose that said 1019.14. Only a
+        # tail past six decimals (float noise such as 0.30000000000000004, or
+        # an unrounded statistic) is cut; exponent forms stay as repr.
+        text = repr(value)
+        if "e" in text or "n" in text:  # 1e-07, inf, nan
+            return text
+        if len(text.partition(".")[2]) <= 6:
+            return text
+        if abs(value) >= 1:
+            return f"{value:.6f}".rstrip("0").rstrip(".")
+        return format(value, ".6g")
     if isinstance(value, str):
         return value.strip()[:500]
     if isinstance(value, (dict, list, tuple)):
@@ -886,8 +1145,44 @@ def _deliverable_group(name: str) -> str:
     return "other"
 
 
+def without_removed_files(
+    artifacts: Iterable[dict],
+    workspace: str | Path,
+    version_path: Callable[[str], str | None],
+) -> list[dict]:
+    """Leave out artifacts whose workspace file is gone at completion time.
+
+    NB-6: the agent said it was cleaning up intermediate scripts and tables,
+    deleted them, and the completion still listed them as this turn's files.
+    ``version_path`` maps a version id to the path it was captured from. Only
+    a path inside ``workspace`` is judged, and only when that workspace is on
+    this machine; an unknown path, or one elsewhere, keeps its artifact.
+    """
+
+    root = Path(workspace).resolve()
+    local = root.is_dir()
+    kept: list[dict] = []
+    for artifact in artifacts:
+        version_id = artifact.get("version_id") or artifact.get("latest_version_id")
+        path = None
+        if local and version_id:
+            try:
+                path = version_path(str(version_id))
+            except Exception:  # noqa: BLE001 - an unreadable row keeps its artifact
+                path = None
+        if path:
+            captured = Path(path).resolve()
+            if captured.is_relative_to(root) and not captured.exists():
+                continue
+        kept.append(artifact)
+    return kept
+
+
 def _artifact_lines(
-    artifacts: Iterable[dict], *, trusted_delivery: bool = False
+    artifacts: Iterable[dict],
+    *,
+    trusted_delivery: bool = False,
+    role_marks: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """``(kind, markdown link)`` per artifact: ``process`` or a deliverable group."""
     lines: list[tuple[str, str]] = []
@@ -896,11 +1191,11 @@ def _artifact_lines(
         if not isinstance(artifact, dict):
             continue
         name = str(artifact.get("filename") or "artifact")
-        role = artifact_role(name)
+        ident = str(artifact.get("artifact_id") or artifact.get("id") or "")
+        role = artifact_role(name, (role_marks or {}).get(ident))
         if role == "internal":
             continue
         version_id = artifact.get("version_id") or artifact.get("latest_version_id")
-        ident = str(artifact.get("artifact_id") or artifact.get("id") or "")
         target = completion_artifact_url(
             artifact_id=ident,
             filename=name,
@@ -928,12 +1223,16 @@ def _normalized(value: str) -> str:
 #: The status lines this module writes around actions. A notebook export and
 #: anything else that wants only the model's own narration filters these out;
 #: ``tests/test_server_completions.py`` checks every template is recognised so
-#: the two cannot drift apart.
+#: the two cannot drift apart. The workbench says these lines again in the UI
+#: language from its own copy of every template
+#: (``frontend/src/features/messages/progress.ts``); rewording one here means
+#: rewording it there, which ``tests/test_progress_copy_parity.py`` enforces.
 _PROGRESS_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
         r"我已经准备好一个 (?:R|Python) (?:单元|Cell)，正在执行；真实输出会持续记录到 Notebook。",
-        r"I have prepared a (?:R|Python) cell and am running it now; its actual "
+        # "a R" is what rows stored before SCI-35 say.
+        r"I have prepared an? (?:R|Python) cell and am running it now; its actual "
         r"output will be recorded in the Notebook\.",
         r"我正在执行 \d+ 个相关步骤，并会根据返回结果继续分析。",
         r"I am running \d+ related steps and will continue from their returned "
@@ -1000,6 +1299,7 @@ __all__ = [
     "cancellation_marker",
     "completion_message",
     "is_progress_narration",
+    "llm_retry_notice",
     "narration_paths",
     "outcome_narration",
     "response_language",

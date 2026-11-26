@@ -2865,6 +2865,12 @@ def test_the_digest_is_over_the_normalized_client_input_only():
     assert digest == receipts.request_digest(**{**base, "task_mode": "  "})
     assert digest != receipts.request_digest(**{**base, "request": "plot it "})
     assert digest != receipts.request_digest(**{**base, "mentions": []})
+    # The uploads a message names as going with it (M-10) are client input
+    # too: the same key with a different upload list is a conflict.
+    assert digest == receipts.request_digest(**{**base, "attachments": []})
+    assert digest != receipts.request_digest(
+        **{**base, "attachments": [{"artifact_id": "a-1", "name": "x.csv"}]}
+    )
     assert len(digest) == 64
 
 

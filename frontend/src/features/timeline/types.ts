@@ -43,6 +43,11 @@ export type TimelineSession = {
   name: string;
 } | null;
 
+export type TimelineRestartDecision = {
+  decision: "approved" | "denied" | "resolved";
+  tool: string;
+} | null;
+
 export type TimelineGroup = {
   group_id: string;
   branch_id: string;
@@ -53,6 +58,10 @@ export type TimelineGroup = {
   provider: string;
   model: string;
   title: string;
+  /** VIEW-1: a tool batch's calls, each in the step card's (English) words. */
+  step_titles: string[];
+  /** VIEW-1b: a decision made after a restart, worded by `restartDecisionTitle`. */
+  restart_decision: TimelineRestartDecision;
   status: string;
   owner: string;
   permission: string;
@@ -85,6 +94,8 @@ export type ActionTimeline = {
 
 export type QueueMetadata = {
   preview: string;
+  /** The sender's `X-Request-Id`: its own bubble before the 202 names the execution. */
+  request_id: string;
   model_profile_id: string;
   model_profile_revision: number | null;
 };
@@ -101,6 +112,8 @@ export type ExecutionTicket = {
   queued_at: unknown;
   started_at: unknown;
   cancel_requested: boolean;
+  /** Waiting for the user after a failed turn (M-31): `POST …/execution-queue/resume` runs it. */
+  held: boolean;
   metadata: QueueMetadata;
 };
 

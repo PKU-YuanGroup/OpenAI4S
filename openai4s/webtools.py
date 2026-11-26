@@ -10,7 +10,7 @@ Crossref, an arXiv id via the arXiv API); fetch downloads a URL and converts
 HTML to readable markdown/text.
 
 Networking can be globally gated by ``OPENAI4S_ALLOW_NETWORK`` (default on);
-the daemon's Customize → Network panel flips this.
+the daemon's Settings → Network panel flips this.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ class SSRFBlocked(RuntimeError):
 def _require_network() -> None:
     if not network_allowed():
         raise NetworkDisabled(
-            "networking is disabled (enable it in Customize → Network / set "
+            "networking is disabled (enable it in Settings → Network / set "
             "OPENAI4S_ALLOW_NETWORK=1)"
         )
 
@@ -697,6 +697,34 @@ def _strip_tags(html_text: str) -> str:
     return text.strip()
 
 
+def content_window(content: str, *, offset: int = 0, max_chars: int = 20000) -> dict:
+    """One part of a fetched document, and how to ask for the next one.
+
+    CLI-3: a PMC full text came back exactly 20,000 characters with only
+    ``truncated: True``; the model searched it for "Tm", found nothing, and
+    changed course. A cut document now says where it was cut, of how much,
+    and the ``offset`` that reads on.
+    """
+
+    total = len(content)
+    start = min(max(0, int(offset or 0)), total)
+    end = min(total, start + max(0, int(max_chars)))
+    window: dict = {
+        "truncated": end < total,
+        "content": content[start:end],
+        "total_chars": total,
+    }
+    if start:
+        window["offset"] = start
+    if end < total:
+        window["next_offset"] = end
+        window["note"] = (
+            f"truncated at {end} of {total} chars; "
+            f"call web_fetch again with offset={end} for the rest"
+        )
+    return window
+
+
 def web_fetch(
     url: str,
     fmt: str = "markdown",
@@ -705,6 +733,7 @@ def web_fetch(
     *,
     method: str = "GET",
     user_agent: str | None = None,
+    offset: int = 0,
 ) -> dict:
     """Fetch a URL and return its content. fmt ∈ {markdown, text, html, json}.
 
@@ -714,6 +743,10 @@ def web_fetch(
     pool" only to callers who send one, and without these two options three
     bundled skills used raw ``urllib`` instead, which meant their requests were
     subject to neither the egress allowlist nor the SSRF guard.
+
+    ``content`` is at most ``max_chars`` characters starting at ``offset`` in
+    the converted document (``content_window``); a cut one carries
+    ``next_offset`` and a one-line ``note`` saying how to read on.
     """
     if not re.match(r"^https?://", url, re.I):
         url = "https://" + url
@@ -748,12 +781,10 @@ def web_fetch(
         content = _html_to_markdown(raw) if fmt == "markdown" else _strip_tags(raw)
     else:
         content = raw
-    truncated = len(content) > max_chars
     return {
         "url": final_url,
         "content_type": ctype,
-        "truncated": truncated,
-        "content": content[:max_chars],
+        **content_window(content, offset=offset, max_chars=max_chars),
         # The response exactly as it came off the wire, before decoding and
         # before any reformatting. `content` above has been through
         # `decode(errors="replace")` — which maps every invalid byte sequence
@@ -1285,7 +1316,7 @@ def web_search(
     failed = f" Failed: {'; '.join(failures)}." if failures else ""
     reached = ", ".join(tried) or "none reached"
     # A search no engine could be sent for was refused above; this one reached
-    # at least one engine the session's network allows.
+    # at least one engine the caller's network allows.
     note = (
         f"no results from any engine ({reached}) "
         "— they may be rate-limiting; retry shortly with different "
@@ -1296,7 +1327,7 @@ def web_search(
 
 
 def _skill_declared_domains() -> tuple[str, ...] | None:
-    """Domains a bound ``host_only`` Skill narrows this frame's requests to."""
+    """Domains the calling ``host_only`` Skill's helpers are held to, or None."""
 
     try:
         from openai4s.server.skill_network_admission import active_host_only_domains

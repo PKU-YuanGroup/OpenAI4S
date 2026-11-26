@@ -12,6 +12,7 @@ import { provMode, provSub } from "../../stores/ui";
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import { artifactMetadataCacheKey, artifactMetadataTarget, artifactMetadataUrl, artifactTabKey } from "../artifacts/cache";
+import { bytes } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { addOpenTab, setActiveTab } from "../artifacts/ui";
 import type { ArtifactRow } from "../artifacts/types";
@@ -178,6 +179,7 @@ export function renderProvenanceInto(v: HTMLElement, a: unknown): void {
         }),
       );
     } else if (!lin) body.appendChild(el("div", "dock-empty", t("common.loading")));
+    else if (downloadRecord(lin)) body.appendChild(downloadCard(downloadRecord(lin)!));
     else {
       const recorded = model?.producer?.cell_recorded === true || model?.captures.some((capture) => capture.cell_recorded === true);
       body.appendChild(el("div", "dock-empty", provenanceT(recorded ? "codeElsewhere" : "noCode")));
@@ -242,10 +244,10 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   };
   const pkgs = env.packages || [];
   const chips = el("div", "env-chips");
-  chips.appendChild(chip("Environment", env.kind || provenanceT("unknownEnvironment")));
+  chips.appendChild(chip(provenanceT("envKind"), env.kind || provenanceT("unknownEnvironment")));
   const py = envPythonChip(env);
   if (py) chips.appendChild(chip(py.label, py.value));
-  if (env.environment_name) chips.appendChild(chip("Env", publicText(env.environment_name, 48)));
+  if (env.environment_name) chips.appendChild(chip(provenanceT("envName"), publicText(env.environment_name, 48)));
   // An explicit `package_count: null` is a record saying the count is unknown,
   // which `envPackageCount` would otherwise answer with the length of an empty
   // `packages` list -- a measured zero the row never claimed.
@@ -253,7 +255,7 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   const pythonKind = String(env.kind || "python").toLowerCase() === "python";
   chips.appendChild(
     chip(
-      "Packages",
+      provenanceT("envPackages"),
       packageCount != null
         ? String(packageCount)
         : filesT(pythonKind ? "prov.env.packagesUnknown" : "prov.env.packagesNotApplicable"),
@@ -347,8 +349,8 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   const tbl = el("table", "env-table");
   const thead = el("thead");
   const htr = el("tr");
-  htr.appendChild(el("th", null, "Package"));
-  htr.appendChild(el("th", null, "Version"));
+  htr.appendChild(el("th", null, provenanceT("envPackage")));
+  htr.appendChild(el("th", null, provenanceT("envVersion")));
   thead.appendChild(htr);
   tbl.appendChild(thead);
   const tb = el("tbody");
@@ -410,6 +412,72 @@ async function renderProvMessages(body: HTMLElement, art: ArtifactRow): Promise<
   });
 }
 
+type DownloadRecord = {
+  url: string;
+  downloaded_at?: unknown;
+  size_bytes?: unknown;
+  sha256?: unknown;
+  approval?: { how?: unknown; scope?: unknown; target?: unknown } | null;
+};
+
+/** SCI-10: the download behind a version the download tool saved, or null. */
+export function downloadRecord(lin: LineagePayload | null | undefined): DownloadRecord | null {
+  const raw = lin && lin.download;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  if (record.tool !== "web_download" || typeof record.url !== "string" || !record.url) return null;
+  const approval = record.approval && typeof record.approval === "object" ? record.approval : null;
+  return { ...record, url: record.url, approval } as DownloadRecord;
+}
+
+function approvalText(approval: DownloadRecord["approval"]): string {
+  if (!approval || approval.how !== "approved") return provenanceT("approvalNoPrompt");
+  const target = publicText(String(approval.target || ""), 120);
+  if (approval.scope === "conversation") return provenanceT("approvalConversation", target);
+  if (approval.scope === "project") return provenanceT("approvalProject", target);
+  if (approval.scope === "global") return provenanceT("approvalGlobal", target);
+  return provenanceT("approvalOnce");
+}
+
+/** Where the file came from, when it was saved, what was saved, and who allowed it. */
+export function downloadCard(record: DownloadRecord): HTMLElement {
+  const card = el("div", "prov-card prov-download");
+  card.appendChild(el("div", "prov-h", provenanceT("downloadTitle")));
+  const row = (label: string, value: HTMLElement | string): void => {
+    const line = el("div", "prov-row");
+    line.appendChild(el("span", "prov-lbl", label));
+    line.appendChild(typeof value === "string" ? el("span", "prov-val", value) : value);
+    card.appendChild(line);
+  };
+  const shown = publicText(record.url, 2000);
+  let link: HTMLElement = el("span", "prov-val", shown);
+  try {
+    const url = new URL(record.url);
+    if ((url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password) {
+      const a = el("a", "prov-val prov-url", shown) as HTMLAnchorElement;
+      a.href = url.href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      link = a;
+    }
+  } catch {
+    /* an unparsable recorded URL stays text */
+  }
+  row(provenanceT("downloadUrl"), link);
+  if (typeof record.downloaded_at === "string" && record.downloaded_at) {
+    const at = new Date(record.downloaded_at);
+    row(provenanceT("downloadAt"), Number.isNaN(at.getTime()) ? record.downloaded_at : at.toLocaleString());
+  }
+  if (typeof record.size_bytes === "number" && Number.isFinite(record.size_bytes)) {
+    row(provenanceT("downloadSize"), `${bytes(record.size_bytes)} (${record.size_bytes.toLocaleString()} B)`);
+  }
+  if (typeof record.sha256 === "string" && record.sha256) {
+    row(provenanceT("downloadSha"), el("code", "prov-val prov-sha", publicText(record.sha256, 128)));
+  }
+  row(provenanceT("downloadApproval"), approvalText(record.approval));
+  return card;
+}
+
 function viewCodeLink(onClick: () => void): HTMLElement {
   const link = el("a", "prov-link");
   link.appendChild(iconEl("arrow-left", 14));
@@ -466,6 +534,14 @@ export function renderProvReview(
   const cellInputs = model.cellInputs;
   const captures = model.captures;
   const producer = model.producer;
+  // SCI-10: a downloaded file says where it came from instead of "produced by
+  // a non-Cell action" and "No inputs were recorded".
+  const download = cell ? null : downloadRecord(lin);
+  if (download) {
+    body.appendChild(downloadCard(download));
+    if (model.saveAt) body.appendChild(el("div", "prov-meta", t("prov.review.saved", ago(String(model.saveAt)))));
+    return;
+  }
   if (model.empty) {
     body.appendChild(el("div", "dock-empty", provenanceT("noLineage")));
     body.appendChild(el("div", "prov-meta", provenanceT("noInputs")));

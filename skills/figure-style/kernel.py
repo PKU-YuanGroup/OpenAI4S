@@ -391,3 +391,131 @@ def panel_crops(fig, dpi=None, pad_px=6, bbox_inches=None, pad_inches=None):
             min(int(by1) + pad_px, H_px),
         )
     return out
+
+
+#: section 9.1: how many times one figure may be re-rendered for geometry.
+MAX_LAYOUT_RERENDERS = 2
+
+_LAYOUT_ROUNDS = {}
+"""figure name -> how many times `layout_issues` has checked it this kernel."""
+
+
+def _undrawn_tick_labels(fig):
+    """Tick labels matplotlib keeps but does not draw.
+
+    A tick whose location lies outside its axis' view interval is skipped at
+    draw time, yet its labels stay ``visible`` with a stale box beyond the
+    axes. Counting them reported ``out-of-bounds=['−8', '6']`` for a volcano
+    plot whose saved PNG showed neither.
+    """
+    skipped = set()
+    for ax in fig.axes:
+        for axis in (ax.xaxis, ax.yaxis):
+            lo, hi = sorted(float(v) for v in axis.get_view_interval())
+            tol = (hi - lo) * 1e-9
+            for tick in axis.get_major_ticks() + axis.get_minor_ticks():
+                loc = tick.get_loc()
+                if loc is None or not (lo - tol <= float(loc) <= hi + tol):
+                    skipped.update((tick.label1, tick.label2))
+    return skipped
+
+
+def _saved_frame(fig, bbox_inches=None, pad_inches=None):
+    """The saved image's extent in display pixels (``savefig`` semantics)."""
+    import matplotlib as mpl
+
+    if bbox_inches is None:
+        bbox_inches = mpl.rcParams.get("savefig.bbox")
+    if bbox_inches == "tight":
+        if pad_inches is None:
+            pad_inches = mpl.rcParams.get("savefig.pad_inches", 0.1)
+        if pad_inches == "layout":
+            pad_inches = 0.0
+        frame = fig.get_tightbbox().padded(pad_inches)
+    elif isinstance(bbox_inches, mpl.transforms.BboxBase):
+        frame = bbox_inches
+    else:
+        return fig.bbox
+    return mpl.transforms.TransformedBbox(frame, fig.dpi_scale_trans)
+
+
+def layout_issues(fig, name, *, bbox_inches=None, pad_inches=None):
+    """section 9.1 geometric check, in the cell that draws ``fig``.
+
+    Returns ``{"overlaps", "spine_hits", "out_of_bounds", "round", "rerender",
+    "note"}``; the first three list label text. Only labels a draw actually
+    renders count, and out-of-bounds means outside the SAVED image: under
+    ``bbox_inches='tight'`` (what :func:`apply_figure_style` sets) a label
+    beyond the canvas is inside the saved PNG, so it is not a finding. Pass
+    the ``bbox_inches``/``pad_inches`` you gave ``savefig``, if any.
+
+    ``name`` identifies the figure across re-renders (use its file stem).
+    ``rerender`` is True only while issues remain and fewer than
+    ``MAX_LAYOUT_RERENDERS`` re-renders of that figure have been checked;
+    after that, keep the saved figure and report what is left under
+    ``limitations`` instead of rendering it again.
+    """
+    import matplotlib as mpl
+
+    fig.draw_without_rendering()
+    undrawn = _undrawn_tick_labels(fig)
+    texts = [
+        (t, t.get_window_extent())
+        for t in fig.findobj(mpl.text.Text)
+        if t.get_text().strip() and t.get_visible() and t not in undrawn
+    ]
+    spines = [
+        (s, s.get_window_extent())
+        for ax in fig.axes
+        for s in ax.spines.values()
+        if s.get_visible()
+    ]
+    ticklabels = {
+        ax: set(ax.get_xticklabels(which="both") + ax.get_yticklabels(which="both"))
+        for ax in fig.axes
+    }
+    overlaps = [
+        (a.get_text(), b.get_text())
+        for i, (a, ba) in enumerate(texts)
+        for b, bb in texts[i + 1 :]
+        if ba.overlaps(bb)
+    ]
+    spine_hits = [
+        t.get_text()
+        for t, bt in texts
+        for s, bs in spines
+        if bt.overlaps(bs) and t not in ticklabels[s.axes]
+    ]
+    frame = _saved_frame(fig, bbox_inches, pad_inches)
+    out_of_bounds = [
+        t.get_text()
+        for t, bt in texts
+        if bt.x0 < frame.x0 - 1
+        or bt.y0 < frame.y0 - 1
+        or bt.x1 > frame.x1 + 1
+        or bt.y1 > frame.y1 + 1
+    ]
+    checked = _LAYOUT_ROUNDS.get(name, 0)
+    _LAYOUT_ROUNDS[name] = checked + 1
+    issues = bool(overlaps or spine_hits or out_of_bounds)
+    rerender = issues and checked < MAX_LAYOUT_RERENDERS
+    if not issues:
+        note = "clean"
+    elif rerender:
+        note = (
+            f"fix and re-render; {MAX_LAYOUT_RERENDERS - checked} geometry "
+            f"re-render(s) left for {name!r}"
+        )
+    else:
+        note = (
+            f"re-render budget for {name!r} is spent: keep the saved figure and "
+            "list these issues under limitations instead of rendering it again"
+        )
+    return {
+        "overlaps": overlaps,
+        "spine_hits": spine_hits,
+        "out_of_bounds": out_of_bounds,
+        "round": checked,
+        "rerender": rerender,
+        "note": note,
+    }

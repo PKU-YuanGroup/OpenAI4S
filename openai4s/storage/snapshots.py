@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS session_branches (
     head_checkpoint_id    TEXT,
     name                  TEXT,
     created_at            INTEGER NOT NULL,
-    updated_at            INTEGER NOT NULL
+    updated_at            INTEGER NOT NULL,
+    deleted_at            INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_session_branch_root
     ON session_branches(root_frame_id, created_at);
@@ -810,6 +811,7 @@ class SessionSnapshotRepository:
         with self._lock:
             self._connection.executescript(SNAPSHOT_SCHEMA)
             self._migrate_cursor_checkpoints()
+            self._migrate_branch_tombstones()
             self._connection.commit()
 
     def set_revert_commit_hook(self, hook: Callable[..., None] | None) -> None:
@@ -851,6 +853,25 @@ class SessionSnapshotRepository:
             "ON session_checkpoints(root_frame_id,source_kind,source_id) "
             "WHERE source_kind IS NOT NULL AND source_id IS NOT NULL"
         )
+
+    def _migrate_branch_tombstones(self) -> None:
+        """Add the deleted-branch tombstone to existing databases (M-73).
+
+        A deleted branch keeps its row and everything it recorded: a branch
+        forked from it projects its checkpoints, messages and Cells as its own
+        prefix, so removing them would rewrite another branch's history.
+        """
+
+        columns = {
+            row["name"]
+            for row in self._connection.execute(
+                "PRAGMA table_info(session_branches)"
+            ).fetchall()
+        }
+        if "deleted_at" not in columns:
+            self._connection.execute(
+                "ALTER TABLE session_branches ADD COLUMN deleted_at INTEGER"
+            )
 
     def ensure_branch(
         self,
@@ -1155,6 +1176,13 @@ class SessionSnapshotRepository:
         return dict(row) if row else None
 
     def list_branches(self, root_frame_id: str) -> list[dict[str, Any]]:
+        """Every branch row of the Session, deleted ones included.
+
+        A deleted branch keeps its row (``deleted_at`` set): a package export
+        still needs it, since a branch forked from it names it as its parent
+        and projects its rows. Views that list branches leave it out.
+        """
+
         with self._lock:
             rows = self._connection.execute(
                 "SELECT * FROM session_branches WHERE root_frame_id=? "
@@ -1162,6 +1190,30 @@ class SessionSnapshotRepository:
                 (root_frame_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def delete_branch(
+        self,
+        *,
+        root_frame_id: str,
+        branch_id: str,
+    ) -> dict[str, Any] | None:
+        """Mark one live branch of the Session deleted; None if there is none.
+
+        Only the tombstone is written. Nothing the branch recorded is removed,
+        so every other branch's projection reads exactly what it read before.
+        """
+
+        root_frame_id = self._text("root_frame_id", root_frame_id)
+        branch_id = self._text("branch_id", branch_id)
+        now = self._clock_ms()
+        with self._lock:
+            changed = self._connection.execute(
+                "UPDATE session_branches SET deleted_at=?,updated_at=? "
+                "WHERE branch_id=? AND root_frame_id=? AND deleted_at IS NULL",
+                (now, now, branch_id, root_frame_id),
+            ).rowcount
+            self._connection.commit()
+        return self.get_branch(branch_id) if changed else None
 
     def record_operation(
         self,

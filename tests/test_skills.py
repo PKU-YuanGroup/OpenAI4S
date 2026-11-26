@@ -207,13 +207,83 @@ def test_search_ignores_single_character_query_tokens():
     604 bundled Skills (``don't``, ``-t`` flags, loop variables) and carried
     the same weight as ``test``. A one-character token is dropped whenever the
     query has anything longer -- and kept when it is all there is, so a bare
-    ``R`` still retrieves something rather than nothing.
+    ``R`` still retrieves something rather than nothing. The compound itself
+    is a token of its own (SKL-3).
     """
 
+    from openai4s.skills_loader.loader import _query_tokens
+
+    assert _query_tokens("t-test") == {"t-test", "test"}
     loader = SkillLoader()
     loader.discover()
-    assert loader.search("t-test", limit=10) == loader.search("test", limit=10)
+    assert loader.search("t-test", limit=10) == loader.search("test t-test", limit=10)
     assert loader.search("R", limit=3)
+
+
+def test_search_is_not_derailed_by_a_compound_fragment_homonym():
+    """SKL-3, the recorded query. The ``pet`` of ``ChIA-PET`` (3 of 612
+    Skills, so a high IDF) earned the Hi-C loop caller the name/description
+    boost, and a PETase structure question got a HiChIP recipe first."""
+
+    loader = SkillLoader()
+    query = "PET hydrolase IsPETase protein structure PDB mutation visualization"
+    names = [hit["name"] for hit in loader.search(query, limit=5)]
+    assert "bio-hi-c-analysis-hichip-plac-loops" not in names, names
+    assert {
+        "bio-structural-biology-structure-modification",
+        "protein-mutation-enhancement",
+        "proteinmpnn",
+    } & set(names), names
+
+    # A query that names the compound still finds the Skill about it first.
+    first = loader.search("ChIA-PET loops", limit=1)[0]["name"]
+    assert first == "bio-hi-c-analysis-hichip-plac-loops"
+
+
+def test_search_matches_chinese_queries_by_character_bigrams():
+    """SKL-3: tokens were ``[a-z0-9]+``, so a Chinese query had none at all and
+    returned nothing even for a Skill whose description is partly Chinese."""
+
+    loader = SkillLoader()
+    hits = loader.search("面板数据预处理", limit=3)
+    assert hits and hits[0]["name"] == "panel-data-preprocessing", hits
+    assert loader.search("面板数据，事件检测", limit=1)[0]["name"] == (
+        "panel-data-preprocessing"
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("帮我对这批单细胞数据做细胞类型注释", "single-cell"),
+        (
+            "蛋白质结构如何预测与设计",
+            "bio-structural-biology-modern-structure-prediction",
+        ),
+        ("写一篇文献综述并核验引用", "literature-review"),
+        ("分子对接怎么做", "diffdock"),
+        ("差异表达分析的完整流程", "bio-differential-expression"),
+    ],
+)
+def test_search_finds_the_right_skill_for_a_chinese_research_question(query, expected):
+    """SKL-3 follow-up: with character pairs alone, the few Skills that carry
+    Chinese text won on generic words -- "单细胞…细胞类型注释" returned
+    panel-data-preprocessing and volcengine-datapro on 数据. Common research
+    terms are also searched in English, and generic pairs never count."""
+
+    loader = SkillLoader()
+    names = [hit["name"] for hit in loader.search(query, limit=5)]
+    assert any(expected in name for name in names), names
+    assert "panel-data-preprocessing" not in names, names
+    assert "volcengine-datapro" not in names, names
+
+
+def test_a_single_shared_chinese_pair_is_not_evidence():
+    """``突变`` alone matched panel-data-preprocessing through "数据突变"."""
+
+    loader = SkillLoader()
+    names = [hit["name"] for hit in loader.search("突变", limit=5)]
+    assert names and "panel-data-preprocessing" not in names, names
 
 
 def test_search_does_not_rank_on_ubiquitous_bundled_tokens():

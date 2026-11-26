@@ -1134,32 +1134,37 @@ def test_an_unknown_secret_backend_does_not_travel(cfg, tmp_path, monkeypatch):
     assert b"true" in blob.lower()
 
 
-def test_a_migration_row_travels_only_as_fingerprints(cfg, tmp_path, monkeypatch):
+def test_a_migration_row_travels_only_as_counts(cfg, tmp_path, monkeypatch):
+    """CLI-33: 43 fingerprinted rows were most of report.json and said less
+    than the counts; neither the name nor a fingerprint of it travels now."""
     import openai4s.diagnostics as diagnostics
     from openai4s.observability import fingerprint
 
+    rows = [
+        {"version": 1, "applied_at": 2, "name": PRIVATE_SNAKE, "checksum": HEX_ALPHA}
+    ]
     monkeypatch.setattr(
         diagnostics,
         "security_posture",
         lambda cfg_: {
-            "schema": {
-                "version": 13,
-                "applied": [
-                    {
-                        "version": 1,
-                        "applied_at": 2,
-                        "name": PRIVATE_SNAKE,
-                        "checksum": HEX_ALPHA,
-                    }
-                ],
-            }
+            "schema": {"version": 13, "applied": diagnostics._applied_summary(rows)}
         },
     )
     _names, blob = _bundle_parts(cfg, tmp_path)
     assert PRIVATE_SNAKE.encode() not in blob
     assert HEX_ALPHA.encode() not in blob
-    assert fingerprint(PRIVATE_SNAKE).encode() in blob
-    assert fingerprint(HEX_ALPHA).encode() in blob
+    assert fingerprint(PRIVATE_SNAKE).encode() not in blob
+    assert fingerprint(HEX_ALPHA).encode() not in blob
+    with zipfile.ZipFile(tmp_path / "b.zip") as archive:
+        report = json.loads(archive.read("report.json"))
+    assert report["security"]["schema"]["applied"] == {
+        "count": 1,
+        "first": 1,
+        "last": 1,
+        "missing": 0,
+        "checksum_mismatches": 1,
+        "last_applied_at": 2,
+    }
 
 
 class _AliasNamed(type):
@@ -1270,3 +1275,13 @@ def test_the_turn_section_still_carries_real_codes(cfg, tmp_path, monkeypatch):
         "reason": "no_progress",
         "progress_reason": "same_action",
     }
+
+
+def test_a_cli_run_crash_record_keeps_its_surface_in_the_archive():
+    """CLI-33: `openai4s run` logs its crash with surface `cli:run`; the
+    bundle showed it as `<omitted:…>`, so the record could not be told from
+    any other."""
+    from openai4s import diagnostics
+
+    out = diagnostics._archive_structured({"surface": "cli:run", "level": "error"})
+    assert out["surface"] == "cli:run"

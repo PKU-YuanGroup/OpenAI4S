@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 #: Every status a plan may hold. Enforced in Python rather than as a SQL CHECK:
 #: the table is created with `CREATE TABLE IF NOT EXISTS`, so a constraint added
@@ -134,6 +134,23 @@ class PlanRepository:
                 (frame_id, limit),
             ).fetchall()
         return [self.normalize_row(row) for row in rows]
+
+    def artifact_ids(self, artifact_ids: Iterable[str]) -> set[str]:
+        """Which of ``artifact_ids`` hold a plan's JSON (`plans.artifact_id`)."""
+        wanted = sorted({str(i) for i in artifact_ids if i})
+        found: set[str] = set()
+        # Chunked under SQLite's default bound-parameter limit.
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start : start + 500]
+            with self._lock:
+                rows = self._connection.execute(
+                    "SELECT DISTINCT artifact_id FROM plans WHERE artifact_id IN ("
+                    + ",".join("?" * len(chunk))
+                    + ")",
+                    tuple(chunk),
+                ).fetchall()
+            found.update(str(row[0]) for row in rows)
+        return found
 
     def update(
         self,

@@ -79,6 +79,16 @@ class FakeStore:
         return self.messages[start : start + limit]
 
 
+def _answered_store() -> FakeStore:
+    """A session with something to review (M-75 refuses an empty one)."""
+    store = FakeStore()
+    store.messages = [
+        {"role": "user", "content": "request"},
+        {"role": "assistant", "content": "answer"},
+    ]
+    return store
+
+
 class FakeState:
     def __init__(self, root_frame_id="frame") -> None:
         self.root_frame_id = root_frame_id
@@ -490,6 +500,7 @@ def test_run_provider_error_is_a_nonfatal_unavailable_step():
     assert store.steps[0]["output"] == {
         "error": "provider unavailable",
         "verdict": "unavailable",
+        "reason": "internal",
     }
     assert events[-1]["status"] == "error"
     assert service.call_inflight("frame") is False
@@ -605,6 +616,7 @@ def test_submit_reserves_cancel_before_state_and_rejects_duplicate():
     state = FakeState()
     threads = HeldThreads()
     service, _store, _state, events, _jobs, _reviews = _service(
+        store=_answered_store(),
         state=state,
         run_reviewer=lambda *_args, **_kwargs: None,
         thread_factory=threads,
@@ -637,6 +649,7 @@ def test_submit_thread_start_failure_cleans_reservation_and_job():
     service, _store, _state, _events, jobs, _reviews = _service(
         run_reviewer=lambda *_args, **_kwargs: None,
         thread_factory=FailingThreads(),
+        store=_answered_store(),
     )
 
     with pytest.raises(RuntimeError, match="cannot start"):
@@ -796,3 +809,48 @@ def test_a_host_side_review_refusal_does_not_lock_the_quota_window(tmp_path):
         )
     finally:
         store.close()
+
+
+def test_an_empty_session_is_refused_before_any_work_m75():
+    """M-75: nothing to review is said at once, not as an empty "Review
+    unavailable" card after the provider timeout. No job, no reservation,
+    no thread."""
+    threads = HeldThreads()
+    service, _store, _state, events, jobs, _reviews = _service(
+        run_reviewer=lambda *_args, **_kwargs: pytest.fail("must not run"),
+        thread_factory=threads,
+    )
+    with pytest.raises(BusyError) as refused:
+        service.submit("frame", "default")
+    assert refused.value.code == 409
+    assert "nothing to review" in str(refused.value)
+    assert jobs == {}
+    assert service.call_inflight("frame") is False
+    assert events == []
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        ("missing_credential", "no_model"),
+        ("transport", "model_unreachable"),
+        ("timeout", "model_unreachable"),
+        ("llm", "model_error"),
+        ("review", "unusable_answer"),
+        ("other", "internal"),
+    ],
+)
+def test_a_review_that_ends_without_a_verdict_says_why_m75(error, reason):
+    from openai4s.llm.models import LLMError, MissingCredentialError, TransportError
+    from openai4s.review import ReviewError
+    from openai4s.server.reviews import failure_reason
+
+    raised = {
+        "missing_credential": MissingCredentialError("no API key"),
+        "transport": TransportError("connection reset"),
+        "timeout": TimeoutError("timed out"),
+        "llm": LLMError("HTTP 500"),
+        "review": ReviewError("reviewer returned no valid JSON object"),
+        "other": RuntimeError("boom"),
+    }[error]
+    assert failure_reason(raised) == reason

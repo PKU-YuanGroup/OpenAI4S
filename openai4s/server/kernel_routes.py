@@ -404,7 +404,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
     m = _INSTALL.match(method, sub)
     if m:
         # NOT gated by notebook_repl: prebuilt-env package install is a
-        # separate Customize → Compute affordance, not the code REPL. Both
+        # separate Settings → Compute affordance, not the code REPL. Both
         # this route and global /kernel/install are nevertheless admin-only
         # in team mode because they mutate the shared runtime environment.
         _require_instance_admin(self, "install shared kernel packages")
@@ -439,6 +439,10 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         pid = f.get("project_id") or "default"
         b = self._body()
         name = b.get("env") or b.get("name") or ""
+        if b.get("language") == "r" and not name:
+            # SCI-20: back to the default R for this session's R cells.
+            self._json(runner._select_r_env(fid, None, pid))
+            return True
         self._json(runner.set_env(fid, name, pid))
         return True
     m = _BACKGROUND.match(method, sub)

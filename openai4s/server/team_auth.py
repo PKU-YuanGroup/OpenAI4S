@@ -22,12 +22,13 @@ rate-limited refusals alike.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from openai4s.storage.team import SESSION_TTL_S
+from openai4s.storage.team import SESSION_TTL_S, check_new_password, username_key
 
 #: The browser login cookie. Distinct from the daemon's ``os_token`` access
 #: cookie: one says "this browser may talk to the daemon", the other says
@@ -64,6 +65,19 @@ class RateLimited(Exception):
     """Too many login attempts for this (username, ip) in the last minute."""
 
 
+class AccountDisabled(Exception):
+    """The password was right and the account is disabled (TEAM-3).
+
+    Raised only after the password matched, so it answers nothing a guesser
+    could use; it tells the account's owner to ask an administrator rather
+    than retry or ask for a reset, which does not lift a disable.
+    """
+
+
+class WrongPassword(Exception):
+    """The current password given to a self-service change was not right."""
+
+
 class TeamAuthService:
     """Login/logout/resolve on top of the Store's TeamRepository."""
 
@@ -83,13 +97,16 @@ class TeamAuthService:
         # false by default so the supported direct-loopback HTTP workflow works.
         self._secure_cookie = bool(secure_cookie)
         self._lock = threading.Lock()
-        # (username.lower(), ip) -> (tokens, last_refill_ts)
+        # (username_key(username), ip) -> (tokens, last_refill_ts)
         self._buckets: dict[tuple[str, str], tuple[float, float]] = {}
 
     # --- rate limiting ---------------------------------------------------
 
     def _take_login_token(self, username: str, ip: str) -> bool:
-        key = (username.strip().lower(), ip or "")
+        # The account's key, not the spelling: login matches `BOB` to `bob`,
+        # so a per-spelling bucket would hand a guesser five attempts per
+        # case variant of the name.
+        key = (username_key(username), ip or "")
         now = self._clock()
         rate = LOGIN_ATTEMPTS_PER_MINUTE / 60.0
         with self._lock:
@@ -122,7 +139,9 @@ class TeamAuthService:
 
         Raises :class:`RateLimited` when the bucket is empty — *before* the
         password is even looked at, so the limiter also bounds the PBKDF2
-        work an attacker can make this daemon do.
+        work an attacker can make this daemon do — and
+        :class:`AccountDisabled` for the right password of a disabled
+        account (a wrong one is None, like an unknown name).
         """
         if not self._take_login_token(username, ip):
             self._store.team.audit(
@@ -134,7 +153,12 @@ class TeamAuthService:
                 f"too many login attempts; wait a minute (limit "
                 f"{LOGIN_ATTEMPTS_PER_MINUTE}/min per user+ip)"
             )
-        user = self._store.team.verify_password(username, password)
+        outcome, user = self._store.team.authenticate(username, password)
+        if outcome == "disabled":
+            self._store.team.audit(
+                actor=username or "?", action="login_disabled", detail=f"ip={ip}"
+            )
+            raise AccountDisabled("this account is disabled")
         if user is None:
             self._store.team.audit(
                 actor=username or "?", action="login_failed", detail=f"ip={ip}"
@@ -148,6 +172,50 @@ class TeamAuthService:
             detail=f"ip={ip}",
         )
         return token, user
+
+    def change_password(
+        self, identity: "TeamIdentity", current: str, new: str, ip: str
+    ) -> str:
+        """Set a signed-in user's own password; returns a fresh cookie token.
+
+        The current password is required -- a borrowed or stolen cookie must
+        not be enough to take the account over -- and guessing it here is
+        charged to the same per-account bucket as the login, so this route is
+        not a second, unthrottled password oracle. The new password meets the
+        same rule as every other chosen one (`check_new_password`, raising
+        ValueError before any hashing). Like a reset, the change revokes every
+        live session of the account; the browser that made it gets a new one.
+        """
+        check_new_password(new)
+        if not self._take_login_token(identity.username, ip):
+            self._store.team.audit(
+                actor=identity.username,
+                action="password_change_rate_limited",
+                user_id=identity.user_id,
+                detail=f"ip={ip}",
+            )
+            raise RateLimited(
+                f"too many attempts; wait a minute (limit "
+                f"{LOGIN_ATTEMPTS_PER_MINUTE}/min per user+ip)"
+            )
+        outcome, user = self._store.team.authenticate(identity.username, current)
+        if outcome != "ok" or user is None or user["id"] != identity.user_id:
+            self._store.team.audit(
+                actor=identity.username,
+                action="password_change_failed",
+                user_id=identity.user_id,
+                detail=f"ip={ip}",
+            )
+            raise WrongPassword("the current password is not right")
+        self._store.team.set_password(identity.user_id, new)
+        token = self._store.team.create_auth_session(identity.user_id)
+        self._store.team.audit(
+            actor=identity.username,
+            action="password_change",
+            user_id=identity.user_id,
+            detail=f"ip={ip}",
+        )
+        return token
 
     def logout(self, token: str | None) -> bool:
         user = self._store.team.resolve_auth_session(token)
@@ -180,6 +248,73 @@ class TeamAuthService:
         return header + ("; Secure" if self._secure_cookie else "")
 
 
+#: The longest deep link a login carries back. Far past any workbench URL;
+#: the bound only keeps an absurd request target out of a Location header.
+_NEXT_MAX = 2048
+
+
+def safe_next_path(target: str | None) -> str | None:
+    """``target`` if it is a page of *this* origin to return to after login.
+
+    The login page navigates to it, so anything that could leave the origin
+    is refused rather than repaired: it must start with exactly one ``/``
+    (``//host`` and ``/\\host`` are scheme-relative links to another site),
+    and every character must be printable ASCII other than a backslash --
+    browsers drop tabs and newlines from a URL, which turns ``/<TAB>/host``
+    back into ``//host``. ``/``, the login page itself and the API are not
+    worth carrying. The client applies the same rule before it navigates
+    (login.js), so a hand-written ``/login?next=`` is held to it too.
+    """
+    if not target or len(target) > _NEXT_MAX:
+        return None
+    if not target.startswith("/") or target[1:2] in ("/", "\\"):
+        return None
+    if any(ch == "\\" or not ("!" <= ch <= "~") for ch in target):
+        return None
+    path = target.split("?", 1)[0].split("#", 1)[0]
+    if path in ("/", "/login", "/api") or path.startswith(("/login/", "/api/")):
+        return None
+    return target
+
+
+def login_location(target: str | None) -> str:
+    """Where the team guard sends a signed-out browser: the login page,
+    carrying the page it asked for when that is safe to come back to."""
+    from urllib.parse import quote
+
+    nxt = safe_next_path(target)
+    return _without_line_breaks(
+        "/login" if nxt is None else "/login?next=" + quote(nxt, safe="")
+    )
+
+
+#: A workbench session link: `/projects/<project>/frames/<session id>`. The
+#: id class is narrow on purpose -- it is written into a Location header.
+_SESSION_LINK = re.compile(r"/projects/[^/]+/frames/([A-Za-z0-9_-]{1,128})")
+
+
+def guest_landing(path: str) -> str:
+    """Where a guest's browser goes instead of the workbench (TEAM-28).
+
+    A guest's whole surface is the replay viewer, so loading the workbench
+    only produced a run of 403s before the client sent them on. A session
+    link opens that session in the viewer.
+    """
+    match = _SESSION_LINK.fullmatch(path or "")
+    return _without_line_breaks("/replay#" + match.group(1) if match else "/replay")
+
+
+def _without_line_breaks(location: str) -> str:
+    """A ``Location`` value, said at the header boundary to hold no line break.
+
+    Both callers already guarantee it: ``safe_next_path`` refuses every
+    character outside printable ASCII and ``quote`` encodes what is left, and a
+    session id is ``[A-Za-z0-9_-]``. Stating it here is what code scanning
+    reads as the response-splitting barrier.
+    """
+    return location.replace("\r", "").replace("\n", "")
+
+
 def public_user(user: dict) -> dict:
     """The wire shape of a user row: no hash material, ever."""
     return {
@@ -191,11 +326,16 @@ def public_user(user: dict) -> dict:
 
 
 __all__ = [
+    "AccountDisabled",
     "LOGIN_ATTEMPTS_PER_MINUTE",
     "RateLimited",
     "SERVICE_IDENTITY",
     "TEAM_COOKIE",
     "TeamAuthService",
     "TeamIdentity",
+    "WrongPassword",
+    "guest_landing",
+    "login_location",
     "public_user",
+    "safe_next_path",
 ]

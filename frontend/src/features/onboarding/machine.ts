@@ -5,6 +5,7 @@
  */
 
 import type { OnboardingStatus } from "./status";
+import { ot } from "./copy";
 
 export const REQUIRED_STEPS = ["path", "test", "readiness", "project"] as const;
 export type RequiredStep = (typeof REQUIRED_STEPS)[number];
@@ -73,7 +74,12 @@ export type WizardAction =
    * a saved profile is not a verified connection.
    */
   | { type: "resume"; step: RequiredStep; path: PathChoice }
-  | { type: "choosePath"; path: PathChoice }
+  /**
+   * `saved`: the choice is already a saved, active profile, so step 1 is done.
+   * A radio click is only a selection; step 1 is ticked once Continue saved it
+   * (TEAM-10: a refused Continue left "Choose a model" ticked).
+   */
+  | { type: "choosePath"; path: PathChoice; saved?: boolean }
   | { type: "goto"; step: RequiredStep }
   | { type: "next" }
   | { type: "skip" }
@@ -127,7 +133,10 @@ export function formatWizardError(error: WizardError | null): string {
 }
 
 export function wizardErrorFromUnknown(e: unknown): WizardError {
-  const err = e as { message?: unknown; requestId?: unknown } | null;
+  const err = e as { message?: unknown; requestId?: unknown; code?: unknown } | null;
+  // A refusal by role is not a fault to report with a request id: say who can
+  // do it instead of the bare server text (TEAM-10).
+  if (err && err.code === "admin_only") return { message: ot("onboarding.adminOnly"), requestId: "" };
   return {
     message: err && err.message != null ? String(err.message) : String(e),
     requestId: err && err.requestId != null ? String(err.requestId) : "",
@@ -174,7 +183,9 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
       return {
         ...state,
         path,
-        decided: withDecided(state, "path").filter((step) => !changed || step !== "test"),
+        decided: (action.saved ? withDecided(state, "path") : state.decided).filter(
+          (step) => !changed || step !== "test",
+        ),
         receipt: changed ? null : state.receipt,
         probeDetail: changed ? "" : state.probeDetail,
         testClicked: changed ? false : state.testClicked,
@@ -219,11 +230,13 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
         error: null,
       };
     case "startTest":
+      // Not decided yet: the rail's tick waits for a reachable result (or for
+      // Continue). It used to tick here, while "Contacting the endpoint..."
+      // was still on screen.
       return {
         ...state,
         testClicked: true,
         providerRequests: state.providerRequests + 1,
-        decided: withDecided(state, "test"),
         error: null,
         probeDetail: "",
       };
@@ -236,11 +249,15 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
       if (action.profileId !== undefined && action.profileId !== (state.path?.profileId ?? "")) {
         return state;
       }
+      // A failed probe is not a passed test: only a reachable endpoint ticks
+      // the step. Continue still records a user who moves on without one.
       return {
         ...state,
         receipt: action.receipt,
         probeDetail: String(action.detail || ""),
-        decided: withDecided(state, "test"),
+        decided: action.reachable
+          ? withDecided(state, "test")
+          : state.decided.filter((step) => step !== "test"),
       };
     case "fail":
       return {

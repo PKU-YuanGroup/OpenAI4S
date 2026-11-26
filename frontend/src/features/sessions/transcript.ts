@@ -14,6 +14,7 @@ import { t } from "../../i18n";
 import { artifacts } from "../../stores/artifacts";
 import { currentId } from "../../stores/session";
 import { blankMentionTokens, composerMentions, type ComposerMention } from "../autocomplete/mentions";
+import { renderComposerRun } from "../notebook/pasted";
 import { $, el } from "./dom";
 import { iconEl } from "./icon";
 import { callLane } from "./lane";
@@ -27,6 +28,9 @@ export {
 } from "../messages/list";
 
 export function renderComposerRefChips(): void {
+  // Every composer edit (typing, a send, a restored or switched draft) comes
+  // through here; the "Run in Notebook" button follows the same text (SYNC-15).
+  renderComposerRun();
   const host = $("#composer-refs");
   if (!host) return;
   host.innerHTML = "";

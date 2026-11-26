@@ -146,6 +146,25 @@ _USERNAME_MAX = 64
 _USERNAME_ALLOWED = "-_."
 
 
+#: The shortest password a person may choose (CLI-16). Eight is NIST
+#: SP 800-63B's floor for a memorized secret; a generated one is 16.
+MIN_PASSWORD_LENGTH = 8
+
+
+def check_new_password(password: str) -> str:
+    """``password`` if a person may choose it, else ValueError saying why.
+
+    Applied wherever a person *chooses* a password: `openai4s user add` and
+    `reset-password` with `--password-stdin`, the admin routes that take
+    one, invite redemption, and the self-service change. Not inside
+    `create_user` / `set_password`, whose generated passwords already pass
+    and whose callers include test fixtures with deliberately short ones.
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+    return password
+
+
 def validate_username(username: str) -> str:
     """The stripped name, or ValueError naming what is wrong with it."""
     name = username.strip()
@@ -168,6 +187,24 @@ def _username_key(username: str) -> str:
     """Portable account identity for collision checks, not display/storage."""
 
     return unicodedata.normalize("NFKC", username).casefold()
+
+
+def username_key(username: str) -> str:
+    """The one identity a typed username names: stripped, NFKC, casefolded.
+
+    Creation refuses a second account with the same key, so the key is also
+    what a login and every by-name lookup match on -- `BOB` (a phone's
+    auto-capitalized first letter) signs in as `bob` rather than being told
+    the password is wrong. Anything keyed by "which account is this attempt
+    against", such as the login rate limiter, must use it too, or each
+    spelling would get a bucket of its own.
+    """
+
+    return _username_key(username.strip())
+
+
+class LastAdminError(ValueError):
+    """Disabling this account would leave the instance with no enabled admin."""
 
 
 class TeamRepository:
@@ -295,12 +332,40 @@ class TeamRepository:
             ).fetchone()
         return _user_row(row) if row else None
 
+    def _user_id_by_name(self, username: str) -> str | None:
+        """The id of the account `username` names, matched on
+        :func:`username_key`. The caller holds the lock.
+
+        The exact spelling is tried first (the common case, one indexed
+        read); otherwise every row is compared by key -- SQLite's NOCASE is
+        ASCII-only, and a lab instance has tens of accounts, not millions.
+        Creation keeps keys unique, so at most one row can match.
+        """
+        name = username.strip()
+        row = self._connection.execute(
+            "SELECT id FROM users WHERE username=?", (name,)
+        ).fetchone()
+        if row is not None:
+            return str(row[0])
+        key = _username_key(name)
+        for user_id, stored in self._connection.execute(
+            "SELECT id, username FROM users"
+        ).fetchall():
+            if _username_key(str(stored)) == key:
+                return str(user_id)
+        return None
+
     def get_user_by_username(self, username: str) -> dict | None:
+        """The account `username` names, in any case or compatibility form."""
         with self._lock:
-            row = self._connection.execute(
-                f"SELECT {_USER_COLS} FROM users WHERE username=?",
-                (username.strip(),),
-            ).fetchone()
+            user_id = self._user_id_by_name(username)
+            row = (
+                self._connection.execute(
+                    f"SELECT {_USER_COLS} FROM users WHERE id=?", (user_id,)
+                ).fetchone()
+                if user_id is not None
+                else None
+            )
         return _user_row(row) if row else None
 
     def list_users(self) -> list[dict]:
@@ -318,8 +383,30 @@ class TeamRepository:
 
     def set_disabled(self, user_id: str, disabled: bool) -> bool:
         """Disable also revokes every live login session — a disabled account
-        must not keep riding an already-issued cookie."""
+        must not keep riding an already-issued cookie.
+
+        Disabling the last enabled admin is refused with
+        :class:`LastAdminError`. With no admin left nobody can sign in to
+        manage the instance, and the way back is the host's CLI. The check
+        and the write share one lock, so two admins disabling each other at
+        the same moment cannot both pass it.
+        """
         with self._lock:
+            if disabled:
+                target = self._connection.execute(
+                    "SELECT role, disabled FROM users WHERE id=?", (user_id,)
+                ).fetchone()
+                if target and str(target[0]) == "admin" and not target[1]:
+                    others = self._connection.execute(
+                        "SELECT COUNT(*) FROM users WHERE role='admin'"
+                        " AND disabled=0 AND id<>?",
+                        (user_id,),
+                    ).fetchone()[0]
+                    if not others:
+                        raise LastAdminError(
+                            "refusing to disable the last enabled admin; "
+                            "create or enable another admin first"
+                        )
             cur = self._connection.execute(
                 "UPDATE users SET disabled=? WHERE id=?",
                 (1 if disabled else 0, user_id),
@@ -353,24 +440,42 @@ class TeamRepository:
     def verify_password(self, username: str, password: str) -> dict | None:
         """The user row on success; None for wrong password, unknown user, or
         a disabled account — indistinguishably, and in constant-ish time."""
+        outcome, user = self.authenticate(username, password)
+        return user if outcome == "ok" else None
+
+    def authenticate(self, username: str, password: str) -> tuple[str, dict | None]:
+        """``("ok", user)``, ``("disabled", None)`` or ``("invalid", None)``.
+
+        ``disabled`` is answered only for the *right* password. With a wrong
+        one a disabled account is ``invalid`` like an unknown name, so the
+        distinction tells nothing to somebody guessing -- only the account's
+        owner learns that a new password will not help and an administrator
+        has to enable the account. The PBKDF2 work is the same either way.
+        """
         with self._lock:
-            row = self._connection.execute(
-                "SELECT id, password_hash, password_salt, iterations, disabled"
-                " FROM users WHERE username=?",
-                (username.strip(),),
-            ).fetchone()
+            user_id = self._user_id_by_name(username)
+            row = (
+                self._connection.execute(
+                    "SELECT id, password_hash, password_salt, iterations, disabled"
+                    " FROM users WHERE id=?",
+                    (user_id,),
+                ).fetchone()
+                if user_id is not None
+                else None
+            )
         if row is None:
             # Burn the same PBKDF2 work an existing user costs, so "no such
             # user" and "wrong password" have the same timing profile.
             hash_password(password, b"timing-equalizer-salt")
-            return None
+            return "invalid", None
         user_id, stored, salt, iterations, disabled = row
         candidate = hash_password(password, bytes(salt), int(iterations))
         if not hmac.compare_digest(candidate, bytes(stored)):
-            return None
+            return "invalid", None
         if disabled:
-            return None
-        return self.get_user(str(user_id))
+            return "disabled", None
+        user = self.get_user(str(user_id))
+        return ("ok", user) if user is not None else ("invalid", None)
 
     # --- login sessions --------------------------------------------------
 
@@ -565,6 +670,29 @@ class TeamRepository:
             ).fetchone()
         return row is not None
 
+    def replay_candidates(self, user: dict | None, *, limit: int = 500) -> list[str]:
+        """Session ids worth offering this user in the replay viewer (TEAM-28).
+
+        Their own sessions, and the project-visible sessions of projects they
+        belong to -- which is where a guest's invitation puts them. A list to
+        choose from, not an authorization: the caller still asks
+        :meth:`session_replayable_by` for every id, so this can only ever
+        narrow what replay already allows.
+        """
+        if not user or not user.get("id"):
+            return []
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT s.session_id FROM session_owners s"
+                " WHERE s.user_id=?"
+                " OR (s.visibility='project' AND s.project_id IS NOT NULL"
+                " AND s.project_id IN"
+                " (SELECT project_id FROM project_members WHERE user_id=?))"
+                " LIMIT ?",
+                (user.get("id"), user.get("id"), max(1, int(limit))),
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
     # --- audit (INV-12) --------------------------------------------------
 
     def audit(
@@ -625,11 +753,15 @@ class TeamRepository:
 
 
 __all__ = [
+    "LastAdminError",
+    "MIN_PASSWORD_LENGTH",
     "PBKDF2_ITERATIONS",
     "SESSION_TTL_S",
     "TeamRepository",
+    "check_new_password",
     "create_team_schema",
     "hash_password",
     "token_digest",
+    "username_key",
     "validate_username",
 ]

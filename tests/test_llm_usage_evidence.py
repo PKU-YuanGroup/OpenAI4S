@@ -280,6 +280,27 @@ def test_local_resource_errors_use_safe_bilingual_projection(kind):
 
 
 @pytest.mark.parametrize("language", ["zh", "en"])
+def test_a_stream_timeout_says_it_was_retried_only_when_it_was(language):
+    """M-30: the second silence is the one that reports the automatic retry."""
+    from openai4s.llm.models import StreamTimeoutError
+    from openai4s.server.gateway import SessionRunner
+
+    claim = "自动重试一次" if language == "zh" else "one automatic retry"
+    first = StreamTimeoutError("private upstream body")
+    assert claim not in SessionRunner._friendly_error(first, language=language)
+
+    # Out of attempts before the replay could happen: still no claim.
+    unreplayed = StreamTimeoutError("private upstream body", retryable=True)
+    unreplayed.retries_attempted = 2
+    assert claim not in SessionRunner._friendly_error(unreplayed, language=language)
+
+    second = StreamTimeoutError("private upstream body")
+    second.retries_attempted = 1
+    friendly = SessionRunner._friendly_error(second, language=language)
+    assert claim in friendly and "private" not in friendly
+
+
+@pytest.mark.parametrize("language", ["zh", "en"])
 def test_a_rate_limit_names_the_retry_knobs_and_never_claims_a_vetoed_retry(
     language,
 ):

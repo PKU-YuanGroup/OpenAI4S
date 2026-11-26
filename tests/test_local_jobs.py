@@ -1,6 +1,6 @@
 """Cancelling a local background job must actually stop it.
 
-`JobManager` backs the Customize -> Compute -> Jobs panel, which runs a shell
+`JobManager` backs the Settings -> Compute -> Jobs panel, which runs a shell
 command on the daemon's own machine. Two things made its cancel dishonest:
 
   * it wrote ``status = "cancelled"`` *before* attempting ``terminate()`` and

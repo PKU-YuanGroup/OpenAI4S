@@ -177,6 +177,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "rl_resource_admission",
         "rl_phase_bindings",
         "rl_run_results",
+        # NB-1: a run-this-file Cell keeps the script it ran. One nullable
+        # column; historical rows stay NULL.
+        "execution_log_inlined_script",
         # Plain-message submission receipts. Additive: one empty table, keyed
         # on session root + initiating identity + client request id.
         "message_admissions",

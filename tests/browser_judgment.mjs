@@ -41,7 +41,7 @@ async function screenshot(label) {
 }
 
 try {
-  await page.evaluate(() => window.openCust("general"));
+  await page.evaluate(() => window.openCust("experiments"));
   await page.locator("[data-judgment]").waitFor({ state: "visible" });
   await page.locator('#cust-content[aria-busy="false"]').waitFor({ state: "attached" });
   const skillToggle = page.locator('[data-judgment-cap="skill_suggest"] .toggle');
@@ -71,7 +71,7 @@ try {
     (await page.locator('[data-judgment-cap="skill_suggest"]').getAttribute("data-judgment-cap-on")) === "on",
   );
   await page.reload();
-  await page.evaluate(() => window.openCust("general"));
+  await page.evaluate(() => window.openCust("experiments"));
   await page.locator('[data-judgment-cap="skill_suggest"][data-judgment-cap-on="on"]').waitFor({ state: "visible" });
   assert.equal(await page.locator("[data-judgment-disclosure]").count(), 0, "the acknowledgement survives reload");
   await skillToggle.click();

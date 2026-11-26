@@ -10,7 +10,6 @@
  */
 
 import { t } from "../../i18n/runtime";
-import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
 import { liveCells, _liveCell } from "../../stores/notebook";
 import { stream as liveStream, stepEls } from "../../stores/stream";
@@ -23,7 +22,8 @@ import {
   shouldAdvanceSealed,
   type MdCutState,
 } from "./cut";
-import { bindStreamingPre, toolMetaLabel, type StreamingPreHandle } from "./delta";
+import { toolMetaLabel, type StreamingPreHandle } from "./delta";
+import { buildActivityCard, cellCardOnScreen, resetActivityCard } from "./cellCard";
 import {
   rememberCandidateIdentity,
   setLiveReviewBadge,
@@ -33,8 +33,10 @@ import { cancelFrame, scheduleFrame } from "./raf";
 import { down } from "./scroll";
 import { appendLiveStoppedMarker, cancelledIdentity } from "./stopped";
 import { embedArtifactFigures } from "./figures";
+import { resayProgress } from "./progress";
 import { _messagesFollow } from "../../stores/ui";
 import { dropTurnGroupIfEmpty, openTurnGroup, placeCardInTurn } from "./turnGroup";
+import { noteModelText } from "./turnStatus";
 
 export const TOOL_LABELS: Record<string, string> = {
   run_python: "toolLabel.runPython",
@@ -282,14 +284,6 @@ export function adoptIntoLiveStream(card: HTMLElement | null | undefined): boole
   return true;
 }
 
-function newToolPre(): { pre: HTMLElement; handle: StreamingPreHandle } {
-  const pre = el("pre");
-  const textNode = document.createTextNode("");
-  pre.appendChild(textNode);
-  const handle = bindStreamingPre(textNode, "");
-  return { pre, handle };
-}
-
 function paintToolMeta(st: LiveStream): void {
   if (!st.toolMeta || !st.toolHandle) return;
   // meta → head → card, as feed() builds it.
@@ -324,26 +318,22 @@ export function feed(
       const tool = tm && tm[1] ? tm[1] : "";
       const labelKey = TOOL_LABELS[tool];
       const label = suba ? raw : labelKey ? t(labelKey) : raw;
-      const card = el("div", "activity" + (suba ? " subagent" : ""));
-      const h = el("div", "a-head");
-      const ic = el("span", "ic");
-      paintIcon(ic, "check", 16);
-      h.appendChild(ic);
-      h.appendChild(el("span", "lbl", label));
-      const meta = el("span", "meta", "");
-      h.appendChild(meta);
-      const chev = el("span", "chev-t");
-      paintIcon(chev, "chevron-down", 14);
-      h.appendChild(chev);
-      const { pre, handle } = newToolPre();
-      handle.append(raw + "\n");
-      card.appendChild(h);
-      card.appendChild(pre);
-      h.onclick = () => card.classList.toggle("open");
+      // A reopened running session rendered this Cell's card from history;
+      // its replay streams into that card, where the event puts it, rather
+      // than adding a second one (as replayed steps do).
+      const stored = cellHeader && !suba ? cellCardOnScreen(event && event.producing_cell_id) : null;
+      const { card, meta, pre, handle } = stored
+        ? resetActivityCard(stored, label)
+        : buildActivityCard(label, suba);
+      // The header is the card's title, already on its head and in the UI
+      // language there; echoed as the body's first line it read "Running
+      // analysis · cell 2" in English above the code (CHAT-6).
       // Not a success check until the cell says so (cardState.ts).
       if (!suba) markCardRunning(card, event);
-      sealText(st);
-      placeCardInTurn(st, card);
+      if (!stored || !adoptIntoLiveStream(card)) {
+        sealText(st);
+        placeCardInTurn(st, card);
+      }
       st.toolPre = pre;
       st.toolHandle = handle;
       st.toolMeta = meta;
@@ -368,8 +358,13 @@ export function feed(
       down();
       return;
     }
-    st.text += chunk;
+    // Decision 30: a server progress line arrives as one chunk, in the
+    // turn's language; it is shown in the UI language. `full` keeps what was
+    // sent, as the stored row does (Copy, the rating key, the reconcile).
+    st.text += resayProgress(chunk);
     st.full += chunk;
+    // The status row tells waiting for the model from the model writing (CHAT-7).
+    noteModelText(chunk);
     st.md.classList.add("cursor");
     if (
       event &&

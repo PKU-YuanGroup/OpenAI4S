@@ -13,6 +13,14 @@
   letter-spacing: 0.02em;
   color: var(--text-200);
 }
+/* SCI-34: one line until opened. */
+.am-collapse > summary.am-title {
+  cursor: pointer;
+  margin: 2px 0;
+}
+.am-collapse[open] > summary.am-title {
+  margin-bottom: 6px;
+}
 .am-line {
   display: grid;
   grid-template-columns: minmax(84px, max-content) 1fr;

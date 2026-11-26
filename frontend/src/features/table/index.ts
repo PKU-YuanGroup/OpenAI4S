@@ -20,10 +20,12 @@ export {
 } from "./query";
 export {
   payloadFilters,
+  loadWorkbenchFlag,
   readWorkbenchFlag,
   renderLegacyTable,
   renderTableArtifact,
   renderWorkbenchTable,
+  withWorkbenchFlag,
 } from "./workbench";
 export { renderTableZones } from "./zones";
 export type {

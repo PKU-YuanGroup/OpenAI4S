@@ -7,12 +7,13 @@
  * daemon's own wording. Code (`host.*`, tool names) stays as it is.
  */
 
+import { overrideLookup } from "../../i18n/copy";
 import { LANG, languageRevision } from "../../i18n/runtime";
 
 const SPECIALIST_ZH: Record<string, string> = {
   SCIENTIST:
     "主研究智能体。编写调用完整 host.* 工具集（bash、web_search/web_fetch、文件与 grep/glob 工具、委派、技能）的 Python，产出可发表级的图表、表格和报告。",
-  EXPLORE:
+  SCOUT:
     "只读侦察。检索文献和你的文件（web_search、web_fetch、grep、glob、read_file），返回一份简明的线索图，不做任何写入。",
   GENERAL:
     "通用子智能体，处理一个独立的子任务；可使用完整工具集，并通过 host.delegate(...) 返回结构化结果。",
@@ -31,6 +32,24 @@ const CONNECTOR_ZH: Record<string, string> = {
   fetch: "抓取网址并返回其内容（官方；需要 Node）。",
   time: "时间与时区工具（官方；需要 Node）。",
   "sequential-thinking": "结构化的分步推理工具（官方；需要 Node）。",
+};
+
+/**
+ * SYNC-21: the description a fresh install's configured rows are seeded with
+ * (the gateway's seed), which differs from the catalog's; still the
+ * product's own words, so it is translated like the catalog's.
+ */
+const SEEDED_EN: Record<string, string> = {
+  example: "Local demo MCP server: echo / now / calc / random_int.",
+};
+
+/**
+ * Owner decision 31: the read-only scout was called EXPLORE, which read as
+ * the autonomous Explore mode. It is SCOUT now and 侦察 in Chinese, with the
+ * name the agent uses beside it.
+ */
+const SPECIALIST_NAME_ZH: Record<string, string> = {
+  SCOUT: "侦察（SCOUT）",
 };
 
 /** The badges beside a specialist's name. */
@@ -54,6 +73,13 @@ export function specialistDescription(row: Record<string, unknown>): string {
   return zh(SPECIALIST_ZH, String(row.name ?? "")) ?? described;
 }
 
+/** A bundled specialist's name in the UI language; a person's own is kept. */
+export function specialistName(row: Record<string, unknown>): string {
+  const name = String(row.name ?? "");
+  if (row.source !== "bundled") return name;
+  return zh(SPECIALIST_NAME_ZH, name) ?? name;
+}
+
 /**
  * A catalog connector's description in the UI language. A configured row
  * carries the copy it was added with; it is translated only while it is still
@@ -61,10 +87,38 @@ export function specialistDescription(row: Record<string, unknown>): string {
  */
 export function connectorDescription(id: unknown, description: unknown, catalog?: unknown): string {
   const described = String(description ?? "");
-  if (catalog !== undefined && catalog !== description) return described;
+  const seeded = SEEDED_EN[String(id ?? "")] === described;
+  if (catalog !== undefined && catalog !== description && !seeded) return described;
   return zh(CONNECTOR_ZH, String(id ?? "")) ?? described;
 }
 
 export function specialistBadge(word: string): string {
   return zh(BADGE_ZH, word) ?? word;
+}
+
+/**
+ * SET-4: the Specialists and Connectors tabs were described in the agent's
+ * API ("call with host.delegate(task, name=…)", "host.mcp.call(id, tool,
+ * args)"). These say what a person can do instead; the generated
+ * dictionaries are byte-checked extracts, so the correction lives here.
+ */
+export const settingsT = overrideLookup({
+  zh: {
+    "cust.specialists.desc": "可以把子任务交给这些专家智能体：内置角色和你自定义的专家。",
+    "cust.connectors.desc": "MCP 工具服务器：连接外部工具后，智能体可以调用这些外部工具。",
+  },
+  en: {
+    "cust.specialists.desc": "The agent can hand subtasks to these specialist agents: the built-in roles and your own.",
+    "cust.connectors.desc": "MCP tool servers: once connected, the agent can call these external tools.",
+  },
+});
+
+/**
+ * The id shown beside a connector's name, or "" when it only repeats the name
+ * (the seeded example connector read "Example example").
+ */
+export function connectorIdBadge(name: unknown, id: unknown): string {
+  const plain = (value: unknown) => String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const shown = String(id ?? "");
+  return plain(name) && plain(name) === plain(shown) ? "" : shown;
 }

@@ -1502,3 +1502,35 @@ def test_web_session_runner_binds_its_own_cancel_event_to_collect():
         if state.delegation_runner is not None:
             state.delegation_runner.close()
         session_runner.close()
+
+
+@pytest.mark.parametrize("fan_out", [False, True])
+def test_child_steps_name_the_delegation_card_they_belong_under(monkeypatch, fan_out):
+    # SCI-22: live and in the stored row, a child's steps carry the delegate
+    # step that started the child, on the caller's thread and on a pooled one.
+    from openai4s.observability import reset_delegate_step, set_delegate_step
+
+    forwarded = []
+
+    def fake_run(self, task):
+        self.dispatcher.on_step(_step("s-skill", "skill", "begin"))
+        self.dispatcher.on_step(_step("s-skill", "skill", "end", summary="loaded"))
+        return _submitted()
+
+    monkeypatch.setattr(loop_mod.Agent, "run", fake_run)
+    runner = DelegationRunner(get_config(), child_step_sink=forwarded.append)
+    token = set_delegate_step("s-parent-card")
+    try:
+        if fan_out:
+            runner({"request": ["first task", "second task"], "name": "scout"})
+        else:
+            runner({"request": "child task", "name": "scout"})
+    finally:
+        reset_delegate_step(token)
+        runner.close()
+
+    begins = [ev for ev in forwarded if ev["phase"] == "begin"]
+    assert len(begins) == (2 if fan_out else 1)
+    assert {ev["input"]["delegation"]["parent_step_id"] for ev in begins} == {
+        "s-parent-card"
+    }

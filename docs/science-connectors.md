@@ -267,9 +267,10 @@ soft-fail shape at the tool boundary. No connector adds a runtime dependency to
 the stdlib-only core, and all default tests use captured synthetic API payloads
 without network access.
 
-## Doubao Search Custom
+## Doubao Search
 
-Doubao Search Custom is the primary managed web-search option. OpenAI4S calls
+Doubao Search (Volcengine's Doubao Search Custom API, shown as 「豆包搜索」 in the
+workbench) is the primary managed web-search option. OpenAI4S calls
 Volcengine's fixed search API through a stdlib-only client and normalizes web
 hits to the exact `{title,url,snippet}` envelope. It does not
 install the Ark CLI Skills catalog or a local third-party MCP package.
@@ -277,7 +278,7 @@ install the Ark CLI Skills catalog or a local third-party MCP package.
 The client resolves the same Agent Plan Key used by Ark and DataPro from
 SecretBroker immediately before each outbound request. The credential is sent
 only as the upstream Authorization value and is never returned by the config
-route, search response, DOM, or diagnostic text. Saving it from Customize →
+route, search response, DOM, or diagnostic text. Saving it from Settings →
 Network therefore authorizes both managed products once. An active Ark model
 key is reused only when the selected provider is Ark on a Volcengine endpoint.
 When that model is an Agent Plan (`https://ark.<region>.volces.com/api/plan/v3`,
@@ -293,7 +294,7 @@ an upstream failure or empty result. The server and UI report “豆包搜索可
 when a real response is identified as `source: "doubao"` and contains at least
 one normalized result with a non-empty URL. Saving a key, opening the endpoint,
 or receiving an empty success response is not an authentication or readiness
-verdict. Tavily remains visible in Customize → Network as a backup option for
+verdict. Tavily remains visible in Settings → Network as a backup option for
 the separate generic search path.
 
 ## Volcengine DataPro professional datasets
@@ -312,7 +313,7 @@ user saved on a card is never replaced. Removing the source key — deleting or
 re-keying its profile, clearing the live key, or disconnecting Volcengine —
 removes the adopted copy too, unless another profile still holds it.
 
-The Customize → Connectors card performs the actual search call and persists
+The Settings → Connectors card performs the actual search call and persists
 its result as a JSON Artifact. Every successful response is indexed without a
 field allowlist: all keys, scalar values, nested objects, nested arrays, MCP
 content blocks, text, future result-envelope fields, and duplicate logical

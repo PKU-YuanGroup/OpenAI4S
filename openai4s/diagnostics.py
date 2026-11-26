@@ -31,6 +31,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
+from openai4s import doctor as doctor_mod
 from openai4s.observability import (
     fingerprint,
     redact,
@@ -109,6 +110,8 @@ _ARCHIVE_SURFACES = frozenset(
         "kernel:restart_after_install",
         "web",
         "web:turn",
+        # `openai4s run`'s crash record (CLI-33).
+        "cli:run",
         "unknown",
     }
 )
@@ -339,6 +342,7 @@ _PROGRESS_REASONS = frozenset(
         "similar_tool_error",
         "long_text_repeat",
         "empty_reply_repeat",
+        "announced_cell_repeat",
         "other",
     }
 )
@@ -348,6 +352,12 @@ _WIRE_FAMILIES = frozenset({"openai", "anthropic", "gemini", "responses", "unkno
 #: Why the ledger was not read. `interrupted_write` is the schema probe's code
 #: for the same hot journal.
 _TURN_SKIP_CODES = frozenset({"no_database", "no_ledger", "interrupted_write"})
+#: A top-level frame's status as the frames table records it, plus `other`.
+_FRAME_STATUSES = frozenset(
+    {"processing", "done", "failed", "cancelled", "awaiting_user_response", "other"}
+)
+#: `doctor.OK` / `WARN` / `FAIL`.
+_DOCTOR_VERDICTS = frozenset({"ok", "warn", "fail"})
 _v_turn_reason = _v_enum(_TURN_REASONS)
 _v_progress_reason = _v_enum(_PROGRESS_REASONS)
 _v_wire_family = _v_enum(_WIRE_FAMILIES)
@@ -545,18 +555,18 @@ _REPORT_SCHEMA: dict[str, Any] = {
             "version": _v_number,
             "expected": _v_number,
             "current": _v_bool,
-            "applied": [
-                {
-                    "version": _v_number,
-                    "applied_at": _v_number,
-                    # Variable text from a table this archive does not own. The
-                    # version number already says which migrations ran, and an
-                    # enumerated set of names would go stale *silently* the day
-                    # someone adds one.
-                    "name": _v_identity,
-                    "checksum": _v_identity,
-                }
-            ],
+            # Counts, not rows (`_applied_summary`). The name in each row is
+            # text from a table this archive does not own, so it could only
+            # travel fingerprinted -- 43 rows of `<redacted:…>` were most of
+            # the report and said less than these numbers do.
+            "applied": {
+                "count": _v_number,
+                "first": _v_number,
+                "last": _v_number,
+                "missing": _v_number,
+                "checksum_mismatches": _v_number,
+                "last_applied_at": _v_number,
+            },
             "status": _v_lower_enum(_ARCHIVE_STATUSES),
             "error_type": _v_type_name,
         },
@@ -573,6 +583,22 @@ _REPORT_SCHEMA: dict[str, Any] = {
         "secret_store_mode": _v_posture_mode,
         "egress": _v_posture_mode,
         "structured_logs": _v_posture_mode,
+        # SET-3: what those knobs resolve to (`passive_security_posture`).
+        "resolved": {
+            "kernel_sandbox": {
+                "mode": _v_enum(frozenset({"auto", "enforce", "off", "invalid"})),
+                "backend": _v_enum(frozenset({"seatbelt", "bubblewrap", "none"})),
+                "self_test": _v_enum(frozenset({"not_run", "failed"})),
+            },
+            "egress": {"mode": _v_enum(frozenset({"allowlist", "off"}))},
+            "secret_store": {
+                "mode": _v_enum(
+                    frozenset({"auto", "keychain", "env", "plaintext", "invalid"})
+                ),
+                "backend": _v_enum(_SECRET_BACKENDS | {"not_resolved"}),
+                "secure": _v_bool,
+            },
+        },
     },
     # Counts keyed by the codes themselves, so the schema is the allowlist: a
     # key outside these sets is counted in `fields_omitted`, never rendered.
@@ -589,6 +615,16 @@ _REPORT_SCHEMA: dict[str, Any] = {
             "reason": _v_turn_reason,
             "progress_reason": _v_progress_reason,
             "wire": _v_wire_family,
+        },
+        "frames": {status: _v_number for status in sorted(_FRAME_STATUSES)},
+    },
+    # `openai4s doctor`'s verdict per check (the CLI bundle only). The names
+    # are doctor's own probe list, so a check added there travels without an
+    # edit here; its detail text never does.
+    "doctor": {
+        "status": _v_enum(_DOCTOR_VERDICTS),
+        "checks": {
+            name: _v_enum(_DOCTOR_VERDICTS) for name, _probe in doctor_mod._CHECKS
         },
     },
 }
@@ -728,7 +764,86 @@ def passive_security_posture(cfg: Any) -> dict:
         ("structured_logs", "OPENAI4S_STRUCTURED_LOGS"),
     ):
         report[name] = os.environ.get(env, "(default)")
+    report["resolved"] = {
+        "kernel_sandbox": _resolved_sandbox(),
+        "egress": _resolved_egress(),
+        "secret_store": _resolved_secret_store(cfg),
+    }
     return report
+
+
+def _resolved_sandbox(
+    platform_name: str | None = None, which: Any = None
+) -> dict[str, str]:
+    """SET-3: the kernel sandbox the knob resolves to, without running it.
+
+    The mode as the kernel reads it, and the backend binary it would use
+    (a `which` lookup, no child process). The self-test is the kernel's own
+    and needs a child process, so it is ``not_run`` here -- "Run checks"
+    runs it -- unless this daemon already saw it fail for that backend.
+    """
+    import shutil
+
+    from openai4s.security import sandbox
+
+    mode = (os.environ.get("OPENAI4S_KERNEL_SANDBOX") or "auto").strip().lower()
+    mode = mode or "auto"
+    if mode not in {"auto", "enforce", "off"}:
+        return {"mode": "invalid", "backend": "none", "self_test": "not_run"}
+    if mode == "off":
+        return {"mode": "off", "backend": "none", "self_test": "not_run"}
+    backend, executable, _detail = sandbox._detect_backend(
+        platform_name=platform_name or sys.platform,
+        which=which or shutil.which,
+    )
+    self_test = "not_run"
+    if backend:
+        with sandbox._self_test_lock:
+            failed = any(
+                key[0] == backend and key[1] == executable
+                for key in sandbox._failed_self_tests
+            )
+        if failed:
+            self_test = "failed"
+    return {"mode": mode, "backend": backend or "none", "self_test": self_test}
+
+
+def _resolved_egress() -> dict[str, str]:
+    """SET-3: the egress mode application requests are held to."""
+    from openai4s.egress import egress_mode
+
+    return {"mode": egress_mode()}
+
+
+def _resolved_secret_store(cfg: Any) -> dict[str, Any]:
+    """SET-3: the credential store this daemon resolved, if it has.
+
+    Resolving a broker runs a keychain round trip and needs the Store, so a
+    page-load read does neither: it reads the broker the daemon's own Store
+    already resolved (`Store.secrets`), and says ``not_resolved`` otherwise.
+    """
+    from openai4s.security.secret_broker import SecretBrokerError
+    from openai4s.security.secret_broker import _mode as secret_mode
+
+    try:
+        mode = secret_mode()
+    except SecretBrokerError:
+        mode = "invalid"
+    try:
+        from openai4s.store import open_store
+
+        store = open_store(Path(cfg.db_path))
+        broker = getattr(store, "_secret_broker", None) if store is not None else None
+        posture = broker.posture() if broker is not None else None
+    except Exception:  # noqa: BLE001 - a passive read never fails the page
+        posture = None
+    if not isinstance(posture, Mapping) or not _exact_str(posture.get("backend")):
+        return {"mode": mode, "backend": "not_resolved"}
+    return {
+        "mode": mode,
+        "backend": posture["backend"],
+        "secure": posture.get("secure") is True,
+    }
 
 
 def security_posture(cfg: Any) -> dict:
@@ -772,7 +887,9 @@ def security_posture(cfg: Any) -> dict:
             from openai4s.store import get_store
 
             store = get_store(cfg.db_path)
-            report["schema"] = store.schema_state()
+            state = store.schema_state()
+            state["applied"] = _applied_summary(state.get("applied"))
+            report["schema"] = state
     except Exception as e:  # noqa: BLE001
         # The database never opened, so neither probe below it ran. Both keys
         # record that same failure rather than one of them going missing.
@@ -801,6 +918,51 @@ def security_posture(cfg: Any) -> dict:
         except Exception as e:  # noqa: BLE001
             report["secret_store"] = _probe_failure(e)
     return report
+
+
+def _applied_summary(rows: Any) -> dict:
+    """Which migrations a database has run, as numbers only.
+
+    Each row's checksum is derived from its name and version
+    (`migrations.checksum`), so a row whose checksum does not match was
+    written by different code -- the one fact a fingerprinted name could not
+    show. `missing` counts versions absent between the first and the last.
+    """
+    from openai4s.storage.migrations import checksum
+
+    versions: list[int] = []
+    mismatched = 0
+    latest_at = None
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        version = row.get("version")
+        if isinstance(version, bool) or not isinstance(version, int):
+            continue
+        versions.append(version)
+        name = row.get("name")
+        recorded = row.get("checksum")
+        if not (
+            _exact_str(name)
+            and _exact_str(recorded)
+            and recorded == checksum(name, str(version))
+        ):
+            mismatched += 1
+        applied_at = _v_number(row.get("applied_at"))
+        if applied_at is not None and (latest_at is None or applied_at > latest_at):
+            latest_at = applied_at
+    summary: dict[str, Any] = {
+        "count": len(versions),
+        "checksum_mismatches": mismatched,
+    }
+    if versions:
+        first, last = min(versions), max(versions)
+        summary.update(
+            first=first, last=last, missing=(last - first + 1) - len(set(versions))
+        )
+    if latest_at is not None:
+        summary["last_applied_at"] = latest_at
+    return summary
 
 
 def turn_stop_report(cfg: Any, *, window: int = TURN_WINDOW) -> dict:
@@ -848,6 +1010,7 @@ def turn_stop_report(cfg: Any, *, window: int = TURN_WINDOW) -> dict:
         return _probe_failure(e)
     try:
         rows = _ledger_terminals(connection, window)
+        frames = _frame_statuses(connection, window) if rows is not None else None
     except sqlite3.OperationalError as e:
         if _is_readonly_refusal(e):
             return {"status": "skipped", "code": "interrupted_write"}
@@ -858,7 +1021,29 @@ def turn_stop_report(cfg: Any, *, window: int = TURN_WINDOW) -> dict:
         connection.close()
     if rows is None:
         return {"status": "skipped", "code": "no_ledger"}
-    return _count_terminals(rows, window)
+    report = _count_terminals(rows, window)
+    if frames:
+        report["frames"] = frames
+    return report
+
+
+def _frame_statuses(connection: Any, window: int) -> dict[str, int]:
+    """How the newest top-level frames (sessions, `openai4s run`s) stand.
+
+    A run that failed before its turn recorded a terminal -- a provider that
+    answered 401, a Ctrl-C -- leaves no ledger row, so it was absent from the
+    terminal counts above: the bundle attached to "run crashed" did not show
+    the crash. The frame row still says `failed` / `cancelled`.
+    """
+    counts: dict[str, int] = {}
+    for (status,) in connection.execute(
+        "SELECT status FROM frames WHERE parent_id IS NULL "
+        "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (window,),
+    ):
+        key = status if _exact_str(status) and status in _FRAME_STATUSES else "other"
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _ledger_terminals(connection: Any, window: int) -> list[tuple[Any, Any]] | None:
@@ -1035,16 +1220,29 @@ class _CappedIO:
         return str(getattr(self._fh, "name", ""))
 
 
-def _populate_bundle(cfg: Any, bundle: zipfile.ZipFile) -> dict[str, Any]:
+def _populate_bundle(
+    cfg: Any, bundle: zipfile.ZipFile, *, doctor_report: Mapping | None = None
+) -> dict[str, Any]:
     """Write the deny-by-default archive into an open ZipFile."""
     data_dir = Path(cfg.data_dir)
     included: list[str] = []
     excluded: list[dict[str, str]] = []
-    report = {
+    report: dict[str, Any] = {
         "environment": environment_report(),
         "security": security_posture(cfg),
         "agent_turns": turn_stop_report(cfg),
     }
+    if doctor_report is not None:
+        # Verdicts only. `kernel_sandbox: "(default)"` above is the knob; the
+        # `isolation` verdict is whether the sandbox actually held.
+        report["doctor"] = {
+            "status": doctor_report.get("status"),
+            "checks": {
+                check.get("name"): check.get("status")
+                for check in doctor_report.get("checks") or []
+                if isinstance(check, Mapping) and _exact_str(check.get("name"))
+            },
+        }
     # `default=str` rendered any object the encoder did not understand,
     # which is the same "call str() and hope" the diagnostic record
     # stopped doing. `archive_safe` reduces the structure first, so by
@@ -1087,16 +1285,19 @@ def _harden(path: Path) -> None:
         pass
 
 
-def build_bundle(cfg: Any, destination: Path) -> dict:
+def build_bundle(
+    cfg: Any, destination: Path, *, doctor_report: Mapping | None = None
+) -> dict:
     """Write a redacted diagnostic zip. Returns a manifest of what went in.
 
     The CLI destination is caller-chosen. The web path must not take a
     destination: it uses `write_bundle_file` on a process-owned temp file.
+    ``doctor_report`` is `doctor.report()`'s result; only its verdicts go in.
     """
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as bundle:
-        result = _populate_bundle(cfg, bundle)
+        result = _populate_bundle(cfg, bundle, doctor_report=doctor_report)
     _harden(destination)
     return {"path": str(destination), **result}
 

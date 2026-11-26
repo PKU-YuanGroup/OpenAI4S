@@ -21,6 +21,7 @@ import dataclasses
 import math
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -46,7 +47,7 @@ from openai4s.agent.models import KernelEnvSpec
 from openai4s.agent.runtime import CompactionPolicy
 from openai4s.config import Config
 from openai4s.host.delegation_policy import child_execution_policy
-from openai4s.observability import carry_context
+from openai4s.observability import carry_context, delegate_step
 from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.storage.delegation import project_browser_artifact_evidence
 from openai4s.storage.delegation_attempts import (
@@ -831,6 +832,11 @@ class _ChildStepForwarder:
             "child_name": name,
             "depth": depth,
         }
+        # SCI-22: the delegation card this child's steps belong under -- the
+        # `delegate` step that started it (its context is carried here).
+        parent_step = delegate_step()
+        if parent_step:
+            self._decoration["parent_step_id"] = parent_step
         self._lock = threading.Lock()
         self._forwarded_ids: set[str] = set()
         self._pending_begin: dict[str, dict[str, Any]] = {}
@@ -1557,11 +1563,22 @@ class DelegationRunner:
                 depth=child.depth,
             )
             child.set_frame(child_frame_id)
+            # SCI-21: an approval card the child raises names it by its task,
+            # not only "Sub-agent" (two children of one kind ran side by side).
+            headline = _task_headline(spec)
+            if headline:
+                try:
+                    self.store.update_frame(child_frame_id, task_summary=headline)
+                except Exception:  # noqa: BLE001 - a label must never fail a child
+                    pass
             self._tree.emit("frame_attached", child)
+            # stderr: stdout is the result channel of `openai4s run --json` and
+            # `openai4s benchmark --json`, and this line made both unparseable.
             print(
                 f"[delegate] frame_id={child_frame_id} "
                 f"child={child.child_id} depth={child.depth} "
-                f"leaf={child.depth >= MAX_DEPTH}"
+                f"leaf={child.depth >= MAX_DEPTH}",
+                file=sys.stderr,
             )
 
         # Delegated Agents are costly worker processes from the trainer's
@@ -2821,6 +2838,8 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
             "require_artifacts",
             "retries",
             "_rl_parent_context",
+            # SCI-21: each item carries the same specialist persona prefix.
+            "_persona_chars",
         )
         if (value := parent_spec.get(key)) is not None
     }
@@ -2857,6 +2876,25 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
     raise DelegationError(
         f"delegate: each request item must be str or dict, got {type(item).__name__}"
     )
+
+
+def _task_headline(spec: Mapping[str, Any], limit: int = 120) -> str:
+    """The first sentence of a child's task, bounded: what the user calls it."""
+    request = spec.get("request")
+    if isinstance(request, dict):
+        request = request.get("request") or request.get("task") or request.get("prompt")
+    # A named specialist's persona is prepended to the request
+    # (`host.delegation._with_persona`); the user asked for what follows it.
+    persona = spec.get("_persona_chars")
+    if isinstance(request, str) and type(persona) is int and 0 < persona < len(request):
+        request = request[persona:]
+    text = " ".join(str(request or spec.get("task") or "").split())
+    if not text:
+        return ""
+    end = re.search(r"[.!?。！？](?:\s|$)", text)
+    if end is not None and end.start() > 0:
+        text = text[: end.start() + 1]
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def _spec_to_task(spec: dict[str, Any]) -> str:

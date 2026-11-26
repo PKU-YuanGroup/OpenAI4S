@@ -17,13 +17,17 @@ import {
   showContextUsage,
 } from "./actions";
 import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
+import { watchImportedSession } from "./imported";
+import { watchSessionBranches } from "./branches";
 import { newSession, routeInitialView } from "./conversation";
+import { bootDocumentTitle } from "./doc-title";
 import { setScopedExecutionRequest } from "../notebook/kernel";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { loadDashboard, repaintDashboard, showDashboard } from "./dashboard";
 import { $, grow, setSidebar, setTitle, syncMobileChrome } from "./dom";
 import { bindMessageScroll } from "../messages/scroll";
 import { bindModalDismiss } from "../chrome/modal";
+import { askConfirm } from "../chrome/dialog";
 import { paintIcons } from "./icon";
 import { callLane, hostWindow } from "./lane";
 import { loadSessions, renderSessions, syncCurrentTitle } from "./load";
@@ -196,6 +200,10 @@ export function bindWorkbench(): Promise<void> {
   applyStaticI18n(document);
   watchActivateKeys(document);
   watchDisconnect();
+  watchImportedSession();
+  watchSessionBranches();
+  // SYNC-18: the browser tab names the open session.
+  bootDocumentTitle();
   setLoadSessionsImpl(async () => { await loadSessions(); });
   // So the session menu's Share item can say "needs setup" on first open.
   void primeShareStatus();
@@ -224,7 +232,8 @@ export function bindWorkbench(): Promise<void> {
   if (pmDelete) {
     pmDelete.onclick = async () => {
       const id = editingProject.value;
-      if (!id || !confirm(t("proj.delete.confirm"))) return;
+      if (!id) return;
+      if (!(await askConfirm(t("proj.delete.confirm"), { danger: true, okLabel: t("common.delete") }))) return;
       await deleteProject(String(id));
     };
   }
@@ -232,15 +241,6 @@ export function bindWorkbench(): Promise<void> {
   if (back) back.onclick = showDashboard;
   const newBtn = $("#new-session");
   if (newBtn) newBtn.onclick = () => void newSession();
-  const tabNew = $("#tab-new");
-  if (tabNew) tabNew.onclick = () => void newSession();
-  const tabClose = $("#tab-close");
-  if (tabClose) {
-    tabClose.onclick = (e) => {
-      e.stopPropagation();
-      showDashboard();
-    };
-  }
   const collapse = $("#sidebar-collapse");
   if (collapse) collapse.onclick = () => setSidebar(true);
   const reopen = $("#sidebar-reopen");
@@ -259,8 +259,29 @@ export function bindWorkbench(): Promise<void> {
       const menu = $("#proj-menu");
       if (!menu) return;
       menu.classList.toggle("hidden");
-      if (!menu.classList.contains("hidden")) renderProjMenu();
+      if (!menu.classList.contains("hidden")) {
+        renderProjMenu();
+        // Just under the button it drops from, wherever the header ends.
+        const side = $("#sidebar");
+        if (side) {
+          const top = projBtn.getBoundingClientRect().bottom - side.getBoundingClientRect().top + 4;
+          menu.style.top = Math.max(0, Math.round(top)) + "px";
+        }
+      }
     };
+    // M-41: the project menu floats over the sidebar now, so a click
+    // anywhere else, or Escape, closes it.
+    document.addEventListener("click", (e) => {
+      const menu = $("#proj-menu");
+      const target = e.target as Node | null;
+      if (!menu || menu.classList.contains("hidden") || !target) return;
+      if (menu.contains(target) || projBtn.contains(target)) return;
+      menu.classList.add("hidden");
+    });
+    document.addEventListener("keydown", (e) => {
+      const menu = $("#proj-menu");
+      if (e.key === "Escape" && menu && !menu.classList.contains("hidden")) menu.classList.add("hidden");
+    });
   }
   const ct = $("#conv-title") as HTMLInputElement | null;
   if (ct) {
@@ -313,8 +334,6 @@ export function bindWorkbench(): Promise<void> {
   bindModalDismiss($("#proj-modal"), $("#proj-modal-close"), closeProjectModal);
   const pmCreate = $("#pm-create");
   if (pmCreate) pmCreate.onclick = () => void submitProjectModal();
-  const gear = $("#settings-gear");
-  if (gear) gear.onclick = () => callLane("openCust");
 
   window.addEventListener("popstate", () => {
     void routeInitialView().catch(showDashboard);

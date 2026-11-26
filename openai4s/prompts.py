@@ -309,6 +309,100 @@ Host-verified only when the mode is selected explicitly, via the Web
 `task_mode` field or `openai4s run --mode`.)"""
 
 
+# --- local capability (CHAT-9) -------------------------------------------
+# A greeting listed AlphaFold2, DiffDock, MD, RFdiffusion and Scanpy on a
+# machine with no GPU and none of those packages, while Settings → Compute
+# knew both facts. One short line of the same facts goes into the Web and CLI
+# system prompts. The GPU probe (`nvidia-smi`, the one `GET /compute/gpu`
+# runs) happens once per process; the package set is the environment's own
+# cached scan, so building a prompt starts no subprocess.
+
+#: The scientific packages of Settings → Compute's catalog (`preinstall`)
+#: that a self-introduction is most likely to promise.
+CAPABILITY_PACKAGES: tuple[str, ...] = (
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "scikit-learn",
+    "statsmodels",
+    "biopython",
+    "anndata",
+    "scanpy",
+    "umap-learn",
+    "gseapy",
+    "pysam",
+    "rdkit",
+    "torch",
+)
+
+_LOCAL_GPU: list[dict] = []
+
+
+def _local_gpu() -> dict:
+    if not _LOCAL_GPU:
+        try:
+            from openai4s.host.accelerators import LocalAcceleratorService
+
+            _LOCAL_GPU.append(LocalAcceleratorService().legacy_web_status())
+        except Exception:  # noqa: BLE001 - an unknown GPU is reported as unknown
+            _LOCAL_GPU.append({"available": None})
+    return _LOCAL_GPU[0]
+
+
+def _env_packages(env_name: str | None) -> tuple[str, set[str]] | None:
+    try:
+        from openai4s import pkgscan
+        from openai4s.kernel import environments as envmod
+
+        env = envmod.get_environment(env_name or envmod.default_env_name())
+        if env is None:
+            return None
+        return env.name, {pkgscan.normalize_pkg(n) for n in env.package_set()}
+    except Exception:  # noqa: BLE001 - guidance must never block a prompt
+        return None
+
+
+def local_capability_note(
+    env_name: str | None = None,
+    *,
+    gpu: dict | None = None,
+    packages: tuple[str, set[str]] | None = None,
+) -> str:
+    """One line: local NVIDIA GPU yes/no, key packages present/missing.
+
+    ``gpu`` (the ``GET /compute/gpu`` shape) and ``packages`` (environment
+    name, installed names) are for tests; by default both are probed, cached.
+    """
+
+    gpu = gpu if gpu is not None else _local_gpu()
+    if gpu.get("available") is True:
+        name = str(gpu.get("gpu_name") or "").strip()
+        line = "Local capability: this machine has an NVIDIA GPU" + (
+            f" ({name})." if name else "."
+        )
+    elif gpu.get("available") is False:
+        line = (
+            "Local capability: this machine has no NVIDIA GPU, so GPU-only "
+            "models (structure prediction, docking, MD, protein design) need a "
+            "configured remote GPU and are not ready to offer."
+        )
+    else:
+        line = "Local capability: the local GPU could not be checked."
+    found = packages if packages is not None else _env_packages(env_name)
+    if found is not None:
+        from openai4s import pkgscan
+
+        env, installed = found
+        have = [p for p in CAPABILITY_PACKAGES if pkgscan.normalize_pkg(p) in installed]
+        lack = [p for p in CAPABILITY_PACKAGES if p not in have]
+        line += f" Python kernel `{env}` has: {', '.join(have) or 'none of these'}"
+        if lack:
+            line += f"; missing: {', '.join(lack)} (install on request)"
+        line += "."
+    return line + " Describe what you can do from these facts."
+
+
 _REGISTRY: dict[str, str] = {
     "summary_fork": SUMMARY_FORK,
     "conclusion_gate": CONCLUSION_GATE,

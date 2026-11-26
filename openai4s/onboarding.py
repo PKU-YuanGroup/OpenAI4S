@@ -270,7 +270,7 @@ class OnboardingService:
             native_runtime_supported=system in {"Linux", "Darwin"},
         )
 
-    #: Rows only a configured install has: Customize -> Models, a profile
+    #: Rows only a configured install has: Settings -> Models, a profile
     #: activation and `openai4s init` write them, and a first boot writes none.
     _CONFIGURATION_SETTINGS = (
         "llm_provider",
@@ -285,7 +285,7 @@ class OnboardingService:
 
         `onboarding_complete` is written only by `openai4s init` and by the Web
         wizard, and 0.2.0 had no Web wizard. So an install configured through
-        Customize -> Models or used for real work under 0.2.0 carries no flag,
+        Settings -> Models or used for real work under 0.2.0 carries no flag,
         and read as a first run after upgrading: a blocking modal over its own
         history, saying "No profile yet".
 

@@ -97,12 +97,25 @@ export function skillToAcItem(s: {
     insert: s.name || "",
     sub: s.description || "",
   };
-  skillFacts.set(item, { curated: !s.collection });
+  const collection = typeof s.collection === "string" ? s.collection : "";
+  skillFacts.set(item, { curated: !s.collection, collection });
   return item;
 }
 
 /** Collection membership per skill row, kept off the shared `AcItem` shape. */
-const skillFacts = new WeakMap<AcItem, { curated: boolean }>();
+const skillFacts = new WeakMap<AcItem, { curated: boolean; collection: string }>();
+
+/**
+ * K2 leftover: `/bioskills` named a collection, but a member's name and
+ * description never contain its collection's id, so the picker showed
+ * nothing. The query (case, spaces, hyphens and underscores ignored; at least
+ * three characters) reaches a collection's members when it starts that id.
+ */
+function namesCollection(item: AcItem, query: string): boolean {
+  const id = (skillFacts.get(item)?.collection || "").toLowerCase().replace(/[\s_-]+/g, "");
+  const q = query.replace(/-+/g, "");
+  return q.length >= 3 && !!id && id.startsWith(q);
+}
 
 /** Rows the `/` popup renders at once; the rest are counted, not dropped silently. */
 export const SKILL_AC_ROWS = 60;
@@ -234,14 +247,20 @@ function scoreSkill(item: AcItem, query: string): number {
  * research vocabulary and hyphen/space/underscore spellings; ties keep the
  * catalog's order with curated skills before collection members. Nothing is
  * capped here: the popup shows the first `SKILL_AC_ROWS` and counts the rest.
+ * `byCollection` (the composer's picker) also lists a collection's members when
+ * the query names it; Settings shows a named collection as a row of its own.
  */
-export function rankSkillItems(items: AcItem[], query: string): AcItem[] {
+export function rankSkillItems(
+  items: AcItem[],
+  query: string,
+  opts: { byCollection?: boolean } = {},
+): AcItem[] {
   const q = normalizeSkillText((query || "").trim()).replace(/^-+|-+$/g, "");
   const scored = items.map((item, index) => ({
     item,
     index,
     curated: skillFacts.get(item)?.curated !== false,
-    score: q ? scoreSkill(item, q) : 0,
+    score: !q ? 0 : Math.max(scoreSkill(item, q), opts.byCollection && namesCollection(item, q) ? 10 : -1),
   }));
   return scored
     .filter((row) => row.score >= 0)

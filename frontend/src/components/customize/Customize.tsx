@@ -11,15 +11,24 @@ import {
 } from "../../features/customize/dismiss";
 import {
   CUST_LOAD_TIMEOUT_MS,
+  markCustomizeLoaded,
   markCustomizeTimedOut,
 } from "../../features/customize/load";
+import { settingsReadOnly } from "../../features/customize/roles";
 import {
   customizeGeneration,
   customizeLoad,
+  customizeNotice,
   customizeOpen,
   customizeTab,
 } from "../../features/customize/state";
-import { CUST_TABS, CUST_TAB_I18N, type CustTab } from "../../features/customize/tabs";
+import {
+  CUST_TABS,
+  CUST_TAB_I18N,
+  OPERATOR_TABS,
+  custTabLabel,
+  type CustTab,
+} from "../../features/customize/tabs";
 import { Icon } from "./icons";
 import { GeneralTab } from "./GeneralTab";
 import { SkillsTab } from "./SkillsTab";
@@ -31,7 +40,23 @@ import { NetworkTab } from "./NetworkTab";
 import { MemoryTab } from "./MemoryTab";
 import { ModelsTab } from "./ModelsTab";
 import { NestedEditor } from "./NestedEditor";
+import { ExperimentsTab } from "./ExperimentsTab";
+import { DiagnosticsTab } from "./DiagnosticsTab";
+import { UpdateCheck } from "./UpdateCheck";
+import { a11yT } from "../../features/chrome/a11y-copy";
 import "./customize.css";
+
+/**
+ * A page whose sections report their own state: the pane's first-load
+ * annotation settles on mount. Experiments and Diagnostics were sections of
+ * General, which settled it for them.
+ */
+function Settled({ children }: { children: ComponentChildren }) {
+  useEffect(() => {
+    markCustomizeLoaded();
+  }, []);
+  return <>{children}</>;
+}
 
 function ActiveTab() {
   switch (customizeTab.value) {
@@ -53,6 +78,19 @@ function ActiveTab() {
       return <MemoryTab />;
     case "models":
       return <ModelsTab />;
+    case "experiments":
+      return (
+        <Settled>
+          <ExperimentsTab />
+        </Settled>
+      );
+    case "diagnostics":
+      return (
+        <Settled>
+          <DiagnosticsTab />
+          <UpdateCheck />
+        </Settled>
+      );
   }
 }
 
@@ -106,10 +144,43 @@ function LoadStatus({ tab, generation }: { tab: CustTab; generation: number }) {
   );
 }
 
+/**
+ * What the last action in Settings reported (`hint()` → `customizeNotice`).
+ * `hint()` alone writes under the composer, behind this modal, so a refused
+ * save looked like nothing happened (TEAM-23).
+ */
+function Notice() {
+  const notice = customizeNotice.value;
+  if (!notice) return null;
+  return (
+    <div
+      class={"cust-notice" + (notice.error ? " err" : "")}
+      role={notice.error ? "alert" : "status"}
+      data-cust-notice=""
+    >
+      <span>{notice.text}</span>
+      <button
+        type="button"
+        class="icon-ghost"
+        aria-label={t("common.close")}
+        title={t("common.close")}
+        onClick={() => {
+          customizeNotice.value = null;
+        }}
+      >
+        <Icon name="x" size={14} />
+      </button>
+    </div>
+  );
+}
+
 export function Customize() {
   const open = customizeOpen.value;
   const tab = customizeTab.value;
   const gen = customizeGeneration.value;
+  // A team member does not get the operator's pages (both are 403 for them).
+  const member = settingsReadOnly();
+  const tabs = CUST_TABS.filter((id) => !member || !OPERATOR_TABS.has(id));
 
   useEffect(() => {
     installCustomizeEscape();
@@ -142,7 +213,7 @@ export function Customize() {
             class="icon-ghost"
             data-icon="x"
             data-icon-size="16"
-            aria-label="Close"
+            aria-label={t("common.close")}
             type="button"
             onClick={() => closeCust()}
           >
@@ -150,8 +221,8 @@ export function Customize() {
           </button>
         </div>
         <div class="cust-body">
-          <nav class="cust-tabs" role="tablist" aria-label="Settings sections">
-            {CUST_TABS.map((id) => (
+          <nav class="cust-tabs" role="tablist" aria-label={a11yT("a11y.settingsSections")}>
+            {tabs.map((id) => (
               <button
                 key={id}
                 type="button"
@@ -162,7 +233,7 @@ export function Customize() {
                 data-i18n={CUST_TAB_I18N[id]}
                 onClick={() => custTab(id)}
               >
-                {t(CUST_TAB_I18N[id])}
+                {custTabLabel(id)}
               </button>
             ))}
           </nav>
@@ -171,6 +242,7 @@ export function Customize() {
             {open ? <ActiveTab key={gen} /> : null}
           </Content>
         </div>
+        {open ? <Notice /> : null}
         <NestedEditor />
       </div>
     </div>

@@ -458,6 +458,14 @@ class WebExecutionCoordinator:
     def snapshot(self, session_id: str) -> dict[str, Any]:
         return self._coordinator.snapshot(session_id)
 
+    def release_held(self, session_id: str) -> int:
+        """Run the agent turns held after a failed one; see the coordinator."""
+
+        return self._coordinator.release_held(session_id)
+
+    def held_ids(self, session_id: str) -> frozenset[str]:
+        return self._coordinator.held_ids(session_id)
+
     def drain_queued(self, session_id: str, *, reason: str) -> list[str]:
         """Cancel every still-queued ticket for one session; return their ids.
 

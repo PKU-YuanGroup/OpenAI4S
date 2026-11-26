@@ -22,7 +22,7 @@ import { running } from "../../stores/stream";
 import { executionQueue } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { publicText } from "../scrub/scrub";
-import { cellOutput, markNotebookSeen, nbCellKey, notebookViewEntries, paintStreamedText, unseenNotebookCells } from "./cells";
+import { cellOutput, markNotebookSeen, nbCellKey, nbFindCell, notebookViewEntries, paintStreamedText, unseenNotebookCells } from "./cells";
 import {
   notebookArtifactState,
   el,
@@ -30,6 +30,7 @@ import {
   highlightTraceback,
   looksBinary,
   notebookExportLink,
+  notebookLanguages,
   renderTableInto,
   stripAnsi,
 } from "./chrome";
@@ -57,18 +58,23 @@ import {
   replEnabled,
   replHistory,
   replLoad,
+  replNotice,
   runtimeBadge,
   runtimeStatusText,
   shortRuntime,
+  shownKernelSlot,
   syncKernel,
 } from "./kernel";
 import {
   bindNotebookScroll,
   followLiveOutput,
+  followingRun,
   onNotebookScroll,
   measureNotebookFollow,
   nbRender,
+  scrollNotebookToEnd,
   setNotebookRenderImpl,
+  takeJumpToLatest,
 } from "./scroll";
 import { bytes } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
@@ -99,6 +105,51 @@ function notebookCellState(cell: NotebookCell): {
     };
   }
   return { key: "current", cls: "current" };
+}
+
+/** "python [3]" for a cell the Notebook shows, by its producing id. */
+function cellRef(id: string): string {
+  const cell = nbFindCell(id);
+  if (!cell || cell.cell_index == null) return nbT("nb.stale.laterCell");
+  return kernelLabel(cell.language || cell.kernel_id || "python") + " [" + cell.cell_index + "]";
+}
+
+const SUPERSEDED = /^(?:depends on (\S+)(?: \(S\d+\))?: )?variable '([^']+)' was superseded by (\S+)(?: \(S\d+\))?$/;
+const UNCERTAIN = /^(\S+)(?: \(S\d+\))? may have mutated unknown namespace state$/;
+
+/**
+ * SCI-23: why a cell is stale, in words and with the cell numbers the
+ * Notebook shows. The reason was only in a tooltip, as "variable '_seq' was
+ * superseded by c-4653d2c179b5 (S3)" -- an internal id, not "python [3]".
+ */
+export function staleReasonWords(reason: unknown): string {
+  const text = publicText(reason, 400);
+  const superseded = SUPERSEDED.exec(text);
+  if (superseded) {
+    const [, via, variable, by] = superseded;
+    const sentence = nbT("nb.stale.superseded", cellRef(by!), variable);
+    return via ? nbT("nb.stale.via", cellRef(via), sentence) : sentence;
+  }
+  const uncertain = UNCERTAIN.exec(text);
+  if (uncertain) return nbT("nb.stale.uncertain", cellRef(uncertain[1]!));
+  return nbT("nb.stale.other");
+}
+
+/**
+ * M-54: almost every cell wore a "Current" badge, which said nothing. A cell
+ * whose results still hold shows no state; the others say what they are.
+ */
+function CellStateBadge({ state }: { state: ReturnType<typeof notebookCellState> }) {
+  if (state.key === "current") return null;
+  const reasons = (state.reasons || []).map(staleReasonWords);
+  return (
+    <>
+      <span class={"nbc-state " + state.cls} title={reasons.join("\n")}>
+        {nbLabelT("nb.cell." + state.key)}
+      </span>
+      {reasons.length ? <span class="nbc-state-reason">{reasons[0]}</span> : null}
+    </>
+  );
 }
 
 /**
@@ -248,6 +299,54 @@ function KernelExitNotice({ error }: { error: string }) {
   ) : null;
 }
 
+const MISSING_MODULE = /No module named '([A-Za-z_][\w.]*)'/;
+const MISSING_R_PACKAGE = /there is no package called [‘'`"]([A-Za-z][\w.]*)[’'`"]/;
+/** Import names whose package is called something else (server/completions.py keeps the same table). */
+const PACKAGE_OF_MODULE: Record<string, string> = {
+  Bio: "biopython",
+  sklearn: "scikit-learn",
+  skimage: "scikit-image",
+  PIL: "pillow",
+  cv2: "opencv-python",
+  yaml: "pyyaml",
+  bs4: "beautifulsoup4",
+  dateutil: "python-dateutil",
+  Crypto: "pycryptodome",
+  docx: "python-docx",
+  pptx: "python-pptx",
+};
+
+/**
+ * SCI-32: a cell that failed on a package it does not have, and the package
+ * to install ("Bio" is "biopython"). Null for any other failure.
+ */
+export function missingPackage(error: string): { language: "python" | "r"; module: string; pkg: string } | null {
+  const text = stripAnsi(String(error || ""));
+  const python = MISSING_MODULE.exec(text);
+  if (python) {
+    const module = (python[1] || "").split(".")[0] || "";
+    return { language: "python", module, pkg: PACKAGE_OF_MODULE[module] || module };
+  }
+  const r = MISSING_R_PACKAGE.exec(text);
+  return r ? { language: "r", module: r[1] || "", pkg: r[1] || "" } : null;
+}
+
+/** The next step under that failure: where to install a Python package; why R has none here. */
+function MissingPackageHint({ error }: { error: string }) {
+  const miss = missingPackage(error);
+  if (!miss) return null;
+  if (miss.language === "r") return <div class="nbc-missing">{nbT("nb.missing.r", miss.pkg)}</div>;
+  return (
+    <div class="nbc-missing">
+      {miss.pkg !== miss.module ? nbT("nb.missing.renamed", miss.module, miss.pkg) : nbT("nb.missing.plain", miss.pkg)}{" "}
+      {nbT("nb.missing.python")}{" "}
+      <button type="button" class="nbc-action" onClick={() => void openCustomize("compute")}>
+        {nbT("nb.missing.open")}
+      </button>
+    </div>
+  );
+}
+
 function ErrorBlock({ raw }: { raw: string }) {
   const txt = stripAnsi(raw).replace(/\s+$/, "");
   const nonEmpty = txt.split("\n").filter((l) => l.trim());
@@ -309,15 +408,31 @@ function CellFigures({ cell, names }: { cell: NotebookCell; names: string[] }) {
   })}</>;
 }
 
-function CellIo({ cell }: { cell: NotebookCell }) {
-  const written = cell.files_written || [];
-  const read = cell.files_read || [];
+/**
+ * NB-3: one chip per file. A cell that redraws `volcano.png` reads the old
+ * file and writes the new one, and the two lists painted "volcano.png
+ * volcano.png" side by side; a name listed twice in one list did the same.
+ * A file both read and written is shown once, as written, and says so.
+ */
+export function cellIoFiles(cell: NotebookCell): { written: string[]; read: string[]; readAndWritten: Set<string> } {
+  const written = [...new Set((cell.files_written || []).filter(Boolean))];
+  const writtenSet = new Set(written);
+  const readAll = [...new Set((cell.files_read || []).filter(Boolean))];
+  return {
+    written,
+    read: readAll.filter((f) => !writtenSet.has(f)),
+    readAndWritten: new Set(readAll.filter((f) => writtenSet.has(f))),
+  };
+}
+
+export function CellIo({ cell }: { cell: NotebookCell }) {
+  const { written, read, readAndWritten } = cellIoFiles(cell);
   if (!written.length && !read.length) return null;
   return (
     <div class="nbc-io">
       {written.map((f) => {
         const result = notebookArtifactState(cell, f);
-        return <span key={"w:" + f} class="io-w">
+        return <span key={"w:" + f} class="io-w" title={readAndWritten.has(f) ? nbT("nb.io.readAndWritten") : undefined}>
           {result.artifact ? <a href={result.artifact.url} download={f}>{f}</a> : <span>{f + " · " + filesT("nb.artifact." + result.state)}</span>}
         </span>;
       })}
@@ -328,6 +443,17 @@ function CellIo({ cell }: { cell: NotebookCell }) {
       ))}
     </div>
   );
+}
+
+/**
+ * SCI-23: why Rerun / Edit as new cell are grey. "This operation is not
+ * exposed by the current server" read as a missing feature; it is the manual
+ * cells switch, or another manual cell still running.
+ */
+function unavailableReason(cell: NotebookCell): string {
+  if (!canRerun.value) return nbT("nb.action.needsManual");
+  if (replBusy.value) return nbT("nb.action.replBusy");
+  return cell.live || !String(cell.source || "").trim() ? t("nb.action.unavailable") : "";
 }
 
 export function CellActions({ cell }: { cell: NotebookCell }) {
@@ -345,7 +471,7 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
       <button
         class="nbc-action"
         disabled={!appendable}
-        title={appendable ? t("nb.action.rerun") : t("nb.action.unavailable")}
+        title={appendable ? t("nb.action.rerun") : unavailableReason(cell)}
         onClick={() => {
           if (appendable) void executeNotebookCode(cell.source || "", cell.language || "python");
         }}
@@ -356,7 +482,7 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
         class="nbc-action"
         data-action="edit-as-new-cell"
         disabled={!editable}
-        title={editable ? nbT("nb.action.editTitle") : t("nb.action.unavailable")}
+        title={editable ? nbT("nb.action.editTitle") : unavailableReason(cell)}
         onClick={() => {
           if (editable) editAsNewCell(cell);
         }}
@@ -411,12 +537,7 @@ function CellShell({
         </details>
       ) : null}
       <div class="nbc-cell-meta">
-        <span
-          class={"nbc-state " + cellState.cls}
-          title={(cellState.reasons || []).map((r) => publicText(r, 240)).filter(Boolean).join("\n")}
-        >
-          {nbLabelT("nb.cell." + cellState.key)}
-        </span>
+        <CellStateBadge state={cellState} />
         {/* NB-9: one number per cell. The state revision equals the cell number
             except on a branch or a replay; only then is it a second, labelled fact. */}
         {cell.state_revision != null && cell.state_revision !== cell.cell_index ? (
@@ -440,10 +561,36 @@ function CellCode({ cell, live }: { cell: NotebookCell; live: boolean }) {
       cacheKey={nbCellKey(cell)}
       source={rec ? rec.source.value : cell.source || ""}
       lang={cell.language || k}
-      langLabel={(cell.language || k) + " [" + idx + "]"}
+      langLabel={kernelLabel(cell.language || k) + " [" + idx + "]"}
       status={rec ? rec.status.value || "running" : cell.status || "ok"}
       env={cell.environment || cell.env}
     />
+  );
+}
+
+/**
+ * NB-1: a cell whose code only runs a workspace script (`exec(open("x.py")
+ * .read())`, `%run`, R `source`) shows that script under it, as it was when
+ * the cell ran -- the cell's own source says nothing about what ran, and the
+ * file may since have been rewritten or deleted.
+ */
+export function InlinedScript({ cell }: { cell: NotebookCell }) {
+  const script = cell.inlined_script;
+  if (!script || typeof script.path !== "string" || typeof script.content !== "string") return null;
+  const lang = cell.language || cell.kernel_id || "python";
+  const html = highlightCellSource("script:" + nbCellKey(cell), script.content, lang);
+  return (
+    <details class="nbc-script" data-script-path={script.path}>
+      <summary>{nbT("nb.script.summary", script.path)}</summary>
+      <div class="nbc-script-note">
+        {script.truncated
+          ? nbT("nb.script.truncated", script.path, bytes(script.size_bytes))
+          : nbT("nb.script.note", script.path)}
+      </div>
+      <pre class="oc-src nbc-script-src">
+        <code dangerouslySetInnerHTML={{ __html: html }} />
+      </pre>
+    </details>
   );
 }
 
@@ -462,7 +609,7 @@ const MAX_INLINE_IMAGES = 8;
  */
 export function writtenImages(cell: NotebookCell): string[] {
   const captured = new Set(cell.figures || []);
-  return (cell.files_written || [])
+  return [...new Set(cell.files_written || [])]
     .filter((name) => INLINE_IMAGE.test(name) && !captured.has(name))
     .slice(0, MAX_INLINE_IMAGES);
 }
@@ -480,10 +627,12 @@ function CellView({ cell }: { cell: NotebookCell }) {
   return (
     <CellShell cell={cell}>
       <CellCode cell={cell} live={live} />
+      <InlinedScript cell={cell} />
       <CellStream cell={cell} stream="stdout" live={live} />
       <CellStream cell={cell} stream="stderr" live={live} />
       {cell.error ? <KernelExitNotice error={cell.error} /> : null}
       {cell.error ? <ErrorBlock raw={cell.error} /> : null}
+      {cell.error ? <MissingPackageHint error={cell.error} /> : null}
       <CellFiguresSlot cell={cell} live={live} />
       {images.length ? <CellFigures cell={cell} names={images} /> : null}
       {csvs.map((f) => (
@@ -650,7 +799,7 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
         <span class="ld" />
         <span>{badgeText}</span>
       </div>
-      {currentId.value ? <ExportMount frameId={currentId.value} /> : null}
+      {currentId.value ? <ExportMount frameId={currentId.value} languages={notebookLanguages(kernels)} /> : null}
       {currentId.value ? (
         <button class={"kchip nb-exec-toggle" + (execOpen ? " on" : "")} onClick={toggleExecutedCodeLocal}>
           {t("nb.exec.toggle")}
@@ -660,14 +809,14 @@ export function KernelChips({ entries }: { entries: NotebookCell[] }) {
   );
 }
 
-function ExportMount({ frameId }: { frameId: string }) {
+function ExportMount({ frameId, languages }: { frameId: string; languages: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const host = ref.current;
     if (!host) return;
     host.replaceChildren();
-    host.appendChild(notebookExportLink(frameId));
-  }, [frameId]);
+    host.appendChild(notebookExportLink(frameId, languages));
+  }, [frameId, languages]);
   return <span ref={ref} />;
 }
 
@@ -681,7 +830,7 @@ function OwnerChips() {
           <span
             key={kind}
             class={"nb-owner-chip" + (active ? " active" : "")}
-            title={active && active.execution_id ? active.execution_id : kind}
+            title={active && active.execution_id ? active.execution_id : nbLabelT("nb.owner." + kind)}
           >
             {nbLabelT("nb.owner." + kind)}
           </span>
@@ -699,43 +848,54 @@ function kernelStateLabel(st: KernelStatus): { text: string; cls: string } {
     none: t("nb.kernel.stateNone"),
   };
   // After a crash the slot is "none" again but a generation ran: "exited",
-  // not "not started".
+  // not "not started". SCI-35: the slot described is R's in a session where
+  // only R ran or R is the live one.
+  const slot = shownKernelSlot(st);
   const label = st.turn_running
     ? t("dash.badge.running")
     : kernelExited(st)
       ? nbT("nb.kernel.stateExited")
-      : names[st.state || ""] || st.state;
+      : names[slot.state] || slot.state;
+  const generation = slot.language === "python" && st.generation ? t("nb.kernel.generation", st.generation) : "";
   return {
-    text: String(label || "") + (st.generation ? t("nb.kernel.generation", st.generation) : ""),
-    cls: "kstate " + (st.turn_running ? "run" : st.state || ""),
+    text: String(label || "") + generation,
+    cls: "kstate " + (st.turn_running ? "run" : slot.state),
   };
 }
 
 function kernelTitle(st: KernelStatus): string {
   const env = st.env || {};
+  const slot = shownKernelSlot(st);
   return (
-    kernelLabel(kernelIdFromEnv(env)) +
+    (slot.language === "r" ? kernelLabel("r") : kernelLabel(kernelIdFromEnv(env))) +
     " kernel · " +
     t("nb.kernel.shared") +
-    (st.generation_id ? " · " + nbLabelT("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
+    (slot.generation_id ? " · " + nbLabelT("nb.owner.generation", shortRuntime(slot.generation_id)) : "") +
     (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "")
   );
 }
 
 /** A kernel ran and its process is gone (a crash): the next cell starts a new one. */
 export function kernelExited(st: KernelStatus): boolean {
-  return !st.alive && !st.turn_running && (st.state || "none") === "none" && !!st.generation_id;
+  const slot = shownKernelSlot(st);
+  return !slot.alive && !st.turn_running && slot.state === "none" && !!slot.generation_id;
 }
 
 export function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {
   const env = st.env || {};
-  const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
+  // SCI-35: an R-only session is described by its R slot, not as a Python
+  // kernel that never started.
+  const slot = shownKernelSlot(st);
+  const rt =
+    slot.language === "r"
+      ? kernelLabel("r")
+      : kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
   if (st.turn_running) return { text: t("nb.status.live", rt), cls: "live" };
-  if (st.alive) return { text: t("nb.status.ready", rt), cls: "ready" };
+  if (slot.alive) return { text: t("nb.status.ready", rt), cls: "ready" };
   // A fresh session said "ended — view only" before any cell had run.
-  if (st.state === "stopped") return { text: nbT("nb.status.stopped", rt), cls: "ended" };
-  if (st.state === "ended") return { text: t("nb.status.ended", rt), cls: "ended" };
-  if (st.generation_id) return { text: nbT("nb.status.exited", rt), cls: "ended" };
+  if (slot.state === "stopped") return { text: nbT("nb.status.stopped", rt), cls: "ended" };
+  if (slot.state === "ended") return { text: t("nb.status.ended", rt), cls: "ended" };
+  if (slot.generation_id) return { text: nbT("nb.status.exited", rt), cls: "ended" };
   return { text: nbT("nb.status.notStarted", rt), cls: "idle" };
 }
 
@@ -749,7 +909,9 @@ export function StatusStrip() {
   return (
     <div class="nb-status">
       <div class={"nb-status-line" + (line ? " " + line.cls : "")}>{line ? line.text : "…"}</div>
-      <div class="nb-status-hint">{t("nb.status.hint")}</div>
+      {/* NB-2: "send a message to continue" is the idle line; under "running"
+          it told the reader to do what the agent was still doing. */}
+      <div class="nb-status-hint">{st && st.turn_running ? nbT("nb.status.runningHint") : t("nb.status.hint")}</div>
       <div class="nb-status-hint nb-readonly-hint">
         {nbT("nb.readonly.hint")}{" "}
         <button type="button" class="nbc-action" data-action="open-notebook-settings" onClick={() => void openCustomize("general")}>
@@ -823,7 +985,7 @@ function ReplPanel() {
       ? kernelStateLabel(st)
       : { text: "…", cls: "kstate" };
   const quarantined = !!(st && st.view_only === true && st.trust_state === "quarantined");
-  const reviveHidden = !st || !!(st.alive || st.turn_running || quarantined);
+  const reviveHidden = !st || !!(shownKernelSlot(st).alive || st.turn_running || quarantined);
   const busy = replBusy.value;
   const pendingAction = kernelAction.value && kernelAction.value.sid === sid ? kernelAction.value.action : "";
   const shownState = pendingAction ? { text: nbT("nb.kernel.action." + pendingAction), cls: "kstate run" } : state;
@@ -949,6 +1111,7 @@ function ReplPanel() {
           }}
         />
       </div>
+      <ReplNotice />
     </div>
   );
 
@@ -1027,6 +1190,17 @@ export function NewCellsPill() {
   );
 }
 
+/** SYNC-27: a refused manual run, said in the Notebook it was typed into. */
+function ReplNotice() {
+  const notice = replNotice.value;
+  if (!notice || notice.sid !== currentId.value) return null;
+  return (
+    <div class="nb-repl-notice" role="alert">
+      {notice.text}
+    </div>
+  );
+}
+
 export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   const repl = replEnabled.value;
@@ -1049,6 +1223,7 @@ export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
           ) : (
             <>
               <StatusStrip />
+              <ReplNotice />
               <NewCellsPill />
             </>
           )}
@@ -1068,9 +1243,14 @@ export function renderNotebook(): void {
   const nb = document.getElementById("dock-notebook");
   if (!nb) return;
   const body = nb.parentElement as unknown as ScrollBox | null;
-  const follow = measureNotebookFollow(body);
+  const entries = notebookViewEntries();
+  // M-54/M-57: open at the latest cell, and keep following a run the reader
+  // has not scrolled away from, however far its output pushed the end.
+  const jump = takeJumpToLatest(entries.length > 0);
+  const follow = jump || measureNotebookFollow(body) || followingRun();
   bindNotebookScroll(body);
-  render(<NotebookDock entries={notebookViewEntries()} />, nb);
+  render(<NotebookDock entries={entries} />, nb);
+  if (jump) scrollNotebookToEnd(body);
   // Following, or idle: everything painted is something the reader can see.
   if (follow || !running.value) markNotebookSeen();
   followLiveOutput(body, follow);
@@ -1088,13 +1268,18 @@ export function cellNode(e: NotebookCell): HTMLElement {
   const st = e.status || (e.live ? "running" : "ok");
   const idx = e.cell_index != null ? e.cell_index : "…";
   const cellState = notebookCellState(e);
-  const cellMeta = el("div", "nbc-cell-meta");
-  cellMeta.appendChild(el("span", "nbc-state " + cellState.cls, nbLabelT("nb.cell." + cellState.key)));
-  c.appendChild(cellMeta);
+  // M-54: a cell whose results hold carries no badge.
+  if (cellState.key !== "current") {
+    const cellMeta = el("div", "nbc-cell-meta");
+    cellMeta.appendChild(el("span", "nbc-state " + cellState.cls, nbLabelT("nb.cell." + cellState.key)));
+    const reason = (cellState.reasons || [])[0];
+    if (reason != null) cellMeta.appendChild(el("span", "nbc-state-reason", staleReasonWords(reason)));
+    c.appendChild(cellMeta);
+  }
   const wrap = el("div", "os-code");
   const head = el("div", "oc-head");
   const lg = el("span", "oc-lang");
-  lg.appendChild(el("span", null, (e.language || k) + " [" + idx + "]"));
+  lg.appendChild(el("span", null, kernelLabel(e.language || k) + " [" + idx + "]"));
   head.appendChild(lg);
   const right = el("div", "oc-right");
   right.appendChild(el("span", "nbc-status " + st, cellStatusLabel(String(st))));

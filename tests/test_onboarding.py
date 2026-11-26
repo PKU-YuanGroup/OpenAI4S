@@ -278,12 +278,14 @@ def test_cmd_init_json_stdout_is_a_secret_free_projection(
         "model",
         "base_url",
         "has_api_key",
+        "needs_api_key",
         "complete",
         "data_dir",
         "platform",
         "native_runtime_supported",
     }
     assert payload["has_api_key"] is True
+    assert payload["needs_api_key"] is False
     assert secret not in captured.out
     assert secret not in captured.err
     assert settings.values["llm_api_key"] == secret

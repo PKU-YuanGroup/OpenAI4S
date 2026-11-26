@@ -169,6 +169,30 @@ def test_complete_is_instance_config_and_members_are_refused():
     assert handler.sent[1]["code"] == "admin_only"
 
 
+def test_get_onboarding_says_whether_the_reader_may_configure(tmp_path):
+    """TEAM-10: a team member was shown the admin's model wizard and could
+    neither continue nor skip it (both 403). The read says who may save."""
+    _runner, call = _api(tmp_path)
+    alone = call("GET", "/onboarding")
+    assert alone["code"] == 200, alone
+    assert alone["body"]["can_configure"] is True
+
+    admin = call(
+        "GET",
+        "/onboarding",
+        identity=SimpleNamespace(is_admin=True, user_id="alice"),
+    )
+    assert admin["body"]["can_configure"] is True
+
+    member = call(
+        "GET",
+        "/onboarding",
+        identity=SimpleNamespace(is_admin=False, user_id="bob"),
+    )
+    assert member["code"] == 200, member
+    assert member["body"]["can_configure"] is False
+
+
 def test_web_status_never_returns_the_key(tmp_path):
     from openai4s.llm.registry import provider_specs
     from openai4s.store import get_store
@@ -243,7 +267,7 @@ def test_catalog_candidates_are_listed_without_opening_sockets():
 # The wizard decides whether to open from one stored flag, `onboarding_complete`.
 # 0.2.0 had the same flag but only `openai4s init` wrote it: its Web UI had no
 # wizard and no `/onboarding` route. So every 0.2.0 install configured through
-# `.env` or Customize -> Models -- and used for real work -- reopened after the
+# `.env` or Settings -> Models -- and used for real work -- reopened after the
 # upgrade behind a modal saying "No profile yet". The flag is not the only
 # evidence of an install that is already set up; the database it opens is.
 
@@ -335,7 +359,7 @@ def test_a_session_created_but_never_run_is_still_a_first_run(tmp_path):
 
 
 def test_an_upgraded_install_configured_in_customize_is_not_a_first_run(tmp_path):
-    """0.2.0, configured through Customize -> Models, before any session ran."""
+    """0.2.0, configured through Settings -> Models, before any session ran."""
     runner, call = _first_boot(tmp_path)
     saved = call(
         "PUT",
@@ -349,7 +373,7 @@ def test_an_upgraded_install_configured_in_customize_is_not_a_first_run(tmp_path
 
 
 def test_an_install_with_only_a_saved_profile_is_not_a_first_run(tmp_path):
-    """0.2.0, with a profile saved in Customize -> Models and never activated:
+    """0.2.0, with a profile saved in Settings -> Models and never activated:
     no `llm_*` row, no active profile and no message, so the profile is the only
     evidence -- and it is enough. A deleted profile is not: it configures
     nothing."""

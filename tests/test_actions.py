@@ -6,7 +6,10 @@ lock the language whitelist, the one-cell-per-step document-order rule, and
 the fence-collision guarantees the dual loop depends on.
 """
 
+import ast
 from typing import get_args
+
+import pytest
 
 from openai4s.agent.actions import (
     INCOMPLETE_CELL_NUDGE,
@@ -70,6 +73,135 @@ def test_nested_tool_example_stays_inside_the_cell():
     action = extract_action(_cell("python", body))
     assert action is not None and action.language == "python"
     assert '{"name": "x"}' in action.code
+
+
+def _lines(*lines: str) -> str:
+    return "".join(line + "\n" for line in lines)
+
+
+_DQ3 = '"' * 3
+_SQ3 = "'" * 3
+
+# SCI-25: the twelve-line shape of the cell that was cut at line 4. A report
+# template in a triple-quoted string holds a Markdown code block.
+_REPORT_CELL_BODY = _lines(
+    "seq = 'TTCCPSIVARSNFNVCRLPGTPEALCATYTGCIIIPGATCPGDYAN'",
+    "report = f" + _DQ3 + "# Report",
+    "The sequence in FASTA format:",
+    "",
+    _F,
+    "{seq}",
+    _F,
+    "",
+    "Done.",
+    _DQ3,
+    "open('report.md', 'w').write(report)",
+    "print(len(report))",
+)
+
+
+def test_a_bare_fence_in_a_triple_quoted_string_does_not_end_the_cell():
+    """SCI-25: the cell ran only up to the bare fence in its report template.
+
+    The truncated half failed with an unterminated-string SyntaxError, twice
+    in a row, and the rest of the reply was miscounted as a second cell.
+    """
+    reply = f"I will write the report.\n{_F}python\n{_REPORT_CELL_BODY}{_F}\nDone."
+    action = extract_action(reply)
+    assert action == CodeCell("python", _REPORT_CELL_BODY)
+    ast.parse(action.code)
+    assert count_code_blocks(reply) == 1
+    assert has_incomplete_code_block(reply) is False
+    assert route_action(reply, []) == action
+
+
+@pytest.mark.parametrize("info", ["python", "py", ""])
+@pytest.mark.parametrize("quote", [_DQ3, _SQ3])
+def test_every_python_fence_form_keeps_a_fenced_string_whole(info, quote):
+    body = _lines("doc = " + quote, _F, "plain block", _F, quote, "print(doc)")
+    assert extract_action(f"{_F}{info}\n{body}{_F}") == CodeCell("python", body)
+
+
+def test_a_string_that_closes_on_a_fence_line_still_ends():
+    # The inner block's last fence carries the closing quotes on the same line.
+    body = _lines("doc = " + _DQ3, _F, "code", _F + _DQ3, "print(doc)")
+    assert extract_action(f"{_F}python\n{body}{_F}\ntail") == CodeCell("python", body)
+
+
+def test_quotes_in_comments_and_one_line_strings_do_not_open_a_string():
+    """A stray quote must not swallow the real closing fence."""
+    body = _lines(
+        '# it\'s a "comment" with ' + _SQ3 + " in it",
+        "a = '" + _DQ3 + "'",
+        'b = "it\'s"',
+        "c = 'unterminated",
+        "d = r'\\''",
+    )
+    reply = f"{_F}python\n{body}{_F}\nprose\n{_F}python\nsecond = 1\n{_F}"
+    assert extract_action(reply) == CodeCell("python", body)
+    assert count_code_blocks(reply) == 2
+
+
+def test_an_r_string_may_hold_a_fenced_block_too():
+    body = _lines(
+        "# don't open a string here",
+        "md <- 'intro",
+        _F,
+        "x <- 1",
+        _F,
+        "'",
+        'writeLines(md, "report.md")',
+    )
+    assert extract_action(f"{_F}r\n{body}{_F}") == CodeCell("r", body)
+
+
+def test_r_raw_strings_and_backtick_names_are_read_as_r():
+    body = _lines(
+        'pat <- r"(a "quoted" \\d+)"',
+        "df$`it's` <- 1",
+        'md <- r"---[',
+        _F,
+        "block",
+        _F,
+        ']---"',
+    )
+    reply = f"{_F}r\n{body}{_F}\nprose\n{_F}r\ny <- 2\n{_F}"
+    assert extract_action(reply) == CodeCell("r", body)
+    assert count_code_blocks(reply) == 2
+
+
+def test_longer_and_tilde_fences_keep_their_meaning():
+    """Nested ```` and ~~~ fences: pairing outside strings is unchanged."""
+    four = "`" * 4
+    # A four-backtick cell holds three-backtick lines as plain content.
+    body = _lines("text = 1", _F, "not code", _F)
+    assert extract_action(f"{four}python\n{body}{four}") == CodeCell("python", body)
+    # A tilde block inside a cell's string never touched the backtick pairing.
+    body = _lines("doc = " + _DQ3, "~~~", "block", "~~~", _DQ3)
+    assert extract_action(f"{_F}python\n{body}{_F}") == CodeCell("python", body)
+    # A four-backtick line inside a string is content, like a three-backtick one.
+    body = _lines("doc = " + _DQ3, four, "block", four, _DQ3)
+    assert extract_action(f"{_F}python\n{body}{_F}") == CodeCell("python", body)
+    # A tilde-fenced block is still never an executable cell.
+    assert extract_action("~~~python\nx = 1\n~~~") is None
+    # Outside a string a bare fence still ends the cell.
+    reply = f"{_F}python\nx = 1\n{_F}\nprose\n{_F}\ny = 2\n{_F}"
+    assert extract_action(reply) == CodeCell("python", "x = 1\n")
+    assert count_code_blocks(reply) == 2
+
+
+def test_a_cell_cut_off_inside_its_string_falls_back_to_the_plain_reading():
+    """The string rule only applies when it yields a complete cell.
+
+    A reply that ends inside the string (or a quote the lexer misjudged) is
+    read exactly as before, so the rule can never leave a cell unrunnable
+    that used to run.
+    """
+    cut = f"{_F}python\n" + _lines("doc = " + _DQ3, _F, "block", _F) + "still inside"
+    assert extract_action(cut) == CodeCell("python", "doc = " + _DQ3 + "\n")
+    # An earlier complete cell keeps its string-aware reading.
+    reply = f"{_F}python\n{_REPORT_CELL_BODY}{_F}\nprose\n{cut}"
+    assert extract_action(reply) == CodeCell("python", _REPORT_CELL_BODY)
 
 
 def test_count_code_blocks_spans_both_languages():

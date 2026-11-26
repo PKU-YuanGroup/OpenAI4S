@@ -7,8 +7,13 @@ transaction is only an observation; it never decides that an agent task is done.
 
 from __future__ import annotations
 
+import ast
+import hashlib
+import os
 import re
+import shlex
 import signal
+import stat
 import threading
 import time
 import uuid
@@ -155,6 +160,219 @@ class _LiveCellStream:
 
     def streamed_text(self) -> str:
         return "".join(self._shown)
+
+
+#: NB-1 (owner decision 39): the most of a run-this-file Cell's script that is
+#: kept with its execution record. A longer file keeps its head and says so.
+INLINE_SCRIPT_MAX_BYTES = 256 * 1024
+#: The only imports a run-this-file Python Cell may carry beside its one call.
+_SCRIPT_RUNNER_MODULES = frozenset({"runpy", "pathlib"})
+_R_SOURCE_CALL = re.compile(
+    r"""^source\s*\(\s*(?:file\s*=\s*)?(["'])([^"'\n]+)\1\s*(?:,[^()\n]*)?\)\s*;?$"""
+)
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _literal_path(call: ast.Call, keyword: str | None = None) -> str | None:
+    node: ast.AST | None = call.args[0] if call.args else None
+    if node is None and keyword is not None:
+        node = next((k.value for k in call.keywords if k.arg == keyword), None)
+    if isinstance(node, ast.Constant) and type(node.value) is str and node.value:
+        return node.value
+    return None
+
+
+def _read_call_path(node: ast.AST) -> str | None:
+    """``open("X", ...).read()`` or ``Path("X").read_text(...)`` -> ``X``."""
+
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return None
+    opened = node.func.value
+    if not isinstance(opened, ast.Call):
+        return None
+    opener = _dotted_name(opened.func)
+    if node.func.attr == "read" and not node.args and opener in {"open", "io.open"}:
+        mode = opened.args[1] if len(opened.args) > 1 else None
+        mode = mode or next((k.value for k in opened.keywords if k.arg == "mode"), None)
+        if mode is not None and not (
+            isinstance(mode, ast.Constant)
+            and type(mode.value) is str
+            and not set(mode.value) & set("wax+")
+        ):
+            return None
+        return _literal_path(opened, "file")
+    if node.func.attr == "read_text" and opener in {"Path", "pathlib.Path"}:
+        return _literal_path(opened)
+    return None
+
+
+def _python_script_call(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    name = _dotted_name(node.func)
+    if name in {"runpy.run_path", "run_path"}:
+        return _literal_path(node, "path_name")
+    if name == "exec" and node.args:
+        source = node.args[0]
+        if (
+            isinstance(source, ast.Call)
+            and _dotted_name(source.func) == "compile"
+            and source.args
+        ):
+            source = source.args[0]
+        return _read_call_path(source)
+    return None
+
+
+def _magic_run_path(line: str) -> str | None:
+    """IPython's ``%run [-flags] X [args]`` -> ``X``; ``%run -m`` names a module."""
+
+    try:
+        words = shlex.split(line.strip()[len("%run") :])
+    except ValueError:
+        return None
+    for word in words:
+        if word == "-m":
+            return None
+        if not word.startswith("-"):
+            return word
+    return None
+
+
+def script_run_target(code: str, language: str) -> str | None:
+    """The workspace file a Cell does nothing but run, as the Cell spells it.
+
+    Python: ``exec(open("X").read())`` (any quoting, an ``encoding=`` or a
+    read mode, an ``exec(compile(...))`` wrapper, ``Path("X").read_text()``),
+    ``runpy.run_path("X")``, or ``%run X``; R: ``source("X")``. Comments,
+    blank lines and the ``runpy``/``pathlib`` imports may surround the call.
+    Anything else is ordinary code whose source already says what ran.
+    """
+
+    lines = [
+        line.strip()
+        for line in str(code or "").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if not lines:
+        return None
+    if str(language or "python").lower() == "r":
+        if len(lines) != 1:
+            return None
+        match = _R_SOURCE_CALL.match(lines[0])
+        return match.group(2) if match else None
+    if len(lines) == 1 and re.match(r"%run\s", lines[0]):
+        return _magic_run_path(lines[0])
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return None
+    target = None
+    for statement in tree.body:
+        if isinstance(statement, ast.Import) and all(
+            alias.name in _SCRIPT_RUNNER_MODULES for alias in statement.names
+        ):
+            continue
+        if (
+            isinstance(statement, ast.ImportFrom)
+            and statement.module in _SCRIPT_RUNNER_MODULES
+        ):
+            continue
+        if target is not None or not isinstance(statement, ast.Expr):
+            return None
+        target = _python_script_call(statement.value)
+        if target is None:
+            return None
+    return target
+
+
+def read_workspace_script(
+    workspace: Path, spelled: str, *, limit: int = INLINE_SCRIPT_MAX_BYTES
+) -> dict[str, Any] | None:
+    """The bytes of one regular file inside ``workspace``, as they are now.
+
+    Read by the daemon, which the kernel sandbox does not confine, so the
+    file must resolve inside the session workspace: a Cell naming
+    ``~/.ssh/id_rsa`` or a symlink out of the workspace records nothing. A
+    FIFO or device is never opened for reading (O_NONBLOCK, then S_ISREG).
+    """
+
+    # `~` means the home directory to R and a folder named `~` to Python;
+    # neither is a file this record can claim the Cell ran.
+    if not spelled or "\x00" in spelled or spelled.startswith("~"):
+        return None
+    try:
+        root = Path(workspace).resolve(strict=True)
+        candidate = Path(spelled)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        target = candidate.resolve(strict=True)
+        relative = target.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(target, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        chunks: list[bytes] = []
+        remaining = limit + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(remaining, 65536))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    data = b"".join(chunks)
+    truncated = len(data) > limit
+    kept = data[:limit]
+    content = kept.decode("utf-8", errors="replace")
+    if truncated:
+        # A cut through a multi-byte character decodes to one replacement mark.
+        content = content.rstrip("�")
+    return {
+        "path": relative.as_posix(),
+        "content": content,
+        "size_bytes": max(int(info.st_size), len(data)),
+        "truncated": truncated,
+        "sha256": None if truncated else hashlib.sha256(data).hexdigest(),
+    }
+
+
+def inline_cell_script(
+    workspace: Path, code: str, language: str
+) -> dict[str, Any] | None:
+    """NB-1: what a run-this-file Cell ran, read just before it runs.
+
+    Best effort: a Cell is never refused or failed because its script could
+    not be recorded; it then simply carries no inlined script.
+    """
+
+    try:
+        spelled = script_run_target(code, language)
+        if spelled is None:
+            return None
+        return read_workspace_script(workspace, spelled)
+    except Exception:  # noqa: BLE001 - evidence must not break a Cell
+        return None
 
 
 def _runtime_files_read(result: dict[str, Any]) -> list[str]:
@@ -665,6 +883,12 @@ class CellExecutionService:
                 interrupted=True,
             )
 
+        # NB-1: a Cell that only runs a workspace script keeps that script as
+        # it is now, just before it runs, so the record survives the file
+        # being rewritten or deleted later.
+        inlined_script = inline_cell_script(
+            session.workspace, request.code, request.language
+        )
         lease = session.kernels.lease("r") if request.language == "r" else None
         try:
             with frame_scope(session.root_frame_id):
@@ -736,6 +960,7 @@ class CellExecutionService:
                     kernel_id,
                     failed_result,
                     CaptureResult(),
+                    inlined_script=inlined_script,
                 )
             except BaseException as record_exc:
                 self._finish_attempt(attempt_id, "record_failed", record_exc)
@@ -756,6 +981,7 @@ class CellExecutionService:
                     failed_result,
                     CaptureResult(),
                     generation_id,
+                    inlined_script=inlined_script,
                 )
             raise
 
@@ -822,6 +1048,7 @@ class CellExecutionService:
                 kernel_id,
                 result,
                 capture,
+                inlined_script=inlined_script,
             )
         except BaseException as exc:
             self._finish_attempt(attempt_id, "record_failed", exc)
@@ -842,6 +1069,7 @@ class CellExecutionService:
                 result,
                 capture,
                 generation_id,
+                inlined_script=inlined_script,
             )
         return CellExecutionResult(
             result,
@@ -865,6 +1093,10 @@ class CellExecutionService:
     ) -> _LiveCellStream | None:
         if not request.stream:
             return None
+        # NB-4: when the cell started, on both start events, so a client that
+        # reopens a session while this cell still runs (its execution-log row
+        # does not exist yet) counts from here and not from the reload.
+        started_at = int(time.time() * 1000)
         emit(
             {
                 "type": "notebook_cell_start",
@@ -880,6 +1112,7 @@ class CellExecutionService:
                 "source": request.code,
                 "title": title,
                 "status": "running",
+                "started_at": started_at,
             }
         )
         # Keep the text activity stream for older clients and for the chat-side
@@ -895,6 +1128,7 @@ class CellExecutionService:
                 "cell_index": index,
                 "kernel_id": kernel_id,
                 "language": request.language,
+                "started_at": started_at,
             }
         )
         emit(
@@ -1111,6 +1345,8 @@ class CellExecutionService:
         result: dict[str, Any],
         capture: CaptureResult,
         generation_id: str | None,
+        *,
+        inlined_script: dict[str, Any] | None = None,
     ) -> None:
         status = (
             "interrupted"
@@ -1141,6 +1377,7 @@ class CellExecutionService:
                 "figures": list(capture.figures),
                 "files_written": list(capture.files_written),
                 "files_read": list(capture.files_read),
+                "inlined_script": inlined_script,
                 "cpu_seconds": (result.get("usage") or {}).get("cpu_s"),
                 "peak_rss_kb": (result.get("usage") or {}).get("peak_rss_kb"),
             }
@@ -1154,6 +1391,8 @@ class CellExecutionService:
         kernel_id: str,
         result: dict[str, Any],
         capture: CaptureResult,
+        *,
+        inlined_script: dict[str, Any] | None = None,
     ) -> None:
         completion_only = request.origin == "agent" and is_completion_only_cell(
             request.code, request.language
@@ -1176,6 +1415,7 @@ class CellExecutionService:
             visibility=("system" if completion_only else request.visibility),
             pin=(False if completion_only else request.pin),
             replay_policy=("never" if completion_only else request.replay_policy),
+            inlined_script=inlined_script,
         )
 
     @staticmethod

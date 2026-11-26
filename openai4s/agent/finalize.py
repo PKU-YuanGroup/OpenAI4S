@@ -20,7 +20,12 @@ from typing import Any, Callable, Iterable, Mapping, MutableMapping, TypedDict
 from openai4s.host.completion import first_english_word, validate_completion_bullets
 from openai4s.tools import ToolSpec, finalize_tool_batch, validate_json_schema
 
-from .actions import FINALIZE_RESPONSE_NAME, FinalizeAction, NativeToolCall
+from .actions import (
+    FINALIZE_RESPONSE_NAME,
+    FinalizeAction,
+    NativeToolCall,
+    extract_action,
+)
 from .models import ExecutionOutcome
 
 
@@ -164,8 +169,7 @@ def reconcile_completion_claims(
         + "; ".join(claims)
         + ". No code cell and no tool ran this turn. Either perform the "
         "claimed work first (run a cell or call a tool), or restate the "
-        "completion without execution claims — e.g. 'Explained…' or "
-        "'Answered…' bullets, and omit artifacts/metrics."
+        "completion without execution claims and omit artifacts/metrics."
     )
 
 
@@ -177,7 +181,12 @@ _FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
             "type": "string",
             "minLength": 1,
             "maxLength": 4_000,
-            "description": "A concise answer grounded in work that actually completed.",
+            "description": (
+                "The answer, grounded in work that actually completed. Shown "
+                "only when this reply has no text of its own: when the reply "
+                "text already answers, the user reads that text, so never "
+                "recap, restate or describe the reply here."
+            ),
         },
         "findings": {
             "type": "array",
@@ -216,7 +225,10 @@ _FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
             "items": {"type": "string", "minLength": 1, "maxLength": 500},
             "minItems": 1,
             "maxItems": 4,
-            "description": "One to four completed-action phrases.",
+            "description": (
+                "One to four short phrases naming the work this turn completed, "
+                "kept for the record. Not a recap of the reply."
+            ),
         },
         "source_files": {
             "type": "array",
@@ -363,6 +375,30 @@ def _completion_record(arguments: Mapping[str, Any]) -> CompletionRecord:
     }
 
 
+def displaced_cell_refusal(reply_content: str | None) -> str | None:
+    """Refuse a completion sent beside a complete cell that did not run.
+
+    Routing runs only the native call when a reply carries both, so the cell
+    never executes -- and an accepted ``finalize_response`` then ends the turn
+    on results that were never computed. Seen live (usability re-test,
+    2026-11-24): a reply carried the analysis cell and the finalize, the
+    finalize was accepted, and the answer cited a figure that was never drawn.
+    Refusing keeps the turn open so the next reply can run the cell.
+    """
+
+    if not isinstance(reply_content, str) or not reply_content:
+        return None
+    cell = extract_action(reply_content)
+    if cell is None:
+        return None
+    return (
+        f"this reply also carried a ```{cell.language} cell, which was not "
+        "executed, so a completion cannot rest on it. Run the cell first (as "
+        "the only action of your next reply), then finalize with what it "
+        "actually produced."
+    )
+
+
 def execute_finalize_action(
     action: FinalizeAction,
     *,
@@ -370,6 +406,7 @@ def execute_finalize_action(
     stop_reason: str | None = None,
     evidence: Mapping[str, Any] | None = None,
     code_evidence: Callable[[Mapping[str, Any]], str | None] | None = None,
+    reply_content: str | None = None,
 ) -> ExecutionOutcome:
     """Close the provider call, then optionally accept structured completion.
 
@@ -387,10 +424,16 @@ def execute_finalize_action(
     that knows this turn's task mode. It receives the accepted arguments and
     returns a refusal string or ``None``. Omitted, the finalize contract is
     exactly what it was — which is also what an ``analysis_run`` turn gets.
+
+    ``reply_content`` is the text of the reply that carried the call; when it
+    also holds a complete code cell, the completion is refused
+    (``displaced_cell_refusal``).
     """
 
     call = action.call
     error = refusal or _call_error(call)
+    if error is None:
+        error = displaced_cell_refusal(reply_content)
     record: CompletionRecord | None = None
     if error is None:
         error = validate_finalize_arguments(call.arguments)
@@ -446,6 +489,7 @@ __all__ = [
     "finalize_response_schema",
     "finalize_response_tool_spec",
     "note_execution_evidence",
+    "displaced_cell_refusal",
     "reconcile_completion_claims",
     "validate_finalize_arguments",
     "with_finalize_response",

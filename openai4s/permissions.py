@@ -28,6 +28,8 @@ import time
 import uuid
 from typing import Any, Callable
 
+from openai4s.storage.permissions import installs_packages
+
 _SCOPES = ("once", "conversation", "project", "global")
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
@@ -1077,6 +1079,9 @@ class PermissionBroker:
         kind = view[0] if view else method
         title = view[1] if view else method
         inp = view[2] if (view and len(view) > 2) else {}
+        # A package install asks every time: its card offers no rule to
+        # remember, and a wider allow is recorded as this once only.
+        once_only = installs_packages(method, target)
         payload = {
             "type": "await_permission",
             "frame_id": root,
@@ -1086,8 +1091,10 @@ class PermissionBroker:
             "title": title,
             "input": inp,
             "target": target,
-            "suggested_patterns": suggest_patterns(method, target),
-            "scopes": list(_SCOPES),
+            "suggested_patterns": (
+                [] if once_only else suggest_patterns(method, target)
+            ),
+            "scopes": ["once"] if once_only else list(_SCOPES),
             "sub_agent": bool(frame_id and root and frame_id != root),
             "action_group_id": action_group_id,
             "action_id": action_id,
@@ -1101,6 +1108,20 @@ class PermissionBroker:
             # fact without a migration.
             "dangerous": bool(dangerous),
         }
+        if payload["sub_agent"]:
+            # SCI-21: which sub-agent asks -- its name and the first sentence
+            # of its task (`delegation._task_headline`), so two children of one
+            # kind are told apart on the card.
+            try:
+                child_frame = store.get_frame(frame_id) or {}
+            except Exception:  # noqa: BLE001 - a label never blocks the request
+                child_frame = {}
+            child_name = str(child_frame.get("name") or "")[:80]
+            child_task = str(child_frame.get("task_summary") or "")[:160]
+            if child_name:
+                payload["sub_agent_name"] = child_name
+            if child_task:
+                payload["sub_agent_task"] = child_task
         choice_ids = [str(c.get("id") or "") for c in choices or () if c.get("id")]
         if choice_ids:
             payload["choices"] = [
@@ -1379,6 +1400,10 @@ class PermissionBroker:
                 # is recorded as a once-only denial so no rule is left behind.
                 pend.allow, pend.scope = False, "once"
                 pend.message = "no offered option was chosen"
+            if once_only and pend.allow:
+                # The card offered only "once"; an allow sent with a wider
+                # scope still answers this install alone.
+                pend.scope, pend.pattern = "once", None
             requested_allow = bool(pend.allow)
             durable_state = (
                 "allowed"
@@ -1649,6 +1674,11 @@ class PermissionBroker:
                         "error": "decision does not belong to frame",
                         "code": "decision_not_found",
                     }
+                if allow and installs_packages(
+                    str(request.get("tool") or ""), str(request.get("target") or "")
+                ):
+                    # As on the live path: an install is allowed once only.
+                    normalized_scope, pattern = "once", None
                 state = str(request.get("state") or "")
                 expected_action_digest = None
                 if allow:

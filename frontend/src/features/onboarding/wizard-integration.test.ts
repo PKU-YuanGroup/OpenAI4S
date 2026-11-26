@@ -91,6 +91,7 @@ vi.mock("../sessions/projects", async (importOriginal) => ({
 import { useEffect } from "preact/hooks";
 import { t } from "../../i18n";
 import { ReadinessPanel } from "../../components/onboarding/ReadinessPanel";
+import { SearchSetupCard } from "../../components/onboarding/SearchSetupCard";
 import { WizardHost } from "../../components/onboarding/Wizard";
 import { ot } from "./copy";
 import {
@@ -104,7 +105,7 @@ import type { OnboardingStatus } from "./status";
 
 // Slot order in WizardHost: reducer, status, busy, testing, probeRun, alive,
 // savedProfiles, refreshing, refreshedAt, refreshError, refreshRun,
-// readinessEpoch, wasReadinessShown.
+// readinessEpoch, wasReadinessShown, searchPending.
 const REDUCER = 0;
 const STATUS = 1;
 const ALIVE = 5;
@@ -486,6 +487,49 @@ describe("O1 readiness refresh", () => {
   });
 });
 
+// ONB-2: Continue on the readiness step dropped a search choice that was made
+// but not applied, with no message.
+describe("ONB-2 Continue applies the search card's pending choice", () => {
+  beforeEach(() => {
+    hooks.reset();
+    Object.values(api).forEach((spy) => spy.mockReset());
+    render();
+    hooks.slots[REDUCER] = readinessWizard();
+    hooks.slots[STATUS] = status();
+  });
+
+  function pendingRef(tree: unknown): { current: (() => Promise<boolean>) | null } {
+    const card = findVNode(tree, (node) => node.type === SearchSetupCard);
+    expect(card, "search card not rendered").toBeTruthy();
+    return card!.props!.pendingRef as { current: (() => Promise<boolean>) | null };
+  }
+  const next = (tree: unknown) => buttons(tree).find((b) => b.text === ot("onboarding.next"))!;
+
+  it("stays on the step when the card refuses (a missing key, a failed save)", async () => {
+    const tree = render();
+    const apply = vi.fn(async () => false);
+    pendingRef(tree).current = apply;
+    next(tree).onClick();
+    await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(hooks.actions).not.toContain("next");
+    expect((hooks.slots[REDUCER] as WizardState).step).toBe("readiness");
+  });
+
+  it("moves on once the pending choice is applied", async () => {
+    const tree = render();
+    const apply = vi.fn(async () => true);
+    pendingRef(tree).current = apply;
+    next(tree).onClick();
+    await vi.waitFor(() => expect(hooks.actions).toContain("next"));
+    expect(apply).toHaveBeenCalledTimes(1);
+    const after = hooks.slots[REDUCER] as WizardState;
+    expect(after.step).toBe("project");
+    expect(after.decided).toContain("readiness");
+  });
+});
+
 // NV-04: the wizard saves and activates a profile before the connection test,
 // the environment and the project. A saved profile makes the install read
 // `complete`, so a page reload used to hide those steps as done. The same tab
@@ -520,10 +564,27 @@ describe("NV-04 a reload part-way through the wizard", () => {
     baseUrl: "https://api.example/v1",
     name: "Lab key",
   };
+  // `can_configure: true` is what `sanitizeOnboardingStatus` answers for the
+  // single-user install these cases are about (a team member never gets the
+  // wizard, marker or not).
   const fresh = (overrides: Record<string, unknown> = {}) =>
-    status({ complete: false, completed_explicitly: false, profiles: [], active_id: "", ...overrides });
+    status({
+      complete: false,
+      completed_explicitly: false,
+      can_configure: true,
+      profiles: [],
+      active_id: "",
+      ...overrides,
+    });
   const afterSave = (overrides: Record<string, unknown> = {}) =>
-    status({ complete: true, completed_explicitly: false, profiles: [SAVED_ROW], active_id: "mp-new", ...overrides });
+    status({
+      complete: true,
+      completed_explicitly: false,
+      can_configure: true,
+      profiles: [SAVED_ROW],
+      active_id: "mp-new",
+      ...overrides,
+    });
 
   let storage: TabStorage;
   let requests: string[];

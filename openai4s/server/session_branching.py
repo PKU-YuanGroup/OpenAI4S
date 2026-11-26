@@ -41,6 +41,8 @@ class SnapshotRepository(Protocol):
 
     def list_branches(self, root_frame_id: str) -> list[dict[str, Any]]: ...
 
+    def delete_branch(self, **fields: Any) -> dict[str, Any] | None: ...
+
     def list_checkpoints(
         self, root_frame_id: str, *, branch_id: str | None = None, limit: int = 100
     ) -> list[dict[str, Any]]: ...
@@ -63,6 +65,20 @@ class RevertRecoveryRequiredError(RuntimeError):
     """A revert could not be completed or safely compensated."""
 
 
+class BranchDeletionRefused(RuntimeError):
+    """A branch cannot be deleted; ``code`` says why, for the route to map.
+
+    ``branch_not_found``: the Session has no such branch, or it was already
+    deleted. ``branch_main_line``: the Session's own first branch, which every
+    other branch descends from. ``branch_active``: the branch the Session is
+    on now; switch away first.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class CheckpointRequest:
     root_frame_id: str
@@ -73,6 +89,13 @@ class CheckpointRequest:
     source_kind: str | None = None
     source_id: str | None = None
     internal: bool = False
+    # VIEW-2b: cursors of a boundary published just before this checkpoint,
+    # from the same state read and workspace capture, as its parent.
+    before_cursors: Mapping[str, int] | None = None
+
+
+# The boundary just before a question's message checkpoint (VIEW-2b).
+BEFORE_SOURCE_REASON_SUFFIX = "_before"
 
 
 class SessionBranchingService:
@@ -118,6 +141,7 @@ class SessionBranchingService:
         source_kind: str | None = None,
         source_id: str | None = None,
         internal: bool = False,
+        before_cursors: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
         branch_id = branch_id or root_frame_id
         request = CheckpointRequest(
@@ -129,8 +153,49 @@ class SessionBranchingService:
             source_kind=source_kind,
             source_id=source_id,
             internal=internal,
+            before_cursors=before_cursors,
         )
         return self._capture_checkpoint(request)
+
+    def before_source(
+        self, root_frame_id: str, checkpoint: Mapping[str, Any], *, message_cursor: int
+    ) -> dict[str, Any] | None:
+        """The boundary just before a question, or None (VIEW-2b).
+
+        A message checkpoint is taken right after the question is stored, so
+        it holds the question. Its parent is the exact boundary before the
+        question only when it is the same branch's plain checkpoint with the
+        same workspace tree and the same action, Cell and Auto Mode cursors,
+        and its message cursor stops at the question: then its projection is
+        the message checkpoint's minus the question. Checked from the rows
+        alone, so an imported Session (whose metadata is not carried over)
+        answers the same way, and an older question without that boundary is
+        refused rather than forked with the question still in it.
+        """
+
+        parent_id = checkpoint.get("parent_checkpoint_id")
+        if not isinstance(parent_id, str) or not parent_id:
+            return None
+        parent = self.repository.get_checkpoint(parent_id)
+        if parent is None or parent.get("root_frame_id") != root_frame_id:
+            return None
+        if parent.get("branch_id") != checkpoint.get("branch_id"):
+            return None
+        metadata = parent.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        if metadata.get("history_projection") or metadata.get("reverted_to"):
+            # A revert checkpoint projects its target, not its own cursors.
+            return None
+        if not parent.get("workspace_tree_id") or parent.get(
+            "workspace_tree_id"
+        ) != checkpoint.get("workspace_tree_id"):
+            return None
+        for key in ("action_cursor", "cell_cursor", "auto_event_cursor"):
+            if parent.get(key) != checkpoint.get(key):
+                return None
+        if parent.get("message_cursor") != message_cursor:
+            return None
+        return parent
 
     def fork(
         self,
@@ -172,6 +237,78 @@ class SessionBranchingService:
             }
         )
         return created
+
+    def check_delete(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str,
+        active_branch_id: str,
+    ) -> None:
+        """Raise `BranchDeletionRefused` unless `delete_branch` may proceed.
+
+        Read-only, so a route can refuse before it waits for the Session's
+        writer ticket; `delete_branch` makes the same check again under it.
+        """
+
+        if not isinstance(branch_id, str) or not branch_id.strip():
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        if branch_id == root_frame_id:
+            raise BranchDeletionRefused(
+                "branch_main_line", "the main line of a session cannot be deleted"
+            )
+        branch = self.repository.get_branch(branch_id)
+        if (
+            branch is None
+            or branch.get("root_frame_id") != root_frame_id
+            or branch.get("deleted_at") is not None
+        ):
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        if branch_id == active_branch_id:
+            raise BranchDeletionRefused(
+                "branch_active",
+                "the current branch cannot be deleted; switch to another branch first",
+            )
+
+    def delete_branch(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str,
+        active_branch_id: str,
+    ) -> dict[str, Any]:
+        """Delete a branch that is neither the main line nor the active one.
+
+        Deletion is a tombstone (M-73). The branch leaves every branch list and
+        can no longer be switched to, but nothing it recorded is removed: its
+        checkpoints, messages, Cells and Artifact versions stay in the append-
+        only history, because a branch forked from it projects them as its own
+        prefix. Its workspace directory is left in place for the same reason
+        the rows are: the Artifact versions written there still name it.
+        """
+
+        self.check_delete(
+            root_frame_id, branch_id=branch_id, active_branch_id=active_branch_id
+        )
+        deleted = self.repository.delete_branch(
+            root_frame_id=root_frame_id, branch_id=branch_id
+        )
+        if deleted is None:
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        self._emit(
+            {
+                "type": "branch_deleted",
+                "root_frame_id": root_frame_id,
+                "branch_id": branch_id,
+                "ok": True,
+            }
+        )
+        return {
+            "ok": True,
+            "root_frame_id": root_frame_id,
+            "branch_id": branch_id,
+            "deleted_at": deleted.get("deleted_at"),
+        }
 
     def _materialize_fork_workspace(
         self,
@@ -662,7 +799,14 @@ class SessionBranchingService:
         )
 
     def projection(self, root_frame_id: str) -> dict[str, Any]:
-        branches = self.repository.list_branches(root_frame_id)
+        # A deleted branch (M-73) is listed nowhere; its rows stay for the
+        # branches that inherit them. The tombstone column says nothing about
+        # a listed branch, so it is not part of this view.
+        branches = [
+            {key: value for key, value in branch.items() if key != "deleted_at"}
+            for branch in self.repository.list_branches(root_frame_id)
+            if branch.get("deleted_at") is None
+        ]
         return {
             "root_frame_id": root_frame_id,
             "branches": [
@@ -1141,26 +1285,52 @@ class SessionBranchingService:
                 tree_id=tree["tree_id"],
                 artifact_versions=state.get("artifact_versions") or [],
             )
+            fields: dict[str, Any] = {
+                "root_frame_id": request.root_frame_id,
+                "branch_id": request.branch_id,
+                "workspace_tree_id": tree["tree_id"],
+                "action_cursor": state.get("action_cursor"),
+                "message_cursor": state.get("message_cursor"),
+                "cell_cursor": state.get("cell_cursor"),
+                "auto_event_cursor": state.get("auto_event_cursor"),
+                "artifact_versions": state.get("artifact_versions") or [],
+                "environment_pins": state.get("environment_pins") or {},
+                "generation_refs": state.get("generation_refs") or {},
+                "capability_state": state.get("capability_state") or {},
+                "permission_state": state.get("permission_state") or {},
+                "recovery_recipe": recovery_recipe,
+            }
+            expected_head = request.expected_head
+            existing = (
+                self.repository.get_checkpoint_for_source(
+                    request.root_frame_id,
+                    source_kind=request.source_kind,
+                    source_id=request.source_id,
+                )
+                if request.source_kind and request.source_id
+                else None
+            )
+            if request.before_cursors and existing is None:
+                # VIEW-2b: the same moment one source earlier (a message
+                # cursor that stops before the question), published first so
+                # it is this checkpoint's parent on the branch's one linear
+                # chain; a fork from it starts just before the source.
+                self.repository.create_checkpoint(
+                    **{**fields, **dict(request.before_cursors)},
+                    reason=request.reason + BEFORE_SOURCE_REASON_SUFFIX,
+                    metadata={**metadata, "boundary": "before_source"},
+                    internal=request.internal,
+                    expected_head=expected_head,
+                )
+                expected_head = None
             checkpoint = self.repository.create_checkpoint(
-                root_frame_id=request.root_frame_id,
-                branch_id=request.branch_id,
+                **fields,
                 reason=request.reason,
-                workspace_tree_id=tree["tree_id"],
-                action_cursor=state.get("action_cursor"),
-                message_cursor=state.get("message_cursor"),
-                cell_cursor=state.get("cell_cursor"),
-                auto_event_cursor=state.get("auto_event_cursor"),
-                artifact_versions=state.get("artifact_versions") or [],
-                environment_pins=state.get("environment_pins") or {},
-                generation_refs=state.get("generation_refs") or {},
-                capability_state=state.get("capability_state") or {},
-                permission_state=state.get("permission_state") or {},
-                recovery_recipe=recovery_recipe,
                 metadata=metadata,
                 source_kind=request.source_kind,
                 source_id=request.source_id,
                 internal=request.internal,
-                expected_head=request.expected_head,
+                expected_head=expected_head,
             )
         # Cursor checkpoints are implementation history.  Their durable row is
         # the audit proof; emitting one Timeline group per Cell/message would
@@ -1492,9 +1662,55 @@ class SessionBranchingService:
             pass
 
 
+def project_branch_steps(
+    store: Any,
+    root_frame_id: str,
+    steps: list[dict[str, Any]],
+    *,
+    branch_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """The transcript's activity steps as one branch sees them.
+
+    Steps carry no branch and no cursor, so activating a branch forked at the
+    second question still showed every step card the original branch wrote
+    after that point. A step belongs to the branch of the latest user message
+    written before it (turns run one at a time per session, and every turn
+    starts with one), and it is part of a checkpoint's history when it was
+    written no later than that checkpoint: the same append-only projection the
+    messages and cells use, with the checkpoint's own time as the cursor.
+    """
+
+    import bisect
+
+    from openai4s.storage.branch_projection import project_branch_records
+
+    selected = branch_id or store.active_session_branch(root_frame_id)
+    users = sorted(
+        (int(message.get("created_at") or 0), str(message.get("branch_id") or ""))
+        for message in store.list_message_boundaries(root_frame_id, limit=None)
+        if message.get("role") == "user"
+    )
+    times = [at for at, _branch in users]
+    local: dict[str, list[dict[str, Any]]] = {}
+    for step in steps:
+        index = bisect.bisect_right(times, int(step.get("created_at") or 0)) - 1
+        owner = (users[index][1] if index >= 0 else "") or root_frame_id
+        local.setdefault(owner, []).append(step)
+    return project_branch_records(
+        store,
+        root_frame_id,
+        selected,
+        list_local=lambda branch: local.get(branch, []),
+        record_position=lambda step: int(step.get("created_at") or 0),
+        cursor_key="created_at",
+    )
+
+
 __all__ = [
+    "BranchDeletionRefused",
     "CheckpointRequest",
     "RevertRecoveryRequiredError",
     "SessionBranchingService",
     "SnapshotRepository",
+    "project_branch_steps",
 ]

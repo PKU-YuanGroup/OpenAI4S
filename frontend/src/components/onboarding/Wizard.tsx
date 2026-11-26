@@ -38,12 +38,13 @@ import {
   type WizardState,
 } from "../../features/onboarding/machine";
 import type { OnboardingStatus } from "../../features/onboarding/status";
+import { displayProjectName } from "../../features/sessions/copy";
 import { createProject, openProject } from "../../features/sessions/projects";
 import { loadProjects } from "../../features/sessions/load";
 import { projects } from "../../stores/session";
 import { CapabilityBadges } from "./CapabilityBadges";
 import { ReadinessPanel } from "./ReadinessPanel";
-import { SearchSetupCard } from "./SearchSetupCard";
+import { SearchSetupCard, type SearchSetupHandle } from "./SearchSetupCard";
 import "./onboarding.css";
 
 type Profile = Record<string, unknown>;
@@ -94,6 +95,19 @@ export function environmentPath(status: OnboardingStatus | null): PathChoice | n
     baseUrl: "",
     name: ot("onboarding.path.envName", model || provider),
   };
+}
+
+/**
+ * The configured model step 1 starts on: the active profile, else the only
+ * configured choice (one saved profile, or only the environment's model).
+ */
+export function defaultPath(status: OnboardingStatus): PathChoice | null {
+  const active = status.profiles.find((p) => asString(p.id) === status.active_id && status.active_id);
+  if (active) return pathFromProfile(active as Profile);
+  const env = environmentPath(status);
+  const choices = status.profiles.length + (env ? 1 : 0);
+  if (choices !== 1) return null;
+  return env || pathFromProfile(status.profiles[0] as Profile);
 }
 
 /** The env model is the path: chosen but not saved yet (its profile id is still empty). */
@@ -515,6 +529,7 @@ function ProjectStep({
   const [name, setName] = useState("");
   const [selected, setSelected] = useState("");
   const list = projects.value as Array<{ project_id?: string; id?: string; name?: string }>;
+  const create = (typed: string) => onCreate(typed.trim() || t("palette.action.newProject"));
   return (
     <div class="onb-list">
       {list.length ? (
@@ -529,7 +544,7 @@ function ProjectStep({
                 disabled={busy}
                 onChange={() => setSelected(id)}
               />
-              <span>{row.name || id}</span>
+              <span>{displayProjectName(row) || id}</span>
             </label>
           );
         })
@@ -544,15 +559,25 @@ function ProjectStep({
       <label class="skill-lbl">{t("projModal.name.placeholder")}</label>
       <input
         class="cust-input"
+        data-onboarding-project-name=""
         value={name}
         onInput={(e) => setName((e.currentTarget as HTMLInputElement).value)}
+        onKeyDown={(e) => {
+          // Enter creates, as in the dashboard's project dialog. Not while an
+          // IME is composing: that Enter confirms a candidate (229 is what
+          // Safari reports for it, with isComposing already false).
+          if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+          e.preventDefault();
+          if (busy) return;
+          create((e.currentTarget as HTMLInputElement).value);
+        }}
         placeholder={t("projModal.name.placeholder")}
       />
       <button
         type="button"
         class="solid-btn"
         disabled={busy}
-        onClick={() => onCreate(name.trim() || t("palette.action.newProject"))}
+        onClick={() => create(name)}
       >
         {t("projModal.create")}
       </button>
@@ -587,6 +612,8 @@ export function WizardHost() {
   const readinessShown = state.surface === "wizard" && state.step === "readiness";
   if (wasReadinessShown.current && !readinessShown) readinessEpoch.current += 1;
   wasReadinessShown.current = readinessShown;
+  // ONB-2: the search card's pending choice, which Continue applies.
+  const searchPending: SearchSetupHandle = useRef<SearchSetupHandle["current"]>(null);
 
   useEffect(() => {
     alive.current = true;
@@ -603,17 +630,24 @@ export function WizardHost() {
       setStatus(next);
       // NV-04: a reload after this tab's wizard saved a profile. The status
       // just read is the authority on the marker (`resolveResume`); resuming
-      // only places the wizard, and every request after it is a click.
+      // only places the wizard, and every request after it is a click. A
+      // member who may not configure never gets the wizard, marker or not.
       const resume = resolveResume(readResumeMarker(), next);
       if (resume.kind === "clear") clearResumeMarker();
-      if (resume.kind === "test" || resume.kind === "choose") {
+      if (next.can_configure && (resume.kind === "test" || resume.kind === "choose")) {
         dispatch({
           type: "resume",
           step: resume.kind === "test" ? RESUME_STEP : "path",
           path: pathFromProfile(resume.profile),
         });
       } else {
-        dispatch({ type: "hydrate", complete: next.complete });
+        // Mounted after a failed first read: a member still never gets it.
+        dispatch({ type: "hydrate", complete: next.complete || !next.can_configure });
+        // One obvious choice is made for the user (M-5): the model in use, or
+        // the only configured one. Continue then shows at once; it used to stay
+        // hidden until the single radio was clicked.
+        const preset = defaultPath(next);
+        if (preset) dispatch({ type: "choosePath", path: preset });
       }
     } catch (error) {
       if (!alive.current) return;
@@ -692,9 +726,9 @@ export function WizardHost() {
     }
   };
 
-  const choosePath = (path: PathChoice) => {
+  const choosePath = (path: PathChoice, saved = false) => {
     leaveTest();
-    dispatch({ type: "choosePath", path });
+    dispatch({ type: "choosePath", path, saved });
   };
 
   const onSkip = async () => {
@@ -770,7 +804,7 @@ export function WizardHost() {
       const id = await saveProfile(env, "");
       if (!alive.current || !id) return "";
       // Not `choosePath`: that retires the probe this save is about to start.
-      dispatch({ type: "choosePath", path: { ...env, profileId: id } });
+      dispatch({ type: "choosePath", path: { ...env, profileId: id }, saved: true });
       const refreshed = await fetchOnboarding();
       if (alive.current) setStatus(refreshed);
       return id;
@@ -816,7 +850,7 @@ export function WizardHost() {
     if (!state.path && status?.active_id) {
       const active = status.profiles.find((profile) => asString(profile.id) === status.active_id);
       if (active) {
-        choosePath(pathFromProfile(active));
+        choosePath(pathFromProfile(active), true);
         id = status.active_id;
       }
     }
@@ -904,6 +938,29 @@ export function WizardHost() {
     }
   };
 
+  /** Continue on the Test and readiness steps. */
+  const onContinue = async () => {
+    if (state.step === "test") leaveTest();
+    if (state.step === "readiness") {
+      // ONB-2: a search choice made but not applied used to be dropped here
+      // without a word. Apply it; a refusal (a missing key, a failed save)
+      // is said in the search card and keeps the wizard on this step.
+      const applyPending = searchPending.current;
+      if (applyPending) {
+        setBusy(true);
+        let applied = false;
+        try {
+          applied = await applyPending();
+        } finally {
+          if (alive.current) setBusy(false);
+        }
+        if (!applied || !alive.current) return;
+      }
+      dispatch({ type: "markReadinessSeen" });
+    }
+    dispatch({ type: "next" });
+  };
+
   const onOpenProject = async (id: string) => {
     setBusy(true);
     try {
@@ -963,7 +1020,10 @@ export function WizardHost() {
             {ot("onboarding.lang.switch")}
           </button>
         </div>
-        <div class="onb-sub">{ot("onboarding.subtitle")}</div>
+        {/* Once, on the first step: it took a third of the box on every step (M-5). */}
+        {state.surface === "wizard" && state.step !== "path" ? null : (
+          <div class="onb-sub">{ot("onboarding.subtitle")}</div>
+        )}
         {errorText ? (
           <div class="onb-error" role="alert">
             {errorText}
@@ -1021,6 +1081,11 @@ export function WizardHost() {
                 {state.providerRequests === 0 ? (
                   <div class="ds">{ot("onboarding.test.idle")}</div>
                 ) : null}
+                {state.testClicked && !testing && state.receipt?.reachable === true ? (
+                  <div class="onb-ok" role="status" data-onboarding-test-ok="">
+                    {ot("onboarding.test.ok")}
+                  </div>
+                ) : null}
                 <div class="onb-actions">
                   <button
                     type="button"
@@ -1043,7 +1108,7 @@ export function WizardHost() {
                   refreshedAt={refreshedAt}
                   refreshError={refreshError}
                 />
-                <SearchSetupCard />
+                <SearchSetupCard pendingRef={searchPending} />
               </>
             ) : null}
             {state.step === "project" ? (
@@ -1065,16 +1130,27 @@ export function WizardHost() {
           >
             {ot("onboarding.skip")}
           </button>
+          {state.surface === "wizard" && state.step !== "path" ? (
+            <button
+              type="button"
+              class="outline-btn"
+              data-onboarding-back=""
+              disabled={busy}
+              onClick={() => {
+                if (state.step === "test") leaveTest();
+                const index = REQUIRED_STEPS.indexOf(state.step);
+                dispatch({ type: "goto", step: REQUIRED_STEPS[Math.max(0, index - 1)]! });
+              }}
+            >
+              {ot("onboarding.back")}
+            </button>
+          ) : null}
           {state.surface === "wizard" && state.step !== "path" && state.step !== "project" ? (
             <button
               type="button"
               class="solid-btn"
               disabled={busy}
-              onClick={() => {
-                if (state.step === "test") leaveTest();
-                if (state.step === "readiness") dispatch({ type: "markReadinessSeen" });
-                dispatch({ type: "next" });
-              }}
+              onClick={() => void onContinue()}
             >
               {ot("onboarding.next")}
             </button>

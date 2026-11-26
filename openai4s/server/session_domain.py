@@ -23,7 +23,10 @@ from openai4s.server.notebook_export import NotebookExportService
 from openai4s.server.recovery_control import RecoveryControlService
 from openai4s.server.recovery_recipe import build_recovery_recipe
 from openai4s.server.renderers import RendererRegistry
-from openai4s.server.session_branching import SessionBranchingService
+from openai4s.server.session_branching import (
+    BranchDeletionRefused,
+    SessionBranchingService,
+)
 from openai4s.server.session_package import (
     SessionPackageService,
     session_import_quarantine_key,
@@ -110,6 +113,8 @@ class SessionDomainStore(Protocol):
     def create_session_checkpoint(self, **fields: Any) -> dict: ...
 
     def fork_session_branch(self, **fields: Any) -> dict: ...
+
+    def delete_session_branch(self, **fields: Any) -> dict | None: ...
 
     def get_session_checkpoint(self, checkpoint_id: str) -> dict | None: ...
 
@@ -218,6 +223,9 @@ class _SnapshotFacade:
 
     def fork_branch(self, **fields: Any) -> dict:
         return self.store.fork_session_branch(**fields)
+
+    def delete_branch(self, **fields: Any) -> dict | None:
+        return self.store.delete_session_branch(**fields)
 
     def get_checkpoint(self, checkpoint_id: str) -> dict | None:
         return self.store.get_session_checkpoint(checkpoint_id)
@@ -365,6 +373,13 @@ class SessionDomainService:
             )
             if existing is not None:
                 return existing
+            # VIEW-2b: a question also gets the boundary just before it, so a
+            # branch can start there and the question be asked again, edited.
+            position = (
+                self._message_position(root_frame_id, source_id)
+                if source_kind == "message"
+                else None
+            )
             return self.branching.create_checkpoint(
                 root_frame_id,
                 branch_id=branch_id,
@@ -377,6 +392,9 @@ class SessionDomainService:
                 source_kind=source_kind,
                 source_id=source_id,
                 internal=True,
+                before_cursors=(
+                    {"message_cursor": position} if position is not None else None
+                ),
             )
         except Exception as error:  # noqa: BLE001 - source success is authoritative
             self._record_cursor_checkpoint_warning(
@@ -492,7 +510,15 @@ class SessionDomainService:
         from_message_id: str | None = None,
         branch_id: str | None = None,
         name: str | None = None,
+        before_source: bool = False,
     ) -> dict:
+        """Fork a new, inactive branch from one exact source.
+
+        `before_source` (VIEW-2b, only with `from_message_id`): the branch
+        ends just before the question instead of just after it -- the same
+        workspace and Cells, without the question -- so the question can be
+        asked again, edited, without a second copy of it above.
+        """
         sources = [
             ("checkpoint", from_checkpoint_id),
             ("cell", from_cell_id),
@@ -505,6 +531,8 @@ class SessionDomainService:
                 "from_message_id"
             )
         source_kind, source_id = provided[0]
+        if before_source and source_kind != "message":
+            raise ValueError("before_source applies only to from_message_id")
         checkpoint_id = str(source_id)
         if source_kind != "checkpoint":
             checkpoint = self.store.get_session_checkpoint_for_source(
@@ -516,7 +544,23 @@ class SessionDomainService:
                 raise CursorCheckpointUnavailable(
                     f"{source_kind} has no exact cursor checkpoint"
                 )
+            if before_source:
+                position = self._message_position(root_frame_id, checkpoint_id)
+                checkpoint = (
+                    self.branching.before_source(
+                        root_frame_id, checkpoint, message_cursor=position
+                    )
+                    if position is not None
+                    else None
+                )
+                if checkpoint is None:
+                    # A question checkpointed before the boundary existed.
+                    raise CursorCheckpointUnavailable(
+                        "message has no exact cursor checkpoint before it"
+                    )
             checkpoint_id = str(checkpoint["checkpoint_id"])
+        if name is None and source_kind == "message":
+            name = self._question_branch_name(root_frame_id, str(source_id))
         result = self.branching.fork(
             root_frame_id,
             from_checkpoint_id=checkpoint_id,
@@ -535,6 +579,77 @@ class SessionDomainService:
             "activatable": True,
         }
 
+    def check_branch_delete(self, root_frame_id: str, *, branch_id: str) -> None:
+        """Raise `BranchDeletionRefused` unless `delete_branch` may proceed."""
+
+        frame = self.store.get_frame(root_frame_id)
+        if frame is None or (frame.get("root_frame_id") or root_frame_id) != (
+            root_frame_id
+        ):
+            raise BranchDeletionRefused("branch_not_found", "branch not found")
+        self.branching.check_delete(
+            root_frame_id,
+            branch_id=branch_id,
+            active_branch_id=self.store.active_session_branch(root_frame_id),
+        )
+
+    def delete_branch(self, root_frame_id: str, *, branch_id: str) -> dict[str, Any]:
+        """M-73: delete a branch that is not the main line or the active one.
+
+        Raises `BranchDeletionRefused`; see `SessionBranchingService.delete_branch`
+        for what deletion keeps.
+        """
+
+        self.check_branch_delete(root_frame_id, branch_id=branch_id)
+        return self.branching.delete_branch(
+            root_frame_id,
+            branch_id=branch_id,
+            active_branch_id=self.store.active_session_branch(root_frame_id),
+        )
+
+    def _question_branch_name(self, root_frame_id: str, message_id: str) -> str | None:
+        """M-73: a branch forked from a question is called after it.
+
+        It was a bare `br-e5b2…` everywhere it appeared. The first 40
+        characters of the question, on one line; None if it cannot be read.
+        """
+        message = self._message_row(root_frame_id, message_id)
+        if message is None:
+            return None
+        text = " ".join(str(message.get("content") or "").split())
+        if not text:
+            return None
+        return text if len(text) <= 40 else text[:40].rstrip() + "…"
+
+    def _message_row(self, root_frame_id: str, message_id: str) -> dict | None:
+        """One stored message of the Session by id, or None."""
+        reader = getattr(self.store, "list_message_boundaries", None)
+        if not callable(reader):
+            return None
+        # A question being checkpointed was just stored: try the newest first.
+        count = self.store.message_count(root_frame_id)
+        if count:
+            for message in reader(root_frame_id, start=count - 1, limit=1):
+                if message.get("message_id") == message_id:
+                    return message
+        for message in reader(root_frame_id, limit=None):
+            if message.get("message_id") == message_id:
+                return message
+        return None
+
+    def _message_position(self, root_frame_id: str, message_id: str) -> int | None:
+        """The message cursor that stops just before this message (VIEW-2b).
+
+        A message cursor is a per-root row-count boundary: the rows with a
+        lower `seq` are inside it. The message's own `seq` therefore excludes
+        exactly it and everything stored after it.
+        """
+        message = self._message_row(root_frame_id, message_id)
+        seq = (message or {}).get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            return None
+        return seq
+
     def prepare_activation(
         self,
         root_frame_id: str,
@@ -544,7 +659,11 @@ class SessionDomainService:
         """Validate and materialize the exact branch head before publication."""
 
         branch = self.store.get_session_branch(branch_id)
-        if branch is None or branch.get("root_frame_id") != root_frame_id:
+        if (
+            branch is None
+            or branch.get("root_frame_id") != root_frame_id
+            or branch.get("deleted_at") is not None
+        ):
             raise KeyError(f"unknown branch {branch_id!r} for this session")
         checkpoint_id = branch.get("head_checkpoint_id")
         checkpoint = (

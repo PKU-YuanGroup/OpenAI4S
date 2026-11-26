@@ -243,18 +243,34 @@ def test_host_only_undeclared_and_unapproved_domains_are_refused(monkeypatch):
         source="load_skill",
     )
     status = _enforced_sandbox()
+    # The manifest holds the Skill's own helpers (owner decision 34) ...
+    helper = "literature-review"
     undeclared = admit_shell(
         frame_id="frame-host",
         sandbox_status=status,
         command_domains=["evil.example.com"],
+        caller_skill=helper,
     )
     assert undeclared.allowed is False
     assert "undeclared_domain" in undeclared.blocked_on
+    # ... and not the agent's own command, which the session's policy decides.
+    assert admit_shell(
+        frame_id="frame-host",
+        sandbox_status=status,
+        command_domains=["evil.example.com"],
+    ).allowed
+    with frame_scope("frame-host", caller_skill=helper):
+        assert not admit_shell(
+            frame_id="frame-host",
+            sandbox_status=status,
+            command_domains=["evil.example.com"],
+        ).allowed
 
     unapproved = admit_shell(
         frame_id="frame-host",
         sandbox_status=status,
         command_domains=["api.openalex.org"],
+        caller_skill=helper,
     )
     # openalex is on the science allowlist, so declared+approved should pass
     assert unapproved.allowed is True
@@ -263,6 +279,7 @@ def test_host_only_undeclared_and_unapproved_domains_are_refused(monkeypatch):
         frame_id="frame-host",
         sandbox_status=status,
         command_domains=["example.com"],
+        caller_skill=helper,
     )
     assert blocked_builtin.allowed is False
 
@@ -282,6 +299,7 @@ def test_host_only_undeclared_and_unapproved_domains_are_refused(monkeypatch):
         frame_id="frame-host",
         sandbox_status=status,
         command_domains=["evil.example.com"],
+        caller_skill=helper,
     )
     assert unapproved_declared.allowed is False
     assert "unapproved_domain" in unapproved_declared.blocked_on
@@ -298,10 +316,13 @@ def test_host_only_noncompliant_redirect_is_refused():
         capability=cap,
         source="load_skill",
     )
-    with frame_scope("frame-redir"):
+    with frame_scope("frame-redir", caller_skill="literature-review"):
         assert constrain_check_url("https://api.openalex.org/works") is None
         with pytest.raises(EgressBlocked, match="does not declare"):
             check_url("https://evil.example.com/next")
+    # The agent's own request in the same frame is the session's to decide.
+    with frame_scope("frame-redir"):
+        assert constrain_check_url("https://evil.example.com/next") is None
 
 
 def test_legacy_collection_skill_does_not_gain_authorization_from_new_fields():
@@ -1297,7 +1318,7 @@ def test_the_self_test_reports_what_a_new_kernel_would_get(monkeypatch):
 
 
 def test_search_blocked_by_a_bound_manifest_does_not_blame_rate_limits(monkeypatch):
-    """A bound `host_only` Skill narrows Host requests to its declared domains.
+    """A bound `host_only` Skill holds its helpers to its declared domains.
 
     The search engines are outside that list, so every one of them is refused
     before a connection. The empty result said "they may be rate-limiting;
@@ -1331,14 +1352,14 @@ def test_search_blocked_by_a_bound_manifest_does_not_blame_rate_limits(monkeypat
         ),
         source="load_skill",
     )
-    with frame_scope("frame-narrowed-search"):
+    with frame_scope("frame-narrowed-search", caller_skill="literature-review"):
         with pytest.raises(EgressBlocked) as refused:
             webtools.web_search("KRAS G12C resistance", engines=("builtin",))
     reason = str(refused.value)
     assert "rate-limiting" not in reason
-    assert "retrying will not help" in reason
+    assert "will not help" in reason
     # The domains the refusal names, compared whole rather than searched for.
-    named = reason.split("network to 2 domains (", 1)[1].split(")", 1)[0]
+    named = reason.split("may only reach 2 domains (", 1)[1].split(")", 1)[0]
     assert named.split(", ") == ["api.openalex.org", "doi.org"]
 
 

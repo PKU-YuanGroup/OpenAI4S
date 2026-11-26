@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
 import { activeTab } from "../../stores/ui";
-import { computeRecordsT } from "./copy";
+import { setLang } from "../../i18n/runtime";
+import { computeRecordsT, timelineT, workbenchWord } from "./copy";
 import { loadComputeTasks, renderComputeTasksPanel, resetComputeTasks } from "./island";
 import { S } from "./s";
 import type { ComputeTasksView } from "./types";
@@ -451,5 +452,28 @@ describe("compute task read states", () => {
     gate.release(page([task("job-a")], { total_live_count: 1 }));
     await reading;
     expect(S.computeTasks).toBeNull();
+  });
+});
+
+// SYNC-21: the context layers ("System Prompt", "Tool Schemas" …), their
+// "active" / "empty", the recovery card's status and "Turn" read as English
+// in the Chinese UI.
+describe("Timeline words in the UI language", () => {
+  beforeEach(() => vi.unstubAllGlobals());
+  afterEach(async () => {
+    await setLang("en");
+  });
+
+  it("names server enums it knows, and shows an unknown one as sent", async () => {
+    await setLang("zh");
+    expect(workbenchWord("wb.layer.", "system_prompt")).toBe("系统提示词");
+    expect(workbenchWord("wb.layer.", "wire_state")).toBe("协议状态");
+    expect(workbenchWord("wb.status.", "empty")).toBe("空");
+    expect(workbenchWord("wb.recovery.", "active")).toBe("可用");
+    expect(workbenchWord("wb.recovery.", "something_new")).toBe("something_new");
+    expect(timelineT("timeline.turn.collapse", "t-1", 4, "1.7 s")).toBe("收起回合 t-1，4 条当前可见记录，总耗时 1.7 s");
+    await setLang("en");
+    expect(workbenchWord("wb.layer.", "tool_schemas")).toBe("Tool schemas");
+    expect(workbenchWord("wb.recovery.", "active")).toBe("active");
   });
 });

@@ -61,7 +61,9 @@ import {
   resetTimerLeases,
   type TimerLease,
 } from "../../features/customize/timers";
-import { ComputeTab } from "./ComputeTab";
+import { teamUser } from "../../features/chrome/team-identity";
+import { setLang } from "../../i18n/runtime";
+import { COMPUTE_GUIDE_URL, ComputeTab } from "./ComputeTab";
 
 type Node = {
   type?: unknown;
@@ -121,6 +123,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", mocks.fetch);
 });
 afterEach(() => {
+  teamUser.value = null;
   resetTimerLeases();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -217,7 +220,7 @@ describe("Compute runtime environments", () => {
     await button("cust.compute.installBtn").props!.onClick!();
     await flush();
 
-    const status = find(expanded(render()), (node) => node.props?.role === "status")!;
+    const status = find(expanded(render()), (node) => node.props?.role === "status" && text(node) !== "")!;
     expect(text(status)).toContain("Installed into the built-in environment (base): openpyxl 3.1.5.");
     expect(text(status)).toContain("must be restarted to see them");
     expect(status.props!.class).toContain("ok");
@@ -231,9 +234,11 @@ describe("Compute runtime environments", () => {
     await button("cust.compute.installBtn").props!.onClick!();
     await flush();
 
-    const status = find(expanded(render()), (node) => node.props?.role === "status")!;
+    const status = find(expanded(render()), (node) => node.props?.role === "status" && text(node) !== "")!;
     expect(text(status)).toBe("Install failed: no matching distribution");
     expect(status.props!.class).toContain("err");
+    // SCI-04: only there. The status line sits behind the dialog's scrim.
+    expect(mocks.hint).not.toHaveBeenCalled();
   });
 });
 
@@ -277,7 +282,11 @@ describe("Compute job polling", () => {
 
     await button("common.cancel").props!.onClick!();
     await flush();
-    expect(mocks.hint).toHaveBeenCalledWith("toast.failed the job is still running: killed", true);
+    // SCI-04: said under the job form, not on the status line behind the dialog.
+    const status = find(expanded(render()), (node) => node.props?.role === "status" && text(node) !== "")!;
+    expect(text(status)).toBe("toast.failed the job is still running: killed");
+    expect(status.props!.class).toContain("err");
+    expect(mocks.hint).not.toHaveBeenCalled();
     expect(jobReads()).toBe(2);
   });
 
@@ -307,6 +316,178 @@ describe("Compute job polling", () => {
     expect(listed).toContain("done");
     expect(listed).not.toContain("sleep 60");
     expect(pendingTimerCount()).toBe(0);
+  });
+});
+
+// SCI-18: the GPU row offered "Modal/SSH remote compute" (Modal is future
+// work) and CPU approximations nothing produces; NIM and Slurm had no mention.
+describe("what the Compute tab says about remote compute", () => {
+  async function load() {
+    await setLang("en");
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    return expanded(render());
+  }
+
+  it("names what exists: SSH hosts below, NVIDIA NIM, and `openai4s cluster` for Slurm, with the guide", async () => {
+    const tree = await load();
+    const shown = text(tree);
+    expect(shown).not.toContain("Modal");
+    expect(shown).not.toContain("cust.compute.gpuUnavailable");
+    expect(shown).toContain("None on this machine.");
+    expect(shown).toContain("Add an SSH host with a GPU below, or use NVIDIA NIM.");
+    expect(shown).toContain("NVIDIA NIM: the agent can send jobs");
+    expect(shown).toContain("`openai4s cluster`");
+    const guide = find(tree, (node) => node.type === "a")!;
+    expect(guide.props!.href).toBe(COMPUTE_GUIDE_URL);
+    expect(guide.props!.rel).toBe("noopener noreferrer");
+  });
+
+  // M-27: the Jobs section did not say that a job belongs to no project.
+  it("says where a daemon job runs and that its output is not a project file", async () => {
+    const shown = text(await load());
+    expect(shown).toContain("in the compute-jobs folder of the OpenAI4S data directory");
+    expect(shown).toContain("A job belongs to no project or session");
+    expect(shown).toContain("is not saved as a project file");
+    expect(shown).not.toContain("cust.jobs.desc");
+  });
+
+  it("keeps a team member's tab quiet about setting it up", async () => {
+    teamUser.value = { username: "bob", role: "member", kind: "user" };
+    const shown = text(await load());
+    expect(shown).toContain("None on this machine.");
+    expect(shown).not.toContain("SSH host");
+    expect(shown).not.toContain("NVIDIA NIM");
+    expect(shown).not.toContain("openai4s cluster");
+  });
+});
+
+// SCI-19: a bare host list and an Add that said nothing about what it does.
+describe("adding a remote GPU host", () => {
+  const REMOTE = { hosts: [], available_aliases: ["gpu-box", "work"] };
+  function serve(add: () => Promise<unknown>) {
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/compute/remote" && init?.method === "POST") return add();
+      if (url === "/api/v1/compute/remote") return reply(REMOTE);
+      return reply(url === "/api/v1/compute/jobs" ? { jobs: [] } : {});
+    });
+  }
+  async function load() {
+    await setLang("en");
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+  }
+  const select = () => find(render(), (node) => node.type === "select" && !!node.props?.onChange)!;
+  const addButton = () => button("common.add");
+  const what = () => text(find(expanded(render()), (node) => node.props?.["data-remote-add-what"] === "")!);
+
+  it("says what Add runs, what the host needs and where it is kept, and waits for a host", async () => {
+    serve(() => reply({ ok: true, reachable: true, gpus: "2× A100" }));
+    await load();
+    expect(addButton().props!.disabled).toBe(true);
+    expect(what()).toContain("Add checks the host once, read-only: ssh -o ConnectTimeout=8 -o BatchMode=yes <host> nvidia-smi");
+    expect(what()).toContain("Nothing is installed.");
+    expect(what()).toContain("without a password prompt");
+    expect(what()).toContain("remote_compute.json");
+    expect(what()).toContain("Remove forgets a host here and does not change it.");
+
+    (select().props!.onChange as (e: unknown) => void)({ target: { value: "gpu-box" } });
+    expect(addButton().props!.disabled).toBe(false);
+    expect(what()).toContain("BatchMode=yes gpu-box nvidia-smi");
+  });
+
+  it("says when the check found no GPU, beside the form", async () => {
+    serve(() => reply({ ok: true, reachable: false, gpus: null }));
+    await load();
+    (select().props!.onChange as (e: unknown) => void)({ target: { value: "work" } });
+    await addButton().props!.onClick!();
+    await flush();
+    const status = find(expanded(render()), (node) => node.props?.role === "status" && text(node) !== "")!;
+    expect(text(status)).toContain("Added work, but the check got no GPU list");
+    expect(status.props!.class).toContain("err");
+    expect(mocks.hint).not.toHaveBeenCalled();
+  });
+});
+
+// SCI-05: Add, Install and Run with nothing filled in changed nothing on screen.
+describe("empty Compute forms", () => {
+  it("cannot be submitted until there is something to submit", async () => {
+    mocks.fetch.mockImplementation((url: string) =>
+      reply(
+        url === "/api/v1/compute/jobs"
+          ? { jobs: [] }
+          : url === "/api/v1/compute/remote"
+            ? { hosts: [], available_aliases: ["gpu-box"] }
+            : {},
+      ),
+    );
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(button("common.add").props!.disabled).toBe(true);
+    expect(button("cust.compute.installBtn").props!.disabled).toBe(true);
+    expect(button("cust.jobs.runBtn").props!.disabled).toBe(true);
+
+    find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.compute.installPlaceholder")!
+      .props!.onInput!({ target: { value: "   " } });
+    expect(button("cust.compute.installBtn").props!.disabled).toBe(true);
+    find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.compute.installPlaceholder")!
+      .props!.onInput!({ target: { value: "openpyxl" } });
+    find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.jobs.cmdPlaceholder")!
+      .props!.onInput!({ target: { value: "echo hi" } });
+    expect(button("cust.compute.installBtn").props!.disabled).toBe(false);
+    expect(button("cust.jobs.runBtn").props!.disabled).toBe(false);
+  });
+});
+
+describe("Compute tab for a team member (TEAM-24)", () => {
+  const requested = () => mocks.fetch.mock.calls.map(([url]) => String(url));
+  const memberNote = () => find(render(), (node) => node.props?.["data-compute-member-note"] === "");
+  const jobSubmit = () =>
+    find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.jobs.cmdPlaceholder");
+
+  it("asks for neither the SSH hosts nor the daemon jobs, and shows the local facts only", async () => {
+    teamUser.value = { username: "bob", role: "member", kind: "user" };
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(requested()).toContain("/api/v1/compute/gpu");
+    expect(requested()).toContain("/api/v1/compute/local/hostinfo");
+    expect(requested()).not.toContain("/api/v1/compute/remote");
+    expect(requested()).not.toContain("/api/v1/compute/jobs");
+    expect(memberNote()).not.toBeNull();
+    expect(jobSubmit()).toBeNull();
+    expect(find(render(), (node) => node.type === "select")).toBeNull();
+  });
+
+  it("an admin still gets the remote hosts and the jobs", async () => {
+    teamUser.value = { username: "alice", role: "admin", kind: "user" };
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(requested()).toContain("/api/v1/compute/remote");
+    expect(jobReads()).toBe(1);
+    expect(memberNote()).toBeNull();
+    expect(jobSubmit()).not.toBeNull();
+  });
+
+  it("falls back to the member view when the server refuses the host list as admin-only", async () => {
+    // The identity probe has not answered yet: the server's refusal decides.
+    mocks.fetch.mockImplementation((url: string) => {
+      if (url === "/api/v1/compute/remote") {
+        const body = { error: "admin only", code: "admin_only", status: 403 };
+        return Promise.resolve({ ok: false, status: 403, text: () => Promise.resolve(JSON.stringify(body)) });
+      }
+      return reply(url === "/api/v1/compute/jobs" ? RUNNING : {});
+    });
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(jobReads()).toBe(0);
+    expect(memberNote()).not.toBeNull();
+    expect(jobSubmit()).toBeNull();
   });
 });
 

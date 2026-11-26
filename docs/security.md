@@ -147,7 +147,7 @@ inside the sandbox.
 | **Remote-compute confinement** | `OPENAI4S_COMPUTE_CONFINEMENT` (`auto`) | the provider helper runs inside a real OS boundary — Seatbelt on macOS, bubblewrap on Linux — that puts the user's home out of reach — a `tmpfs` over it on Linux; on macOS a denial of `file-read-data` *and* `file-read-xattr`, since an xattr on macOS routinely holds the file's own bytes and `getxattr` was serving what `open` refused — confines writes to the job's stage directory, and (macOS) denies the keychain services, because the credential is read *by securityd* and no file rule covers that. `available()` proves it by establishing a boundary and probing it, not by `which`; the helper re-checks from inside before reading a credential and exits 71 without acting if it does not hold. **The network is deliberately not isolated** (`network_isolated: false`) — calling a provider's REST API is the helper's whole job, so outbound egress is a separate capability and is not enabled. `enforce` refuses `byoc:*` ops only where no boundary can be established: no `bwrap`/`sandbox-exec` on `PATH`, a host that fails the self-test (e.g. unprivileged user namespaces disabled), or a platform with no backend — and it refuses on *every* op, not just submit. `auto` degrades visibly in those same cases; `off` skips the wrapping entirely (see [`docs/compute.md`](compute.md)) |
 | **Secret store** | `OPENAI4S_SECRET_STORE` (`auto`) | credentials behind an opaque reference in the system keychain (after a real round-trip self-test) or the process environment; `auto` **fails closed** when neither is available. Plaintext is reachable only by asking for it by name, and no obfuscated-file fallback exists |
 | **Data-dir permissions** | always on | the data dir is `0700` and the database (plus any `-wal`/`-shm`) is `0600`; POSIX only — Windows needs an ACL, and the posture reports `supported: false` there rather than claiming a boundary |
-| **Browser response headers** | always on | the app shell permits only external same-origin scripts; the exact vendored Ketcher editor document additionally needs `unsafe-eval` for its upstream runtime. App-origin Artifact bytes remain script-free. Executable HTML previews require a scoped grant on the other loopback origin, with a response-level sandbox and closed fetch directives. `nosniff`, framing policy, and `Referrer-Policy` apply at the response boundary; see the preview limitations below |
+| **Browser response headers** | always on | the app shell permits only external same-origin scripts; the exact vendored Ketcher editor document additionally needs `unsafe-eval` for its upstream runtime. App-origin Artifact bytes remain script-free. Executable HTML previews require a scoped grant on the other loopback origin, with a response-level sandbox and closed fetch directives. `nosniff`, framing policy, and `Referrer-Policy` apply at the response boundary. `Permissions-Policy` denies camera, geolocation and microphone everywhere except one directive: the workbench document itself (the shell at `/` and its deep links) gets `microphone=(self)` so composer voice input can ask for the microphone; satellite pages, previews, the sandbox origin and the API keep `microphone=()`; see the preview limitations below |
 
 `web_fetch` rejects loopback and private-network targets by default to reduce
 SSRF risk. `OPENAI4S_ALLOW_PRIVATE_FETCH=1` is an explicit trusted-local
@@ -211,6 +211,19 @@ The refusal names the Skill and the domains it allows, and the Cell receives
 that reason, not a generic "host authorization unavailable". `authorize_bash`
 still runs the same checks at issuance, where they are the boundary.
 
+A `host_only` manifest limits only the requests that Skill's own helper code
+(its `kernel.py` sidecar) makes. The worker-side SDK names the Skill whose
+sidecar is on the calling stack (`attribute_caller` in `openai4s/sdk/host.py`),
+the dispatcher strips that marker before anything else reads the arguments,
+and `skill_network_admission.frame_scope(frame, caller_skill=...)` holds the
+request to that Skill's declared domains. Native tools (`web_fetch`,
+`web_search`, `science_search`), the agent's own Cell code calling `host.*`,
+and its `host.bash` keep the session's ordinary network policy. Attribution
+only ever narrows: a forged marker limits its caller, a missing one leaves the
+call under the session's policy. Loading a `host_only` Skill still requires a
+kernel whose measured sandbox cannot reach the network except through the
+Host, so the helpers cannot bypass their limit with raw sockets.
+
 The model is told the kernel's limits before it meets them. The Web and CLI
 system prompts carry a "Kernel environment" paragraph built from the sandbox
 configuration (`openai4s/kernel/constraints.py`; no worker, no self-test):
@@ -223,7 +236,13 @@ This is guidance, not enforcement: what a Cell can actually read or reach is
 still decided only by the OS sandbox.
 
 That install route asks every time (`env_setup` defaults to `ask`), and the
-card names the packages and the environment they go into. It installs into
+card names the packages and the environment they go into. An install is never
+remembered: its card offers only "once", an allow sent with a wider scope is
+recorded as once, the rules API refuses to save an allow rule for `env_setup`
+or for a `bash` pattern that installs packages (`pip install …`, `conda
+install …`, `install.packages(…)`), and the resolver ignores any such allow
+row that already exists (`installs_packages` in `openai4s/storage/permissions.py`).
+A deny rule still applies. It installs into
 the interpreter the session kernel runs, not the daemon's own, and pins every
 package that interpreter already has, so an install can add packages but never
 move an existing one: a resolver conflict is reported as a refused version
@@ -453,7 +472,7 @@ arbitrary code from the Notebook panel; members can read it.
 `OPENAI4S_NOTEBOOK_REPL=1` still forces it on, and then the switch cannot turn
 it off. With it off, the mutating `kernel/*` routes (`execute`, `restart`,
 `stop`, `start`, `interrupt`) return `403`; `kernel/install` remains available
-because it backs Customize → Compute, and `kernel/env` because choosing the
+because it backs Settings → Compute, and `kernel/env` because choosing the
 session's Python/R environment (session options menu) runs no code — only the
 session's owner or an admin may change it. When enabled, the
 input is multiline, selects Python/R, and appends a new immutable Cell through

@@ -580,6 +580,97 @@ def test_a_member_cannot_repoint_the_group_llm_endpoint(daemon):
     assert status == 200
 
 
+def test_a_member_reads_the_active_model_but_not_the_admins_endpoint(daemon):
+    """Owner decision 25: the routes a member reads to name the active model
+    (`/config/llm`, `/model-profiles`, and the two that project the same
+    profile rows, `/models` and `/onboarding`) blank the admin's `base_url`
+    on the server. The UI already hid it for a member; the bytes did not."""
+    bob = _login(daemon, "bob", "fake-pw-b")
+    root = _login(daemon, "root", "fake-pw-r")
+    live = "https://llm-gateway.internal.example/v1"
+    saved = "https://profile-gateway.internal.example/v1"
+
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/config/llm",
+        {"provider": "chatgpt", "model": "gpt-test", "base_url": live},
+        cookie=root,
+    )
+    assert status == 200, raw[:200]
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/model-profiles",
+        {
+            "name": "Group",
+            "provider": "chatgpt",
+            "model": "gpt-test",
+            "base_url": saved,
+        },
+        cookie=root,
+    )
+    assert status == 201, _body(raw)
+
+    routes = (
+        "/api/v1/config/llm",
+        "/api/v1/model-profiles",
+        "/api/v1/models",
+        "/api/v1/onboarding",
+    )
+    for path in routes:
+        status, raw = _get(daemon.port, path, cookie=bob)
+        assert status == 200, f"{path}: {raw[:200]}"
+        body = raw.split(b"\r\n\r\n", 1)[1]
+        assert b"internal.example" not in body, f"{path} told a member: {body[:300]}"
+    member_view = _body(_get(daemon.port, "/api/v1/config/llm", cookie=bob)[1])
+    assert member_view["model"] == "gpt-test" and member_view["base_url"] == ""
+    profiles = _body(_get(daemon.port, "/api/v1/model-profiles", cookie=bob)[1])
+    assert [p["name"] for p in profiles["profiles"]] == ["Group"]
+    assert profiles["profiles"][0]["base_url"] == ""
+
+    # The admin still reads both, on every route that carries them.
+    admin_llm = _body(_get(daemon.port, "/api/v1/config/llm", cookie=root)[1])
+    assert admin_llm["base_url"] == live
+    for path in routes[1:]:
+        status, raw = _get(daemon.port, path, cookie=root)
+        assert status == 200 and saved.encode() in raw, path
+
+
+def test_a_member_reading_the_volcengine_connection_gets_no_endpoint(daemon):
+    """The fifth projection of a saved profile: `GET /volcengine/connection`
+    is member-readable (its mutations are admin-only) and embeds the linked Ark
+    profile, `base_url` included, through the same `public_profile` the other
+    four routes blank for a member (decision 25)."""
+    bob = _login(daemon, "bob", "fake-pw-b")
+    root = _login(daemon, "root", "fake-pw-r")
+    gateway_url = "https://ark-relay.internal.example/api/v3"
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/model-profiles",
+        {
+            "name": "Ark relay",
+            "provider": "ark",
+            "model": "ark-test-model",
+            "base_url": gateway_url,
+            "api_key": "fake-test-credential",
+        },
+        cookie=root,
+    )
+    assert status == 201, _body(raw)
+    daemon.store.set_setting("volcengine_model_profile_id", _body(raw)["id"])
+
+    status, raw = _get(daemon.port, "/api/v1/volcengine/connection", cookie=bob)
+    assert status == 200, raw[:200]
+    member = _body(raw)
+    assert member["linked"] is True
+    assert member["model_profile"]["name"] == "Ark relay"
+    assert member["model_profile"]["base_url"] == ""
+    assert b"internal.example" not in raw.split(b"\r\n\r\n", 1)[1]
+
+    status, raw = _get(daemon.port, "/api/v1/volcengine/connection", cookie=root)
+    assert status == 200
+    assert _body(raw)["model_profile"]["base_url"] == gateway_url
+
+
 def test_shares_are_scoped_to_the_session_they_project(daemon):
     """A share URL is a capability: anyone holding it reads the session. So
     listing every share in the org hands them out, and revoking one is
@@ -689,6 +780,53 @@ def test_a_member_cannot_run_commands_as_the_daemon(daemon):
     # the operator keeps it -- this is their machine
     status, _ = _get(daemon.port, "/api/v1/compute/jobs", cookie=root)
     assert status == 200
+
+
+def test_only_an_admin_reads_the_daemon_accounts_ssh_hosts(
+    daemon, tmp_path, monkeypatch
+):
+    """TEAM-24: `GET /compute/ssh-aliases` and `GET /compute/remote` answer
+    from the daemon account's `~/.ssh/config`. Registering a remote host was
+    admin-only; the list it is chosen from was not, so Settings -> Compute
+    showed every member the operator's personal host aliases."""
+    home = tmp_path / "operator-home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "config").write_text(
+        "Host gpu-box\n  HostName 192.0.2.10\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    daemon.seed_user("visitor", "fake-pw-v", role="guest")
+    root = _login(daemon, "root", "fake-pw-r")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    visitor = _login(daemon, "visitor", "fake-pw-v")
+
+    for path in ("/api/v1/compute/ssh-aliases", "/api/v1/compute/remote"):
+        status, raw = _get(daemon.port, path, cookie=bob)
+        assert status == 403, f"{path}: {status} {raw[:160]}"
+        assert _body(raw).get("code") == "admin_only", path
+        assert b"gpu-box" not in raw, path
+
+        status, raw = _get(daemon.port, path, cookie=visitor)
+        assert status == 403, f"{path}: {status} {raw[:160]}"
+        assert b"gpu-box" not in raw, path
+
+        status, raw = _get(daemon.port, path)
+        assert status == 401, f"{path}: {status} {raw[:160]}"
+        assert b"gpu-box" not in raw, path
+
+        # the operator still picks from their own file
+        status, raw = _get(daemon.port, path, cookie=root)
+        assert status == 200, f"{path}: {status} {raw[:160]}"
+        assert b"gpu-box" in raw, path
+
+    # What a member's Compute page is built from stays readable.
+    for path in (
+        "/api/v1/compute/gpu",
+        "/api/v1/compute/local/hostinfo",
+        "/api/v1/environments/status",
+    ):
+        status, raw = _get(daemon.port, path, cookie=bob)
+        assert status == 200, f"{path}: {status} {raw[:160]}"
 
 
 def test_a_member_cannot_mutate_the_shared_instance(daemon):

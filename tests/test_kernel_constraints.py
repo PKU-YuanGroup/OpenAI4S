@@ -159,3 +159,81 @@ def test_the_web_session_prompt_carries_the_note(tmp_path):
     assert "networking is on" not in system
     assert "curl/wget/git/pip all work" not in system
     runner.store.close()
+
+
+# --- CHAT-9: the local capability line ---------------------------------------
+
+
+def test_the_capability_line_states_gpu_and_missing_packages():
+    """A greeting promised AlphaFold2, DiffDock, MD, RFdiffusion and Scanpy on
+    a machine with no GPU and without those packages."""
+    from openai4s.prompts import local_capability_note
+
+    note = local_capability_note(
+        gpu={"available": False},
+        packages=("base", {"numpy", "pandas", "scipy", "matplotlib"}),
+    )
+    assert note.startswith("Local capability: this machine has no NVIDIA GPU")
+    assert "structure prediction, docking, MD, protein design" in note
+    assert "Python kernel `base` has: numpy, pandas, scipy, matplotlib;" in note
+    assert "scanpy" in note.split("missing:")[1]
+    # One short line (~50-100 tokens), not a package inventory.
+    assert "\n" not in note and len(note) < 600
+
+    ready = local_capability_note(
+        gpu={"available": True, "gpu_name": "NVIDIA A100"},
+        packages=("science", {"scanpy", "torch"}),
+    )
+    assert "has an NVIDIA GPU (NVIDIA A100)." in ready
+    assert "no NVIDIA GPU" not in ready
+
+
+def test_the_capability_line_probes_the_gpu_once_per_process(monkeypatch):
+    from openai4s import prompts
+    from openai4s.host import accelerators
+
+    probes = []
+
+    class _Probe:
+        def legacy_web_status(self):
+            probes.append(1)
+            return {"available": False}
+
+    monkeypatch.setattr(prompts, "_LOCAL_GPU", [])
+    monkeypatch.setattr(accelerators, "LocalAcceleratorService", _Probe)
+    for _ in range(3):
+        assert "no NVIDIA GPU" in prompts.local_capability_note(packages=("b", set()))
+    assert probes == [1]
+
+
+def test_web_and_cli_prompts_carry_the_capability_line(tmp_path, monkeypatch):
+    from openai4s import prompts
+    from openai4s.agent import Agent
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server.gateway import SessionRunner, SessionState
+
+    monkeypatch.setattr(prompts, "_LOCAL_GPU", [{"available": False}])
+
+    class _Hub:
+        def broadcast(self, *_args):
+            return None
+
+        def emitter(self, _root):
+            return lambda _event: None
+
+    runner = SessionRunner(
+        Config(data_dir=tmp_path, llm=LLMConfig(provider="deepseek", api_key="test")),
+        _Hub(),
+        start_idle_sweeper=False,
+    )
+    try:
+        frame_id = runner.store.new_frame(kind="turn", project_id="p", status="ready")
+        state = SessionState(frame_id, "p", runner.workspace_for(frame_id))
+        runner._seed_messages(state)
+        web = state.messages[0]["content"]
+    finally:
+        runner.store.close()
+    assert "Local capability: this machine has no NVIDIA GPU" in web
+
+    cli = Agent(use_skills=False, allow_delegate=False)._system_prompt()
+    assert "Local capability: this machine has no NVIDIA GPU" in cli

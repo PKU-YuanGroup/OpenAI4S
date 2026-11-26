@@ -71,6 +71,7 @@ const KIND_KEYS = [
   ["image", "files.filter.kind.image"],
   ["report", "files.filter.kind.report"],
   ["code", "files.filter.kind.code"],
+  ["structure", "files.filter.kind.structure"],
   ["other", "files.filter.kind.other"],
 ] as const;
 

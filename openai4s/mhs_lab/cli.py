@@ -28,10 +28,47 @@ def _emit(data: Any) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
 
 
-def _ensure(args: argparse.Namespace) -> None:
-    from openai4s.mhs_lab.openmhs import ensure
+#: What a first download of OpenMHS costs, said before it starts.
+_DOWNLOAD_SIZE = "about 35 MB to download, about 150 MB on disk"
 
-    ensure(download=True, quiet=bool(getattr(args, "json", False)))
+
+def _confirm(question: str) -> bool:
+    """Ask ``question`` on a terminal; False when nobody can answer."""
+    if not sys.stdin.isatty():
+        return False
+    print(f"{question} [y/N] ", end="", file=sys.stderr, flush=True)
+    try:
+        answer = sys.stdin.readline()
+    except (OSError, KeyboardInterrupt):
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def _ensure(args: argparse.Namespace) -> None:
+    """Make OpenMHS importable; download it only with the user's consent.
+
+    `lab search` (a query) silently cloned OpenMHS from GitHub, while `lab
+    status` refused and pointed at `lab setup`. A download now happens only
+    in `lab setup`, with `--yes`, or after a yes on a terminal.
+    """
+    from openai4s.mhs_lab import openmhs
+
+    if openmhs.find_checkout() is None and args.verb != "setup":
+        target = openmhs._data_base() / "openmhs"
+        consented = bool(getattr(args, "yes", False)) or (
+            not getattr(args, "json", False)
+            and _confirm(
+                f"OpenMHS is not set up yet. Download OpenMHS {openmhs.PINNED_REF} "
+                f"from GitHub into {target} now ({_DOWNLOAD_SIZE})?"
+            )
+        )
+        if not consented:
+            raise RuntimeError(
+                "OpenMHS is not set up yet, and nothing was downloaded. Run "
+                "`openai4s lab setup` once (it downloads OpenMHS from GitHub, "
+                f"{_DOWNLOAD_SIZE}), or pass --yes to download it now."
+            )
+    openmhs.ensure(download=True, quiet=bool(getattr(args, "json", False)))
 
 
 def _print_status(doc: dict[str, Any]) -> None:
@@ -112,8 +149,28 @@ def cmd_down(args: argparse.Namespace) -> int:
 
 
 def cmd_reset(args: argparse.Namespace) -> int:
-    from openai4s.mhs_lab import supervisor
+    from openai4s.mhs_lab import lab_dir, supervisor
 
+    if not getattr(args, "yes", False):
+        # Evidence is the lab's record of what was done; erasing it cannot be
+        # undone, and this used to happen without a question.
+        erased = (
+            f"stops the lab and erases its evidence, E-stop latches, LIMS and "
+            f"command ledgers in {lab_dir()} (installed devices are kept). This "
+            "cannot be undone."
+        )
+        if args.json or not _confirm(f"Reset the lab? This {erased}"):
+            refusal = (
+                f"nothing was reset. `openai4s lab reset` {erased} "
+                "Pass --yes to reset."
+            )
+            if args.json:
+                _emit(
+                    {"reset": False, "code": "confirmation_required", "error": refusal}
+                )
+            else:
+                print(f"openai4s lab reset: {refusal}", file=sys.stderr)
+            return 1
     result = supervisor.reset()
     (
         _emit(result)
@@ -299,8 +356,17 @@ def build_parser() -> argparse.ArgumentParser:
     ) -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_text, aliases=list(aliases))
         p.add_argument("--json", action="store_true", help="machine-readable output")
-        p.set_defaults(fn=fn)
+        p.set_defaults(fn=fn, verb=name)
         return p
+
+    def downloads(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "-y",
+            "--yes",
+            action="store_true",
+            help="download OpenMHS without asking if it is not set up yet "
+            "(otherwise a terminal is asked first and a script is refused)",
+        )
 
     p = command(
         "add",
@@ -323,6 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="only record it; start later with `openai4s lab up`",
     )
+    downloads(p)
     p = command(
         "remove", cmd_remove, "uninstall a device you added", ("rm", "uninstall")
     )
@@ -334,16 +401,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--limit", type=int, default=30, help="at most this many rows (0: all)"
     )
+    downloads(p)
     p = command("show", cmd_show, "introduce one market device")
     p.add_argument("package")
+    downloads(p)
     command("list", cmd_list, "the market devices you installed", ("ls",))
     command("status", cmd_status, "every lab device, its access path and state")
-    command("up", cmd_up, "start the lab (built-in and installed devices)", ("start",))
+    downloads(
+        command(
+            "up", cmd_up, "start the lab (built-in and installed devices)", ("start",)
+        )
+    )
     command("down", cmd_down, "stop the lab's endpoints", ("stop",))
-    command(
+    p = command(
         "reset",
         cmd_reset,
         "stop and erase evidence, latches and LIMS (keeps installed devices)",
+    )
+    p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="erase without asking (otherwise a terminal is asked first and a "
+        "script is refused)",
     )
     command(
         "setup",

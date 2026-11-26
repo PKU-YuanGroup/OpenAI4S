@@ -104,7 +104,7 @@ class MCPStore(Protocol):
 
 def _disabled(server: Any) -> str:
     return (
-        f"connector {server!r} is disabled; enable it in Customize \u2192 "
+        f"connector {server!r} is disabled; enable it in Settings \u2192 "
         f"Connectors to use it"
     )
 

@@ -21,16 +21,19 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     llm_auth_rejected: "The model provider rejected the API key. Check it in Settings → Models.",
     llm_quota_exhausted: "The model account is out of quota. Top up with the provider, or pick another model in Settings → Models.",
     llm_model_not_found: "The model provider has no such model or route. Check the model name and base URL in Settings → Models.",
-    llm_network: "The model service could not be reached. Check the network and the base URL in Settings → Models.",
+    // The server's own sentence for this code (`llm/models.py`): one wording.
+    llm_network:
+      "The model service could not be reached, or the request was interrupted. This is usually a passing network problem: send the message again in a moment. If it keeps failing, check the network, any proxy, and the base URL in Settings → Models.",
     llm_authentication_failed: "The model service did not accept the credentials (401). Check the API key in Settings → Models.",
     llm_access_denied: "The model service refused access (403). Check that this key may use the model and endpoint in Settings → Models.",
     llm_model_unavailable: "The model service reports that this model is not available. Check the model id in Settings → Models.",
     llm_request_target_not_found: "The model service found nothing at the requested address (404). Check the endpoint and the model id in Settings → Models.",
     llm_endpoint_unreachable: "The model endpoint refused the connection or its host name did not resolve, so no request was sent. Check the base URL in Settings → Models.",
     openModels: "Open model settings",
+    retry: "Retry",
     supportLog: "Details: logs/support.log in the data directory.",
     continue: "Continue",
-    draft: "Send or clear the draft in the composer first; Continue sends its own message.",
+    draft: "Send or clear the draft in the composer first: this button sends its own message.",
     prompt: "Continue from the completed work. Follow the stopped-turn recovery guidance, choose a different approach if the last attempt repeated itself, and finish only the remaining work.",
     continued: "Continued · the platform asked the model to build on the recorded results and finish only what is left",
   },
@@ -44,16 +47,18 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
     llm_auth_rejected: "模型服务拒绝了这个 API Key。请在 设置 → 模型 检查。",
     llm_quota_exhausted: "模型账户的额度已用完。请到服务商处充值，或在 设置 → 模型 换一个模型。",
     llm_model_not_found: "模型服务找不到这个模型或接口。请在 设置 → 模型 检查模型名称和服务地址。",
-    llm_network: "无法连接到模型服务。请检查网络，以及 设置 → 模型 里的服务地址。",
+    llm_network:
+      "无法连接到模型服务（或请求中途断开）。这通常是暂时的网络问题：稍后重新发送即可。如果一直失败，再检查网络、代理，以及 设置 → 模型 里的服务地址。",
     llm_authentication_failed: "模型服务未接受身份凭据（401）。请在 设置 → 模型 检查 API Key。",
     llm_access_denied: "模型服务拒绝了访问（403）。请在 设置 → 模型 检查这个 Key 是否有权使用该模型和服务地址。",
     llm_model_unavailable: "模型服务报告这个模型不可用。请在 设置 → 模型 检查模型 ID。",
     llm_request_target_not_found: "模型服务上找不到所请求的地址（404）。请在 设置 → 模型 检查服务地址和模型 ID。",
     llm_endpoint_unreachable: "模型服务地址拒绝连接或域名无法解析，请求没有发出。请在 设置 → 模型 检查服务地址。",
     openModels: "打开模型设置",
+    retry: "重试",
     supportLog: "详情见数据目录下的 logs/support.log。",
     continue: "继续",
-    draft: "请先发送或清空输入框里的草稿；“继续”会发送它自己的消息。",
+    draft: "请先发送或清空输入框里的草稿：这个按钮会发送它自己的消息。",
     prompt: "请基于已完成的工作继续，遵循中断恢复提示；如果上次陷入重复，请换一种方法，只处理尚未完成的部分。",
     continued: "已继续 · 平台已要求模型利用已有结果，只处理尚未完成的部分",
   },
@@ -91,6 +96,15 @@ export function canContinueFailure(code: unknown): boolean {
     "llm_response_too_large",
     "no_progress",
   ].includes(String(code || ""));
+}
+
+/**
+ * M-37: a lost connection is usually passing, and its sentence says to try
+ * again; the bubble offers that as a button. It sends what Continue sends, so
+ * work the turn had already done is built on rather than repeated.
+ */
+export function canRetryFailure(code: unknown): boolean {
+  return String(code || "") === "llm_network";
 }
 
 /**
@@ -145,6 +159,10 @@ export function failureMeta(failure: Failure): HTMLElement {
   box.dataset.requestId = failure.request_id ? String(failure.request_id).slice(0, 96) : "";
   box.dataset.failureCode = failure.code ? String(failure.code).slice(0, 64) : "";
   if (failure.output_committed) box.dataset.committed = "1";
+  // Trying again comes first for a lost connection; Settings is for one that keeps failing.
+  if (canRetryFailure(failure.code)) {
+    box.appendChild(continueButton(box, COPY[LANG].retry || COPY.en.retry!, " turn-retry"));
+  }
   if (setup) {
     // The sentence names Settings → Models; this is the way there. It stays
     // on an older row too: unlike Continue, it submits nothing.
@@ -153,42 +171,48 @@ export function failureMeta(failure: Failure): HTMLElement {
     open.onclick = () => void openCustomize("models");
     box.appendChild(open);
   }
-  if (recoverable) {
-    const frame = currentId.value;
-    // messages.css hides this once a later row exists; the handler below still
-    // refuses, and retires the button, in case that rule did not apply.
-    const button = el("button", "outline-btn small turn-continue", COPY[LANG].continue) as HTMLButtonElement;
-    button.type = "button";
-    button.onclick = async () => {
-      if (button.disabled || running.value) return;
-      const rows = document.getElementById("messages")?.querySelectorAll(".msg");
-      const stale =
-        !frame ||
-        currentId.value !== frame ||
-        !rows?.length ||
-        rows[rows.length - 1]?.querySelector(".msg-failure-meta") !== box;
-      if (stale) {
-        // An older failure cannot submit a new turn -- and must not keep
-        // offering to. A clickable control that does nothing reads as broken.
-        button.remove();
-        return;
-      }
-      const composer = document.getElementById("composer") as HTMLTextAreaElement | null;
-      if (composer?.value.trim()) {
-        composer.focus();
-        hint(COPY[LANG].draft, false);
-        return;
-      }
-      const send = (globalThis as Record<string, unknown>).send;
-      if (!isReady(send)) return;
-      button.disabled = true;
-      try {
-        await (send as (text: string) => unknown)(COPY[LANG].prompt || COPY.en.prompt!);
-      } finally {
-        button.disabled = false;
-      }
-    };
-    box.appendChild(button);
-  }
+  if (recoverable) box.appendChild(continueButton(box, COPY[LANG].continue || COPY.en.continue!, ""));
   return box;
+}
+
+/**
+ * The button that sends the continuation: Continue after a recoverable stop,
+ * Retry after a lost connection. Only the newest failure may submit a turn.
+ */
+function continueButton(box: HTMLElement, label: string, extraClass: string): HTMLButtonElement {
+  const frame = currentId.value;
+  // messages.css hides this once a later row exists; the handler below still
+  // refuses, and retires the button, in case that rule did not apply.
+  const button = el("button", "outline-btn small turn-continue" + extraClass, label) as HTMLButtonElement;
+  button.type = "button";
+  button.onclick = async () => {
+    if (button.disabled || running.value) return;
+    const rows = document.getElementById("messages")?.querySelectorAll(".msg");
+    const stale =
+      !frame ||
+      currentId.value !== frame ||
+      !rows?.length ||
+      rows[rows.length - 1]?.querySelector(".msg-failure-meta") !== box;
+    if (stale) {
+      // An older failure cannot submit a new turn -- and must not keep
+      // offering to. A clickable control that does nothing reads as broken.
+      button.remove();
+      return;
+    }
+    const composer = document.getElementById("composer") as HTMLTextAreaElement | null;
+    if (composer?.value.trim()) {
+      composer.focus();
+      hint(COPY[LANG].draft, false);
+      return;
+    }
+    const send = (globalThis as Record<string, unknown>).send;
+    if (!isReady(send)) return;
+    button.disabled = true;
+    try {
+      await (send as (text: string) => unknown)(COPY[LANG].prompt || COPY.en.prompt!);
+    } finally {
+      button.disabled = false;
+    }
+  };
+  return button;
 }

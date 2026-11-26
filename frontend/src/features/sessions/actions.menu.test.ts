@@ -21,13 +21,15 @@ import { LANG, setLang, t } from "../../i18n";
 import { customizeOpen, customizeTab, nestedEditor } from "../customize/state";
 import { _titleName, currentId, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
+import { actionTimeline } from "../../stores/timeline";
 import { nbT } from "../notebook/copy";
-import { saveCurrentAsSkill, sessionMenu, sessionOptionsMenu, showContextUsage } from "./actions";
+import { reviewT } from "../send/review-copy";
+import { addToMessageMenu, saveCurrentAsSkill, sessionMenu, sessionOptionsMenu, showContextUsage } from "./actions";
 import { openMenu, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
 import { optionsMenuCopy, shareCopy } from "./copy";
 import { primeShareStatus, resetShareStatus } from "./share";
-import { openProjectResearchView } from "./projects";
+import { openProjectResearchView, projectFiles, sanitizeProjectLineage } from "./projects";
 import { actionTimelineCard } from "../timeline/island";
 
 class FakeNode {
@@ -77,6 +79,42 @@ describe("Save as skill", () => {
       seed: { name: "buffer-titration", description: "Titrate the phosphate buffer" },
     });
     expect((nestedEditor.value as unknown as { seed: { body: string } }).seed.body).toContain("The endpoint is at pH 7.2.");
+  });
+
+  it("builds the Procedure from the cells the session ran (M-84)", async () => {
+    currentId.value = "f";
+    _titleName.value = "Buffer Titration";
+    messages.fetchRecentMessages.mockResolvedValue({
+      messages: [
+        { role: "user", content: "Titrate the phosphate buffer" },
+        { role: "assistant", content: "The endpoint is at pH 7.2." },
+      ],
+    });
+    const entries = [
+      { producing_cell_id: "c1", language: "python", status: "ok", is_latest_attempt: true, source: "# Load the titration data\nimport pandas as pd\ndf = pd.read_csv('titration.csv')" },
+      { producing_cell_id: "c2", language: "python", status: "error", is_latest_attempt: false, source: "broken(" },
+      { producing_cell_id: "c3", language: "python", status: "ok", is_latest_attempt: true, files_written: ["endpoint.png"], source: "def endpoint(df):\n    return df.ph.diff().idxmax()\n\nplot(endpoint(df))" },
+    ];
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify(String(url).endsWith("/frames/f/execution-log") ? { entries } : {}));
+    }));
+    try {
+      await saveCurrentAsSkill();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(urls.some((url) => url.endsWith("/frames/f/execution-log"))).toBe(true);
+    const seed = (nestedEditor.value as unknown as { seed: { body: string; draft: { steps: Array<{ summary: string }> } } }).seed;
+    // The failed attempt is not a step; each kept step has a line and its code.
+    expect(seed.draft.steps.map((step) => step.summary)).toEqual(["Load the titration data", "Writes endpoint.png"]);
+    expect(seed.body).toContain("1. Load the titration data\n\n```python\n# Load the titration data\nimport pandas as pd");
+    expect(seed.body).toContain("2. Writes endpoint.png");
+    expect(seed.body).not.toContain("broken(");
+    expect(seed.body).toContain("# kernel.py (draft)");
+    expect(seed.body).toContain("def endpoint(df):\n    return df.ph.diff().idxmax()\n```");
+    expect(seed.body).not.toContain("Reproduce the evidence-gathering");
   });
 
   it("opens an empty skill editor when no session is open", async () => {
@@ -139,7 +177,70 @@ describe("Context usage", () => {
     try {
       currentId.value = "f";
       await showContextUsage();
-      expect(body.texts()).toEqual([t("context.tokens", "150"), "输入 120 · 输出 30 · 审阅 42"]);
+      expect(body.texts()).toEqual(["150 个 token", "输入 120 · 输出 30 · 审阅 42"]);
+    } finally {
+      vi.unstubAllGlobals();
+      await setLang(previous);
+    }
+  });
+
+  // SET-5: "17,235 个 token · 输入 16,331 · 输出 904 · 审阅 0" said nothing
+  // about the window, how full it is, or when compaction kicks in.
+  it("says the model's window, how much of it the latest request took, and when compaction kicks in", async () => {
+    const previous = LANG;
+    await setLang("zh");
+    const body = new FakeNode();
+    const nodes: Record<string, FakeNode> = { "#modal-body": body, "#modal-title": new FakeNode(), "#modal-download": new FakeNode(), "#modal": new FakeNode() };
+    vi.stubGlobal("document", {
+      createElement: () => new FakeNode(),
+      querySelector: (sel: string) => nodes[sel] ?? null,
+      // A language switch repaints the static labels.
+      querySelectorAll: () => [],
+    });
+    const context = {
+      token_count: 15_000,
+      token_limit: 256_000,
+      compaction_trigger_ratio: 0.75,
+      compaction_threshold: 192_000,
+      compaction_count: 2,
+    };
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith("/steps")) return new Response(JSON.stringify({ steps: [] }));
+      if (url.endsWith("/context")) return new Response(JSON.stringify(context));
+      return new Response(JSON.stringify({ input_tokens: 16_331, output_tokens: 904 }));
+    });
+    try {
+      currentId.value = "f";
+      // The latest model call of this session's timeline: its whole prompt.
+      actionTimeline.value = {
+        root_frame_id: "f",
+        groups: [
+          { kind: "code", usage: { input_tokens: 12_000, output_tokens: 300 } },
+          { kind: "native_tools", usage: { input_tokens: 25_600, cache_read: 20_000, output_tokens: 200 } },
+          { kind: "terminal", usage: null },
+        ],
+      };
+      await showContextUsage();
+      expect(body.texts()).toEqual([
+        "17,235 个 token",
+        "输入 16,331 · 输出 904 · 审阅 0",
+        "模型上下文窗口：256,000 token",
+        "最近一次请求发给模型 25,600 token，占窗口的 10%",
+        "上下文超过 192,000 token（窗口的 75%）时，较早的对话会自动压缩；本会话已压缩 2 次",
+      ]);
+
+      // Another session's timeline is not this one's latest request: the
+      // context's own estimate stands in, and says it is one.
+      await setLang("en");
+      actionTimeline.value = { root_frame_id: "other", groups: [{ kind: "code", usage: { input_tokens: 9 } }] };
+      context.compaction_count = 0;
+      await showContextUsage();
+      expect(body.texts().slice(2)).toEqual([
+        "Model context window: 256,000 tokens",
+        "Current context: about 15,000 tokens, 6% of the window",
+        "Past 192,000 tokens (75% of the window), older turns are compacted automatically",
+      ]);
     } finally {
       vi.unstubAllGlobals();
       await setLang(previous);
@@ -166,6 +267,43 @@ describe("the project research Timeline", () => {
     }
   });
 
+  it("M-48: is called the project's activity, with tabs named in the language on screen", async () => {
+    const previous = LANG;
+    await setLang("zh");
+    const body = new FakeNode();
+    const title = new FakeNode();
+    const nodes: Record<string, FakeNode> = { "#modal-body": body, "#modal-title": title, "#modal-download": new FakeNode(), "#modal": new FakeNode() };
+    vi.stubGlobal("document", { createElement: () => new FakeNode(), querySelector: (sel: string) => nodes[sel] ?? null });
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ session_count: 0, total_count: 0, groups: [] })));
+    try {
+      project.value = "P";
+      await openProjectResearchView("timeline");
+      expect(String(title.textContent)).toContain("项目活动记录");
+      await vi.waitFor(() => expect(body.texts()).toContain("0 个会话 · 0 个操作"));
+      expect(body.texts()).toEqual(expect.arrayContaining(["活动", "文件"]));
+      expect(body.texts()).not.toContain("Timeline");
+      expect(body.texts()).not.toContain("Lineage");
+    } finally {
+      vi.unstubAllGlobals();
+      await setLang(previous);
+    }
+  });
+
+  it("M-48: lists one row per file, with its version count, not one row per version", () => {
+    const data = sanitizeProjectLineage({
+      nodes: [
+        { id: "v1", kind: "artifact_version", artifact_id: "a", version_id: "v1", filename: "fit.csv", latest: false },
+        { id: "v2", kind: "artifact_version", artifact_id: "a", version_id: "v2", filename: "fit.csv", latest: true, cell_id: "cell-9" },
+        { id: "v3", kind: "artifact_version", artifact_id: "b", version_id: "v3", filename: "plot.png", latest: true },
+      ],
+      edges: [],
+    });
+    expect(projectFiles(data.nodes)).toEqual([
+      { id: "a", name: "fit.csv", versions: 2, cell: "cell-9" },
+      { id: "b", name: "plot.png", versions: 1, cell: "" },
+    ]);
+  });
+
   it("renders each action group as a card with its details", () => {
     vi.stubGlobal("document", { createElement: () => new FakeNode() });
     try {
@@ -177,12 +315,35 @@ describe("the project research Timeline", () => {
       } as never) as unknown as FakeNode;
       expect(card.className).toBe("timeline-card kind-python status-failed");
       expect(card.texts()).toEqual(expect.arrayContaining([
-        t("timeline.kind.python"), "failed", "Fit the dose-response curve", "agent", "compute",
+        // VIEW-1: the status in the UI language, not the server's word.
+        t("timeline.kind.python"), LANG === "zh" ? "失败" : "Failed", "Fit the dose-response curve", "agent", "compute",
         "gpu:0", "fit.png", "gen-7", "2.5 s", "$0.5000", "did not converge",
       ]));
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("M-9: the + menu only adds to the message", () => {
+  it("offers attaching and picking files, nothing that acts on the session", () => {
+    vi.mocked(openMenu).mockClear();
+    addToMessageMenu({} as Element);
+    const items = vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[];
+    expect(items.map((item) => item.label)).toEqual([t("composer.menu.attachFiles"), t("composer.menu.yourFiles")]);
+  });
+
+  it("puts review, save-as-skill and context usage in the open session's menu only", () => {
+    sessions.value = [{ id: "f", project_id: "P" }, { id: "g", project_id: "P" }];
+    currentId.value = "f";
+    const labels = (fid: string) => {
+      vi.mocked(openMenu).mockClear();
+      sessionMenu({} as Element, fid);
+      return (vi.mocked(openMenu).mock.calls[0]![1] as MenuItem[]).map((item) => item.label);
+    };
+    const moved = [reviewT("review.menuLabel"), t("composer.menu.saveAsSkill"), t("composer.menu.contextUsage")];
+    expect(labels("f")).toEqual(expect.arrayContaining(moved));
+    expect(labels("g").filter((label) => moved.includes(String(label)))).toEqual([]);
   });
 });
 

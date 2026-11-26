@@ -983,3 +983,43 @@ def test_cli_run_denied_native_tool_cannot_back_a_wrote_claim(monkeypatch, tmp_p
     assert result["submitted_output"]["completion_bullets"] == [
         "Explained the permission limitation"
     ]
+
+
+@pytest.mark.parametrize(
+    "make_executor",
+    [lambda: _local_executor(), lambda: _web_executor()],
+    ids=["cli", "web"],
+)
+def test_a_finalize_beside_an_unrun_cell_is_refused_and_the_turn_stays_open(
+    make_executor,
+):
+    # Usability re-test, 2026-11-24: a reply carried the analysis cell and
+    # finalize_response together. Routing ran only the finalize, it was
+    # accepted, and the answer cited a figure that was never drawn.
+    executor = make_executor()
+    call = _call(_arguments())
+    content = (
+        "Running the test and the plot now.\n\n"
+        "```python\nimport pandas as pd\nprint(pd.__version__)\n```\n"
+    )
+    state = RunState([])
+    state.metadata["execution_evidence"] = {"cells": 0, "tool_calls": 3}
+
+    outcome = executor.execute(
+        FinalizeAction(call),
+        ModelReply(content=content, tool_calls=(call,)),
+        state,
+    )
+
+    result = outcome.history_messages[0]
+    assert result["is_error"] is True
+    assert "was not executed" in result["content"]
+    assert outcome.completion is None
+    assert not outcome.stop_reason
+
+    # The same payload in a reply without a cell is still accepted.
+    accepted = executor.execute(
+        FinalizeAction(call), ModelReply(content="Done.", tool_calls=(call,)), state
+    )
+    assert accepted.history_messages[0]["is_error"] is False
+    assert accepted.completion is not None

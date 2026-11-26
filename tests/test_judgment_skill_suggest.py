@@ -440,7 +440,10 @@ def test_chinese_query_enters_semantic_path(tmp_path: Path) -> None:
     service = _service(tmp_path, backend)
     query = "帮我对这批单细胞数据做细胞类型注释"
     lexical = service.search({"query": query, "limit": 5})
-    assert lexical == []
+    # SKL-3 (2026-11-23): lexical search maps common Chinese research terms to
+    # English, so this query now finds the single-cell recipe lexically too.
+    # The semantic path does not depend on lexical misses: it still runs.
+    assert [hit["name"] for hit in lexical][:1] == ["bio-single-cell-demo"]
     result = service.suggest({"query": query})
     assert result["semantic_status"] in {"ok", "uncertain"}
     assert backend.calls, "pure Chinese query must reach the judgment backend"

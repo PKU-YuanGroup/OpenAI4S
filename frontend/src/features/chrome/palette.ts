@@ -10,10 +10,13 @@
 import { publicText } from "../scrub/scrub";
 import { cycleTheme, themeIsDark } from "../theme/theme";
 import { LANG, t } from "../../i18n/runtime";
+import { artifacts, artifactsFrameId } from "../../stores/artifacts";
 import { skillsCatalog } from "../../stores/customize";
-import { currentId } from "../../stores/session";
+import { currentId, projects, sessions } from "../../stores/session";
+import { displayProjectName } from "../sessions/copy";
+import { recentDashboardSessions, type SessionLike } from "../sessions/paging";
 import { api } from "./api";
-import { $, el, grow, icon } from "./dom";
+import { $, agoMs, el, grow, icon } from "./dom";
 import { hostFn, invokeHost, isReady } from "./host";
 import { anyModalOpen } from "./modal";
 import { loadSkillsCatalog } from "../autocomplete/catalog";
@@ -33,6 +36,16 @@ const FOUND_IN: Record<"en" | "zh", Record<string, string>> = {
   en: { message: "Conversation", code: "Cell code", output: "Cell output" },
   zh: { message: "对话", code: "单元代码", output: "单元输出" },
 };
+
+/** Feature-local copy (VIEW-5): the empty palette's own groups. */
+const RECENT_GROUPS: Record<"en" | "zh", Record<"sessions" | "files", string>> = {
+  en: { sessions: "Recent sessions", files: "Files in this session" },
+  zh: { sessions: "最近的会话", files: "本会话的文件" },
+};
+
+function recentGroup(key: "sessions" | "files"): string {
+  return RECENT_GROUPS[LANG === "zh" ? "zh" : "en"][key];
+}
 
 /**
  * `text` split around every case-insensitive occurrence of `needle`. The
@@ -66,6 +79,8 @@ export type PaletteState = {
   gen: number;
   /** The latest query's skills + /search read, while it is in flight. */
   pending: Promise<void> | null;
+  /** SYNC-9: what had focus when the palette opened; Escape and the scrim give it back. */
+  returnFocus?: Element | null;
 };
 
 /** app.js:10940 */
@@ -92,7 +107,26 @@ type SessionHit = {
   /** Where the query was found (`title`, `message`, `code`, `output`) and the text around it. */
   match?: string;
   snippet?: string | null;
+  /** Epoch ms the session was last active (M-47). */
+  updated_at?: number | null;
 };
+
+/**
+ * M-47: "Growth assay · KM analysis · 3d" -- the project, the session and how
+ * long ago, so a hit in a project's imported copy no longer looks exactly like
+ * the original. Each part is left out when unknown.
+ */
+export function hitPlace(projectId: string | null | undefined, sessionName?: string | null, updatedAt?: unknown): string {
+  const parts: string[] = [];
+  const rows = (projects.value as Array<{ project_id?: string; id?: string; name?: string }>) || [];
+  const row = projectId ? rows.find((p) => (p.project_id || p.id) === projectId) : undefined;
+  const project = row ? displayProjectName(row) : "";
+  if (project) parts.push(publicText(project, 60));
+  if (sessionName) parts.push(publicText(sessionName, 60));
+  const at = typeof updatedAt === "number" && updatedAt > 0 ? agoMs(updatedAt) : "";
+  if (at) parts.push(at);
+  return parts.join(" · ");
+}
 
 /** "Cell output · …B1 22.0 OVRFLW event" for a hit inside a session's content. */
 function sessionHitSub(hit: SessionHit): string | undefined {
@@ -110,6 +144,9 @@ type ArtifactHit = {
   project_id?: string | null;
   version_id?: string | null;
   latest_version_id?: string | null;
+  /** The session the file belongs to, and when it last changed (M-47). */
+  session_name?: string | null;
+  updated_at?: number | null;
 };
 type DataproHit = {
   artifact_id?: string;
@@ -252,7 +289,8 @@ export function palActions(): PaletteItem[] {
     },
     {
       group: t("palette.group.commands"),
-      label: t("palette.action.customize"),
+      // M-35: the sidebar entry and the gear open one modal, called Settings.
+      label: t("common.settings"),
       icon: "sliders",
       run: () => {
         invokeHost(hostFn("openCust"));
@@ -279,6 +317,7 @@ export function palActions(): PaletteItem[] {
 export function openPalette(): void {
   if (PAL.open) return;
   PAL.open = true;
+  PAL.returnFocus = typeof document !== "undefined" ? document.activeElement : null;
   const ov = el("div", "palette-ov");
   const box = el("div", "palette");
   const inp = el("input", "palette-input") as HTMLInputElement;
@@ -292,7 +331,7 @@ export function openPalette(): void {
   PAL.el = ov;
   PAL.listEl = list;
   ov.onclick = (e) => {
-    if (e.target === ov) closePalette();
+    if (e.target === ov) dismissPalette();
   };
   inp.addEventListener("input", () => {
     void palSearch(inp.value);
@@ -301,7 +340,7 @@ export function openPalette(): void {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       e.preventDefault();
-      closePalette();
+      dismissPalette();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
       PAL.idx = Math.min(PAL.idx + 1, PAL.items.length - 1);
@@ -341,6 +380,17 @@ export function closePalette(): void {
   PAL.items = [];
   PAL.idx = 0;
   PAL.pending = null;
+  PAL.returnFocus = null;
+}
+
+/**
+ * SYNC-9: Escape or the scrim closes the palette without picking anything, so
+ * focus goes back where it was (the composer, a button) instead of <body>.
+ */
+export function dismissPalette(): void {
+  const back = PAL.returnFocus as HTMLElement | null | undefined;
+  closePalette();
+  if (back && typeof back.focus === "function" && back.isConnected) back.focus();
 }
 
 export function resetPalette(): void {
@@ -374,11 +424,78 @@ function skillItems(q: string, sk: SkillRow[]): PaletteItem[] {
     }));
 }
 
+const RECENT_SESSIONS = 5;
+const RECENT_FILES = 3;
+
+function epochMs(value: unknown): number {
+  const ms = typeof value === "number" ? value : Date.parse(String(value || ""));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * VIEW-5: the sessions most recently worked on, from the list the sidebar
+ * already holds (no request): newest first, never the open one, and never
+ * an untouched empty session.
+ */
+function recentSessionItems(): PaletteItem[] {
+  const rows = ((sessions.value as SessionLike[]) || []).filter(
+    (row) => row && row.id && row.id !== currentId.value && !row.parent_frame_id,
+  );
+  return recentDashboardSessions(rows)
+    .slice(0, RECENT_SESSIONS)
+    .map((row) => ({
+      group: recentGroup("sessions"),
+      label: publicText(row.name || row.task_summary, 140) || t("conv.title.default"),
+      sub: hitPlace(row.project_id, null, epochMs(row.updated_at)) || undefined,
+      icon: "message-square",
+      run: () => {
+        closePalette();
+        invokeHost(hostFn("openConversation"), row.id, row.project_id || null);
+      },
+    }));
+}
+
+type FileRow = {
+  id?: string;
+  artifact_id?: string;
+  filename?: string | null;
+  content_type?: string | null;
+  project_id?: string | null;
+  created_at?: unknown;
+  role?: string | null;
+};
+
+/** VIEW-5: the open session's newest result files (its process files are not results). */
+function recentFileItems(): PaletteItem[] {
+  const fid = currentId.value;
+  if (!fid || artifactsFrameId.value !== fid) return [];
+  return ((artifacts.value as FileRow[]) || [])
+    .filter((row) => row && (row.id || row.artifact_id) && row.filename && row.role !== "process" && row.role !== "internal")
+    .sort((a, b) => epochMs(b.created_at) - epochMs(a.created_at))
+    .slice(0, RECENT_FILES)
+    .map((row) => ({
+      group: recentGroup("files"),
+      label: publicText(row.filename, 140),
+      sub: row.content_type || undefined,
+      icon: "file",
+      run: () =>
+        openPaletteArtifact({
+          id: String(row.id || row.artifact_id),
+          filename: row.filename || "",
+          content_type: row.content_type || "",
+          root_frame_id: fid,
+          project_id: row.project_id || null,
+        }),
+    }));
+}
+
 /** app.js:11015-11041 */
 export async function palSearch(query: string): Promise<void> {
   const q = (query || "").trim().toLowerCase();
   const gen = (PAL.gen = (PAL.gen || 0) + 1);
-  const items: PaletteItem[] = [];
+  // VIEW-5: an empty palette opens on what was worked on; the skills follow
+  // everything else (the catalogue's first six, in English, were the list).
+  const items: PaletteItem[] = q ? [] : [...recentSessionItems(), ...recentFileItems()];
   palActions().forEach((a) => {
     if (!q || a.label.toLowerCase().includes(q)) items.push(a);
   });
@@ -421,7 +538,7 @@ async function palSearchRemote(
         items.push({
           group: t("conv.title.default"),
           label: s.name || s.task_summary || t("conv.title.default"),
-          sub: sessionHitSub(s),
+          sub: [hitPlace(s.project_id, null, s.updated_at), sessionHitSub(s)].filter(Boolean).join(" · ") || undefined,
           mark: q,
           icon: "message-square",
           run: () => {
@@ -434,7 +551,7 @@ async function palSearchRemote(
         items.push({
           group: t("palette.group.artifacts"),
           label: a.filename || "",
-          sub: a.content_type || "",
+          sub: [hitPlace(a.project_id, a.session_name, a.updated_at), a.content_type || ""].filter(Boolean).join(" · "),
           icon: "file",
           run: () => openPaletteArtifact(a),
         }),

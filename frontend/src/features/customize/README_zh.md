@@ -13,15 +13,18 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`load.test.ts`](load.test.ts) | `custTab()` 开始一次待定加载；标记只结算一次；超时只对仍在等待的 generation 生效。 |
 | [`dismiss.ts`](dismiss.ts) | Customize 如何关闭。打开状态只归 `customizeOpen` 一个来源：`#cust` 在最上层时，chrome 的焦点陷阱把 Esc 让给 Customize（先关嵌套编辑器，再关模态）；其他途径给 `#cust` 加上 `.hidden` 时，随后调用 `closeCust()`。只有按下不在对话框内开始的点击，遮罩才会关闭它。 |
 | [`dismiss.test.ts`](dismiss.test.ts) | 嵌套编辑器里按 Esc 只关编辑器；Customize 之上的模态自己处理 Esc；输入法组字的 Esc 不处理；`#cust` 被别的途径隐藏时 Customize 随之关闭；在对话框内按下、在遮罩上松开的点击不关闭。 |
-| [`copy.ts`](copy.ts) | I18N-1：内置专家和连接器目录的说明（守护进程给的是英文）以及专家徽标的中文；按名称或 id 对应，只在文字仍是产品自带的时候替换。 |
+| [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`（路径必须是单个前导斜杠；403 `admin_only` 会说明谁可以修改），以及附录 B.2 更新客户端：`getUpdateStatus()`（本地读取）、`checkForUpdates({refresh})`（显式检查）、严格 `sanitizeUpdateStatus`（非 B.2 载荷降级为 `null`）、429 的 `updateRetryAfterSeconds` 与团队模式拒绝的 `isUpdateAdminOnly`。 |
 | [`copy.test.ts`](copy.test.ts) | 产品自带的条目显示中文，用户自己写的保持原样，英文界面用守护进程的原文；`specialists.py` 里的每个专家和网关连接器目录里的每个 id 都有中文。 |
-| [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`（路径必须是单个前导斜杠），以及附录 B.2 更新客户端：`getUpdateStatus()`（本地读取）、`checkForUpdates({refresh})`（显式检查）、严格 `sanitizeUpdateStatus`（非 B.2 载荷降级为 `null`）、429 的 `updateRetryAfterSeconds` 与团队模式拒绝的 `isUpdateAdminOnly`。 |
-| [`environment.ts`](environment.ts) | Skill readiness 文案；`sanitizeStandardProfileReadiness`。 |
+| [`copy.ts`](copy.ts) | I18N-1：内置专家和连接器目录的说明（守护进程给的是英文）以及专家徽标的中文；按名称或 id 对应，只在文字仍是产品自带的时候替换。 |
+| [`environment.test.ts`](environment.test.ts) | 就绪技能、缺 GPU、加载被拒（此时不再说「仍可加载」）、科学计算包、沙箱阻断、未知要求、旧版目录行以及中文界面下的就绪说明。 |
+| [`environment.ts`](environment.ts) | 用人话说明 Skill 的就绪状态（`skillReadinessNote`，SCI-08）：缺什么（NVIDIA GPU、科学计算 Python 包）、开关打开时代理还能否加载它、加载为何被拒（`blocked_on`：直接联网、沙箱），以及是否该去「计算」处理；文案在本功能自带的表里。`sanitizeStandardProfileReadiness`。 |
 | [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer`；直接 re-export `models.ts` 里真正的 `loadModels`（不经 window 桥）；`effProject`，以及供渲染使用的 `customizeProject`（它的 computed，只在项目变化时通知）。 |
 | [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` 与对外 re-export。`window.openCust` / `custTab` 先加载并挂载设置 UI（`ensureCustomizeMounted` / `openCustomize`）；加载失败会提示，下次打开时重试。 |
 | [`layout.ts`](layout.ts) | `os-layout` 密度。`setLayout` / `applyLayout`。 |
-| [`memory.ts`](memory.ts) | Memory 作用域 id 与名称。绝不发送字面 `"default"`。 |
-| [`permissions.ts`](permissions.ts) | 设置 → 权限 的文案（`permT`）：每个工具名一句说明（`toolDescription`），以及 `globalRulesSummary`——从规则本身读出全局规则的实际效果（读取 / 写入 / 联网 / 装包 / 后台命令 / 连接器 / 技能）。 |
+| [`memory.ts`](memory.ts) | Memory 作用域 id 与名称。绝不发送字面 `"default"`。 每种类型都有名称和一句用途说明（`memoryBlockLabel`、`memoryBlockHint`）；`memoryAppliedText` 说明新会话会带上几条记忆，省略/继承/被取代的数量只在不为零时才写出（M-81）。 |
+| [`notebook-sync.ts`](notebook-sync.ts) | SYNC-27：守护进程级的 Notebook 手动单元开关。`announceNotebookSwitch` 立刻通知同一浏览器的其他窗口（BroadcastChannel）；`watchNotebookSwitch`（由 `bootCustomize` 启动）在窗口回到前台时重新读取开关，只有与当前 Notebook 显示不一致时才刷新它（`recheckNotebookSwitch`）。Notebook 模块按需加载。 |
+| [`notebook-sync.test.ts`](notebook-sync.test.ts) | 开关与 Notebook 显示不一致时会让它重新读取；一致或读取失败时什么都不变；变更会发给其他窗口。 |
+| [`permissions.ts`](permissions.ts) | 设置 → 权限 的文案（`permT`）：每个工具名一句说明（`toolDescription`），以及 `globalRulesSummary`——从规则本身读出全局规则的实际效果（读取 / 写入 / 联网 / 装包 / 后台命令 / 连接器 / 技能）。`groupRules` / `groupDecision` 把一个作用域的规则归入设置页的类别并说明每类的实际效果（PERM-3）；`installRule` 与服务端「装包每次询问」的判断一致（PERM-1）。 |
 | [`permissions.test.ts`](permissions.test.ts) | 摘要与种子规则一致、随规则变化而变化；没有通配规则的工具按“询问”计；未知工具名没有说明。 |
 | [`runtimes.ts`](runtimes.ts) | 设置 → 计算 的文案（`runtimeT`），以及把环境列表里的 `runtimes` 说成人话：`runtimeSummary`（环境名 · 内置 / 托管 / 本机 · 版本，绝不显示路径）、`rPackagesNote`（R 的关键包能否加载，以及托管 R 环境自带它们）、`rDefaultLabel`（运行环境菜单里 R 的“默认”指的是什么）、`installOutcome`（一次安装做了什么：版本、装到哪个环境、运行中的内核需要做什么）。 |
 | [`runtimes.test.ts`](runtimes.test.ts) | Python、某个环境里的 R、PATH 上的 R 和找不到 R 时的摘要；关键包说明；默认标签；安装结果在带版本、内核已重启、会话运行在别的环境、失败、没有版本这几种情况下的说法。 |
@@ -29,8 +32,10 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`models.ts`](models.ts) | 本机端点清洗、协议目录、capability-receipt 读取；`loadModels` 用 `GET /models` 填充 composer `#model-select` 的 store（由 `bootCustomize` 调用），并保留每个条目的 `revision`。`sessionModelPin` 保存当前打开会话的固定：由 `watchSessionModelPin`（`bootCustomize` 只启动一次）从 `GET /frames/{id}` 读取；由 `noteSessionModelBinding` 根据任一 `model-binding` 响应更新，由 `noteAdmittedModelBinding` 根据发送消息 202 里的 `model_binding` 更新（发送开始后用户又选过模型时不采用，依据 `composerChoiceMark`）；版本计数器会丢弃被更新的读或写超越的读取，列表里找不到的固定会让列表重新加载一次。`composerSelection` 决定选择框显示什么——固定本身；固定找不到对应条目（profile 已删除、修订号较早）时显示占位项；否则显示默认。`chooseComposerModel` 先改绑当前会话（`POST /frames/{id}/model-binding {model_id}`，改绑和默认模型更新共用一个顺序写入队列），再设置服务端默认（`PUT /models/default`）并重新加载列表；重叠的多次选择只有最后一次会完成；没有打开的会话时只设置默认。`composerModelChoicePending` 防止发送越过尚未完成的选择，保留草稿并提示稍后重试；较早开始的列表读取不会覆盖更新的选择。文案在本模块的 `modelT` 表里；`resetSessionModelState` 供测试使用。 |
 | [`mount.ts`](mount.ts) | `mountCustomize()`：把设置弹窗渲染到 `#cust-root`。它是唯一导入 Customize 组件树的模块，首次打开设置时才加载（`ensureCustomizeMounted`），构建时因此被拆出首屏包。 |
 | [`models.test.ts`](models.test.ts) | `loadModels` 请求 `/models` 并填充 `models` / `defaultModel` / `defaultModelName`（配置档条目用模型名命名，id 原样保留）；`bootCustomize` 接好了它。打开会话时读取其固定，切到下一个会话时再读一次；已不再打开的会话的迟到响应会被丢弃；读不到的会话不留下任何东西；无论 boot 跑几次都只有一个监听；`bootCustomize` 启动了它。 |
-| [`state.ts`](state.ts) | `customizeOpen` / `customizeTab` / `customizeGeneration` / `customizeRefresh` / `nestedEditor`。 |
-| [`tabs.ts`](tabs.ts) | 九个 tab id；`agents` → `specialists`。 |
+| [`state.ts`](state.ts) | `customizeOpen` / `customizeTab` / `customizeGeneration` / `customizeRefresh` / `nestedEditor`，以及 `customizeNotice`：「设置」打开期间 `hint()` 最后报告的内容，切换 tab 或关闭时清空。 |
+| [`roles.ts`](roles.ts) | 「设置」里的团队模式：`settingsReadOnly()`（来自 `/auth/me` 的成员身份）、`isAdminOnlyRefusal`，以及说明谁能改什么的 `roleT` 文案。 |
+| [`roles.test.ts`](roles.test.ts) | 403 `admin_only` 显示为谁可以操作、不带请求 ID；只有「设置」打开时 `hint()` 才进入设置状态行，切换 tab 会清空；只有成员是只读的。 |
+| [`tabs.ts`](tabs.ts) | 十一个 tab id（`experiments` 和 `diagnostics` 在最后，即不向团队成员提供的 `OPERATOR_TABS`）；`agents` → `specialists`；`custTabLabel` 给出 tab 名称。 |
 | [`tabs.test.ts`](tabs.test.ts) | Tab 状态机；原地刷新只重读正在显示的 tab，不重新挂载，也不关闭它的编辑器。 |
 | [`telemetry.ts`](telemetry.ts) | 同意开关 drain 循环；契约 `telemetryRow(host)`。 |
 | [`timers.ts`](timers.ts) | 按挂载的定时器租约。unmount 即 dispose。 |

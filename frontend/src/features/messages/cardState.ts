@@ -16,22 +16,35 @@
  * event) so no card is left claiming it is still running.
  */
 
-import { LANG } from "../../i18n/runtime";
+import { LANG, t } from "../../i18n/runtime";
 import { paintIcon } from "../icons/paths";
+import { nbT } from "../notebook/copy";
 import type { WsMessage } from "../ws/types";
 import { declinedCell, declinedMeta, type Declined } from "./declined";
 import { messagesHost } from "./dom";
+import { noteTurnActivity } from "./turnStatus";
 
 /** Feature-local copy: en.ts / zh.ts are generated extracts. */
-type CardCopyKey = "cardTitle" | "runningTitle" | "stopped" | "failed";
+type CardCopyKey = "cardTitle" | "runningTitle" | "stopped" | "failed" | "noR" | "rJsonlite";
 const COPY: Record<"en" | "zh", Record<CardCopyKey, string>> = {
   en: {
     cardTitle: "Analysis · cell {0}",
     runningTitle: "Running analysis · cell {0}",
     stopped: "Stopped",
     failed: "Failed",
+    noR:
+      "No R is available to this session. Choose one under {0}, build the prebuilt R environment with `openai4s setup`, or install R so Rscript is on PATH.",
+    rJsonlite:
+      "This R does not have the jsonlite package the R kernel needs. Choose an R that has it under {0}, or run install.packages(\"jsonlite\") in this R.",
   },
-  zh: { cardTitle: "分析 · 单元 {0}", runningTitle: "正在分析 · 单元 {0}", stopped: "已停止", failed: "失败" },
+  zh: {
+    cardTitle: "分析 · 单元 {0}",
+    runningTitle: "正在分析 · 单元 {0}",
+    stopped: "已停止",
+    failed: "失败",
+    noR: "本会话没有可用的 R。可以在 {0} 里选择一个 R，用 `openai4s setup` 构建预置的 R 环境，或安装 R 并让 Rscript 位于 PATH 上。",
+    rJsonlite: "这个 R 缺少 R 内核需要的 jsonlite 包。可以在 {0} 里换一个装有它的 R，或在这个 R 中运行 install.packages(\"jsonlite\")。",
+  },
 };
 
 function copy(key: CardCopyKey): string {
@@ -84,6 +97,11 @@ export function cardSettled(card: HTMLElement): boolean {
 
 function settle(card: HTMLElement, state: string, icon: string): void {
   paintElapsed(card);
+  // When it ended: the recorded end for a Cell the execution log has, so a
+  // reopened turn's model wait counts from it (CHAT-7, `turnStatus.ts`).
+  const recordedStart = Number(card.dataset.recordedStart);
+  const recordedMs = card.dataset.recordedMs ? Number(card.dataset.recordedMs) : NaN;
+  noteTurnActivity(recordedStart > 0 && Number.isFinite(recordedMs) ? recordedStart + recordedMs : Date.now());
   card.classList.remove("running");
   card.classList.add(state);
   card.dataset.state = state;
@@ -98,12 +116,24 @@ function settle(card: HTMLElement, state: string, icon: string): void {
  * stays as the cell's duration once it ends. Shown from two seconds on.
  */
 function paintElapsed(card: HTMLElement, now: number = Date.now()): void {
+  // NB-4: a Cell the execution log already recorded shows its recorded
+  // duration. Reopening a running session replays the turn into the card the
+  // reload drew, and the replayed finish lands a moment after the replayed
+  // start: timed on this page, "0:03" became nothing.
+  const recorded = card.dataset.recordedMs ? Number(card.dataset.recordedMs) : NaN;
+  if (Number.isFinite(recorded)) {
+    paintDuration(card, recorded);
+    return;
+  }
   const started = Number(card.dataset.startedAt || 0);
   if (!started) return;
+  paintDuration(card, Math.max(0, now - started));
+}
+
+function paintDuration(card: HTMLElement, ms: number): void {
   const head = card.querySelector(".a-head") as HTMLElement | null;
   if (!head) return;
   let label = head.querySelector(".a-time") as HTMLElement | null;
-  const ms = Math.max(0, now - started);
   if (ms < 2000) return;
   if (!label) {
     label = document.createElement("span");
@@ -152,7 +182,14 @@ export function markCardRunning(card: HTMLElement, event?: WsMessage | null): vo
   if (event && event.cell_index != null) card.dataset.cellIndex = String(event.cell_index).slice(0, 32);
   const glyph = glyphOf(card);
   if (glyph) paintIcon(glyph, "loader", 16);
-  card.dataset.startedAt = String(Date.now());
+  // A recorded Cell replayed into its reopened card counts from when it
+  // really started, not from the replay (NB-4). A Cell still running at the
+  // reopen has no recorded row yet; its start event carries the server's
+  // start time instead.
+  const recordedStart = Number(card.dataset.recordedStart);
+  const eventStart = Number(event && event.started_at);
+  const started = recordedStart > 0 ? recordedStart : eventStart > 0 ? eventStart : Date.now();
+  card.dataset.startedAt = String(started);
   if (!elapsedTimer && typeof setInterval === "function") elapsedTimer = setInterval(tickElapsed, 1000);
 }
 
@@ -212,15 +249,76 @@ export function settleLiveCellCard(event: WsMessage | null | undefined): void {
     (index && running.find((c) => !c.dataset.cellId && c.dataset.cellIndex === index)) ||
     null;
   if (!card) return;
-  const status = String(event.status || (event.error ? "error" : "ok"));
+  applyCellOutcome(card, String(event.status || (event.error ? "error" : "ok")), event.error);
+}
+
+/**
+ * M-58: the R kernel's own refusals reach the card as the server's English
+ * text ("no R interpreter available: …", "openai4s R worker requires the
+ * 'jsonlite' package …"), and the raw output is not translated. A failed card
+ * that carries one gets a line in the UI language saying where to choose
+ * another R, live and on reopen alike.
+ */
+const RUNTIME_HELP: Array<[RegExp, CardCopyKey]> = [
+  [/no R interpreter available/, "noR"],
+  [/R worker requires the 'jsonlite' package/, "rJsonlite"],
+];
+
+function noteRuntimeHelp(card: HTMLElement, error: unknown): void {
+  const text = typeof error === "string" ? error : "";
+  const hit = RUNTIME_HELP.find(([pattern]) => pattern.test(text));
+  if (!hit || typeof document === "undefined") return;
+  if (Array.from(card.children || []).some((node) => node.classList?.contains("cell-help"))) return;
+  const where = t("composer.sessionOptions") + " → " + nbT("nb.env.menuItem");
+  const line = document.createElement("div");
+  line.className = "cell-help";
+  line.textContent = copy(hit[1]).replace("{0}", where);
+  card.appendChild(line);
+}
+
+function applyCellOutcome(card: HTMLElement, status: string, error: unknown): void {
   // A cell that raised because its Host call was refused, or cancelled by a
   // Stop while it waited for approval, did not fail.
-  const declined = status === "error" ? declinedCell(event.error) : null;
+  const declined = status === "error" ? declinedCell(error) : null;
   if (declined && declined.kind === "stopped") markCardStopped(card);
   else if (declined) markCardDeclined(card, declined);
-  else if (status === "error") markCardFailed(card);
-  else if (status === "interrupted") markCardStopped(card);
+  else if (status === "error") {
+    markCardFailed(card);
+    noteRuntimeHelp(card, error);
+  } else if (status === "interrupted") markCardStopped(card);
   else if (status === "ok") markCardSucceeded(card);
+}
+
+/**
+ * A reopened Cell's card (`cellCard.ts`): the identity, outcome and duration
+ * its execution-log record names, painted as the live card ended up -- the
+ * same glyph, "Failed · N output lines" meta and "Analysis · cell N" title.
+ */
+export function settleStoredCellCard(
+  card: HTMLElement,
+  cell: {
+    producing_cell_id?: unknown;
+    cell_index?: unknown;
+    status?: unknown;
+    error?: unknown;
+    started_at?: unknown;
+    finished_at?: unknown;
+  },
+): void {
+  if (typeof cell.producing_cell_id === "string") card.dataset.cellId = cell.producing_cell_id.slice(0, 128);
+  if (cell.cell_index != null) card.dataset.cellIndex = String(cell.cell_index).slice(0, 32);
+  const started = Number(cell.started_at) || 0;
+  const finished = Number(cell.finished_at) || 0;
+  // Kept on the card for a replay of this Cell (`resetActivityCard` leaves
+  // them): the duration it shows is the recorded one (NB-4).
+  if (started) card.dataset.recordedStart = String(started);
+  if (started && finished >= started) {
+    card.dataset.recordedMs = String(finished - started);
+    paintDuration(card, finished - started);
+  }
+  applyCellOutcome(card, String(cell.status || (cell.error ? "error" : "ok")), cell.error);
+  // A record whose outcome none of the above names claims nothing.
+  if (!cardSettled(card)) markCardEnded(card);
 }
 
 /** Terminal fallback: no card on screen outlives its turn as "running". */

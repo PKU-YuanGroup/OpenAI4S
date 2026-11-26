@@ -1,10 +1,11 @@
 import { dockArtifact, filesScope } from "../../stores/artifacts";
 import { bindNotebookArtifact } from "../notebook/cells";
-import { activeTab, dock } from "../../stores/ui";
+import { activeTab, dock, openTabs } from "../../stores/ui";
 import { artifactTabKey, syncArtifactVersion } from "./cache";
 import { browseFiles } from "./files-index";
 import { loadProjectArtifacts, markProjectListingStale } from "./load";
-import { renderFilesGrid, renderViewer } from "./ui";
+import { paintNewerVersions } from "./renderers";
+import { renderDockTabs, renderFilesGrid, renderViewer } from "./ui";
 import type { ArtifactRow } from "./types";
 import type { WsMessage } from "../ws/types";
 
@@ -62,6 +63,13 @@ export function artifactCreatedSideEffects(m: WsMessage): void {
     const docked = dockArtifact.value as ArtifactRow | null;
     if (docked && !docked._exactVersion && docked.id === aid && activeTab.value === artifactTabKey(docked)) {
       renderViewer();
+    }
+    // VIEW-3: a tab pinned to an older version of this file is relabelled and
+    // its viewer offers the latest; the pinned preview itself is not re-read.
+    const tabs = (openTabs.value as ArtifactRow[] | null) || [];
+    if (tabs.some((tab) => !!tab && tab._exactVersion && tab.id === String(aid))) {
+      renderDockTabs();
+      paintNewerVersions();
     }
   }
   // Repaints the Notebook itself when a cell gained this file.

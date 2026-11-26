@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import sys
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -118,8 +119,8 @@ finishing happen in python.
     host.register_remote_capability(alias, capability, ...)  # verified remote service
     host.todo_write(todos)              # optional progress tracker card (long tasks only — never your first move)
     host.env.list/use/create, host.load_skill(name)          # prebuilt envs + recipes
-- `host` is already injected into every python kernel. NEVER `import host` or \
-`from host import ...`; use the injected singleton directly.
+- `host` is already injected into every python kernel as a global; use it \
+directly. No import is needed (`import host` returns the same object).
 - When this session's project has a local folder, use project_list_dir, \
 project_read_file, project_glob (e.g. '**/*.csv'), and project_grep to inspect \
 its subfolders with project-relative paths. These tools report unavailable \
@@ -167,7 +168,9 @@ ONLY native call in its turn. Use its structured fields to report only work \
 that actually completed. Its claims are reconciled against this run's action \
 ledger: if no cell and no tool ran, execution-shaped claims (bullets like \
 'Computed…'/'Ran…'/'Wrote…', an `artifacts` list, or `metrics`) are rejected — \
-do the work first, or describe the response without claiming execution.
+do the work first, or describe the response without claiming execution. When \
+your reply text already answers, the user reads that text and `summary` is not \
+shown: never recap, restate or describe your reply in it.
 - Scientific work that used the Python/R runtime finishes by running one final \
 python cell that calls `host.submit_output({...}, ["what you did",...])`. This \
 is the sole completion signal for a scientific cell. The submitted `output` must include a \
@@ -183,6 +186,11 @@ Rules:
 (```python or ```r). Keep cells small and incremental. Before an action you may \
 give one short user-facing sentence describing the intended step; never expose \
 private chain-of-thought.
+- Run analysis code AS a cell. Do not write a .py / .R file in order to exec(), \
+runpy or source() it from a later cell: every file you write appears in the \
+user's files, nothing runs until a cell runs it, and the Notebook records only \
+the code a cell contains. Write files for deliverables (reports, tables, \
+figures) and for code the task asks you to deliver.
 - Only prose BEFORE the action fence is user-visible. It may summarize results \
 from PRIOR Observations, but must not predict or claim outputs from the cell that \
 has not run yet. Raw tables, matrices, and tracebacks belong in the Notebook; \
@@ -389,6 +397,12 @@ class Agent:
     # explicit code mode. `openai4s run --auto` sets it: its post-run review
     # can only judge the executed code and output the run actually recorded.
     record_cells: bool = False
+    # Optional live view of this run's engine events (`runtime.RunProgress`),
+    # set by `openai4s run` so a foreground run says what it is doing.
+    progress: object | None = field(default=None, repr=False)
+    # A running cell's stdout as it arrives (`runtime.LiveCellOutput`), set by
+    # `openai4s run`: `-v` shows it live, and Ctrl-C keeps what it printed.
+    live_output: Any | None = field(default=None, repr=False)
     # Durable kernel-generation store handle (duck-typed Store). When set (or
     # defaulted from the dispatcher's store), each worker lifetime writes a
     # kernel_generations row under this Agent's frame so artifact environment
@@ -427,6 +441,9 @@ class Agent:
     # closes that row: a delegated child's frame belongs to the DelegationRunner
     # and an embedder's frame to the embedder, so neither is ever written here.
     _owns_frame: bool = field(default=False, init=False, repr=False)
+    # The transcript of the run in flight, so a run that Ctrl-C ends can
+    # still report what it did (`interrupted_result`).
+    _run_transcript: list = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.max_turns is None:
@@ -502,7 +519,9 @@ class Agent:
 
     def _log(self, *a: object) -> None:
         if self.verbose:
-            print(*a, flush=True)
+            # stderr: the trace is commentary on the run. stdout carries the
+            # result alone, so `run -v --json` still pipes into a JSON parser.
+            print(*a, file=sys.stderr, flush=True)
 
     def _python_read_isolation(self) -> KernelReadIsolation | None:
         """Add only sidecars visible to this Agent to its exact read grants."""
@@ -580,6 +599,16 @@ class Agent:
                     python_env_name=(env.env_name if env is not None else None),
                     r_env_name=(env.r_env if env is not None else None),
                 )
+            )
+        except Exception:  # noqa: BLE001 - guidance must never block a run
+            pass
+        # CHAT-9: local GPU yes/no and the key packages present or missing.
+        try:
+            from openai4s.prompts import local_capability_note
+
+            env = self.env
+            prompt += "\n\n" + local_capability_note(
+                env.env_name if env is not None else None
             )
         except Exception:  # noqa: BLE001 - guidance must never block a run
             pass
@@ -855,6 +884,31 @@ class Agent:
         )
         return result
 
+    def interrupted_result(self) -> dict:
+        """The result of a run that Ctrl-C ended: what it did before it stopped.
+
+        ``run`` re-raises the KeyboardInterrupt (and records the frame as
+        ``cancelled``); this is the same result shape a finished run returns,
+        with ``stop_reason`` ``cancelled`` and the turns completed so far.
+        """
+
+        transcript = list(self._run_transcript)
+        turns = sum(1 for turn in transcript if turn.role == "assistant")
+        # A cell Ctrl-C stopped never produced its observation; what it had
+        # printed by then is still the run's output (CLI-29).
+        live = self.live_output
+        printed = live.interrupted_output() if live is not None else ""
+        if printed:
+            transcript.append(
+                TranscriptTurn(
+                    "observation",
+                    "[Observation]\nstdout:\n"
+                    + printed.rstrip()
+                    + "\n[interrupted: Ctrl-C stopped this cell while it ran]",
+                )
+            )
+        return self._finish(transcript, None, "cancelled", turns=turns)
+
     def close_unrun_frame(self, status: str = "failed") -> None:
         """Close the turn frame this Agent opened for a run that never starts.
 
@@ -1014,6 +1068,7 @@ class Agent:
             },
         ]
         transcript: list[Turn] = []
+        self._run_transcript = transcript
         run_cwd = str(self.workspace) if self.workspace else os.getcwd()
         self.dispatcher.set_workspace(run_cwd)
         python_read_isolation = self._python_read_isolation()
@@ -1072,7 +1127,12 @@ class Agent:
                         prose_nudge = NO_NATIVE_COMPLETION_NUDGE
                 except Exception:  # noqa: BLE001 - compatible provider fallback
                     pass
-                transcript_events = TranscriptEventSink(transcript, log=self._log)
+                transcript_events = TranscriptEventSink(
+                    transcript,
+                    log=self._log,
+                    progress=self.progress,
+                    live_output=self.live_output,
+                )
                 action_ledger = self._action_ledger(tool_catalog, task)
                 event_sink: Any = (
                     _LedgerTranscriptEventSink(action_ledger, transcript_events)
@@ -1195,6 +1255,7 @@ class Agent:
                             lambda: self._apply_pending_env(lazy_kernel)
                         ),
                         generation_recorder=self._generation_recorder,
+                        live_output=self.live_output,
                     ),
                     context_policy=context_policy,
                     event_sink=event_sink,
@@ -1469,7 +1530,13 @@ class Agent:
         self._log(f"[env] switching python kernel to '{environment.name}'")
         lazy_kernel.shutdown()
 
-    def _execute_r(self, code: str, *, cell_id: str | None = None) -> dict:
+    def _execute_r(
+        self,
+        code: str,
+        *,
+        cell_id: str | None = None,
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> dict:
         """Run one ```r cell on the persistent R kernel, spawning it lazily.
 
         The kernel is respawned when host.env.use() retargeted the R channel
@@ -1530,6 +1597,8 @@ class Agent:
                     for parameter in parameters
                 ):
                     kwargs["cell_id"] = cell_id
+            if on_chunk is not None:
+                kwargs["on_chunk"] = on_chunk
             return execute(code, **kwargs)
         except Exception as e:  # noqa: BLE001 — dead worker: drop it, soft-fail
             from openai4s.egress import is_boundary_refusal

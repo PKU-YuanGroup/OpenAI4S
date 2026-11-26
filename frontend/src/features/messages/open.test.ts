@@ -3,7 +3,8 @@ import { resetStoreFields } from "../../stores/signal-field";
 import * as session from "../../stores/session";
 import { _replayGap, running, stream, _seqSeen, _resumeTimer, ws } from "../../stores/stream";
 import { apiGet, fetchRecentMessages, fetchOlderMessages } from "./fetch";
-import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
+import { openConversation, recoverConversation, alignHistoryAfterTurn, bindTranscriptLanguage } from "./open";
+import { setLang } from "../../i18n/runtime";
 import { loadEarlierMessages } from "../sessions/messages";
 import { showDashboard, stopDashPoll } from "../sessions/dashboard";
 import { routeInitialView } from "../sessions/conversation";
@@ -189,12 +190,12 @@ describe("history reads", () => {
     ]));
     expect(paint.empty).not.toHaveBeenCalled();
     expect(_replayGap.value).toBe("f");
-    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenCalledTimes(5);
     for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
     const retry = server((path) => path.endsWith("/steps") ? response({ steps: [storedStep] }) : undefined);
     expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(_replayGap.value).toBeNull();
-    expect(retry).toHaveBeenCalledTimes(4);
+    expect(retry).toHaveBeenCalledTimes(5);
     for (const [, init] of retry.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
   });
   it.each([
@@ -258,7 +259,7 @@ describe("history reads", () => {
     const one = recoverConversation("f");
     const two = recoverConversation("f");
     expect(two).toBe(one);
-    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenCalledTimes(5);
     gate.resolve(response({ steps: [] }));
     expect(await one).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
     expect(fetcher.mock.calls.map(([path]) => String(path))).toEqual(expect.arrayContaining([
@@ -355,7 +356,7 @@ describe("history reads", () => {
     gate.resolve(response({ messages: [] }));
     expect(await reading).toMatchObject({ messagesLoaded: false });
     await vi.waitFor(() => expect(session.historyLoad.value?.status).toBe("loaded"));
-    expect(fetcher).toHaveBeenCalledTimes(8);
+    expect(fetcher).toHaveBeenCalledTimes(10);
   });
 
   it("an old admission cannot settle a submission after navigating away and back", () => {
@@ -909,7 +910,10 @@ describe("a newly created session's Notebook", () => {
 
   it("an execution-log read of the previous session that lands late adds nothing", async () => {
     const lateA = deferred<Response>();
-    logServer((path) => (path.endsWith("/frames/f/execution-log") ? lateA.promise : undefined));
+    // The conversation reads the log for its cell cards when it opens; the
+    // Notebook's own read below is the one that lands late.
+    let reads = 0;
+    logServer((path) => (path.endsWith("/frames/f/execution-log") && ++reads > 1 ? lateA.promise : undefined));
     await openConversation("f");
     cells.value = A_CELLS;
     const inflight = loadExecutionLog("f");
@@ -964,5 +968,62 @@ describe("where a committed transcript leaves the scroll", () => {
     expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true });
     flushScrollNow();
     expect(host.scrollTop).toBe(100);
+  });
+});
+
+/**
+ * SYNC-20. A language switch left every card, status line and button the
+ * transcript had drawn in the old language until a reload; it now re-reads
+ * the open conversation (GET only). I18N-1: a running session no longer waits
+ * for its turn to end -- for minutes the transcript mixed both languages, in
+ * this tab and in every other tab that follows the pick -- it is rebuilt at
+ * once, as a reload builds it.
+ */
+describe("a language switch", () => {
+  afterEach(async () => {
+    await setLang("en");
+  });
+
+  it("repaints the open conversation from its history, and rebuilds a running one at once", async () => {
+    await setLang("en");
+    const stop = bindTranscriptLanguage();
+    let busy = false;
+    const fetcher = server((path) => (path.endsWith("/status") && busy ? response({ running: true, status: "running" }) : undefined));
+    const sent: Array<Record<string, unknown>> = [];
+    ws.value = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)), onopen: null, onclose: null, onmessage: null };
+    await openConversation("f");
+    const reads = (): number => fetcher.mock.calls.filter(([path]) => String(path).includes("/messages?")).length;
+    const quiet = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+    await quiet();
+    const opened = reads();
+
+    await setLang("zh");
+    await vi.waitFor(() => expect(reads()).toBeGreaterThan(opened));
+    await quiet();
+    const switched = reads();
+    // The same language again changes nothing.
+    await setLang("zh");
+    await quiet();
+    expect(reads()).toBe(switched);
+    // An idle repaint is a history read: the live subscription is untouched.
+    expect(sent.filter((m) => m.type === "unview_session")).toEqual([]);
+
+    // A running turn: the view is rebuilt now, not when the turn ends.
+    busy = true;
+    running.value = true;
+    _seqSeen.value.f = 42;
+    sent.length = 0;
+    await setLang("en");
+    await vi.waitFor(() => expect(reads()).toBeGreaterThan(switched));
+    await quiet();
+    // The live subscription is dropped and taken again from the start, so the
+    // daemon replays the running turn into the rebuilt view (as on a reload).
+    expect(sent.map((m) => m.type)).toEqual(["unview_session", "view_session"]);
+    expect(sent[1]).toMatchObject({ root_frame_id: "f", since_seq: 0 });
+    expect(running.value).toBe(true);
+    for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) {
+      expect(init?.method ?? "GET").toBe("GET");
+    }
+    stop();
   });
 });

@@ -1,4 +1,5 @@
 import { artifactWorkbench, _kc } from "../../stores/notebook";
+import { currentId } from "../../stores/session";
 import {
   api,
   apiErrorText,
@@ -44,6 +45,49 @@ export function readWorkbenchFlag(): boolean {
     return true;
   }
   return false;
+}
+
+let flagRead: { sid: string; promise: Promise<boolean> } | null = null;
+
+/**
+ * The workbench flag, read now if nothing has read it yet (SCI-31).
+ *
+ * Only the Notebook's kernel-status poll wrote `artifactWorkbench`, so a
+ * structure opened before the Notebook panel had ever been shown had no
+ * "Edit in Ketcher" button although the server had the editor switched on.
+ * The flag rides on the same `GET /frames/{id}/kernel` read, which starts
+ * nothing; one read per session is enough.
+ */
+export function loadWorkbenchFlag(): Promise<boolean> {
+  if (readWorkbenchFlag()) return Promise.resolve(true);
+  const sid = currentId.value;
+  if (!sid) return Promise.resolve(false);
+  if (flagRead && flagRead.sid === sid) return flagRead.promise;
+  const read: { sid: string; promise: Promise<boolean> } = { sid, promise: Promise.resolve(false) };
+  read.promise = api(`/frames/${encodeURIComponent(sid)}/kernel`)
+    .then((st) => {
+      const on = Boolean(st && typeof st === "object" && (st as { artifact_workbench?: unknown }).artifact_workbench);
+      if (on) artifactWorkbench.value = true;
+      return on;
+    })
+    .catch(() => {
+      // Not evidence either way: the next render asks again.
+      if (flagRead === read) flagRead = null;
+      return false;
+    });
+  flagRead = read;
+  return read.promise;
+}
+
+/** Run `add` now when the workbench is on, or once a first read says it is. */
+export function withWorkbenchFlag(container: HTMLElement, add: () => void): void {
+  if (readWorkbenchFlag()) {
+    add();
+    return;
+  }
+  void loadWorkbenchFlag().then((on) => {
+    if (on && container.isConnected) add();
+  });
 }
 
 /** app.js:8718-8722 filter `col:value` shorthand. */

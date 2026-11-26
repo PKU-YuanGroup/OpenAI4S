@@ -403,7 +403,7 @@ OpenAI4S $VERSION — first launch on macOS
          xattr -dr com.apple.quarantine /Applications/OpenAI4S.app
 
 3. Launching starts a local server and opens http://127.0.0.1:8760/ in your
-   browser. Set your LLM provider + API key in the UI (Customize → Models).
+   browser. Set your LLM provider + API key in the UI (Settings → Models).
    All data lives in ~/.openai4s.  Logs: ~/.openai4s/logs/app.out
 
 4. The command line ships inside the app. To put it on your PATH:

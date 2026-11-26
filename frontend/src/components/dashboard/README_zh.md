@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-F-13 工作台外壳。冻结 id 对齐 `tests/webui-contract.md`（`#dashboard`、`#dash-projects`、`#dash-sessions`、`#workspace`、`#messages`、`#dock-notebook`）。`#composer-hint` 带 `role=status aria-live=polite`。`#tab-close` 是真 button。断连横幅接管不存在的 `#conn-dot`。
+F-13 工作台外壳。冻结 id 对齐 `tests/webui-contract.md`（`#dashboard`、`#dash-projects`、`#dash-sessions`、`#workspace`、`#messages`、`#dock-notebook`）。`#composer-hint` 带 `role=status aria-live=polite`。会话头部显示会话名（`#tabbar` 中的 `#conv-title`），可就地改名；不再画成标签页（M-41）。断连横幅接管不存在的 `#conn-dot`。
 
 ## 文件
 

@@ -8,7 +8,7 @@ import { copyLookup, type CopyTable } from "../../i18n/copy";
 const COPY: CopyTable = {
   zh: {
     "judgment.title": "语义判断层",
-    "judgment.badge": "Experimental",
+    "judgment.badge": "实验性",
     "judgment.intro.typesafe":
       "默认关闭。需要自备 TypeSafe API key。服务托管在美国；敏感数据不要开启。",
     "judgment.intro.llm": "使用 Models 中配置的模型进行语义判断。数据会发送到该模型的服务商；结果未经校准。",

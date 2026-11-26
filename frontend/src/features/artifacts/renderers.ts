@@ -1,11 +1,12 @@
 import { isReady } from "../../compat/stub";
 import { parseTable } from "../csv/csv";
 import { typesetMath } from "../md/math";
+import { mdHighlight } from "../md/highlight";
 import { renderMd } from "../md/render";
 import { noteEncodingIn } from "./encoding-note";
 import { resolveRelativeImages } from "./markdown-assets";
 import { publicText } from "../scrub/scrub";
-import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
+import { renderTableArtifact as renderTableArtifactM04, withWorkbenchFlag } from "../table";
 import { applyPdfFrame } from "../../islands/frames";
 import { molTeardown } from "../../islands/mol";
 import {
@@ -31,7 +32,7 @@ import {
   TEXT_SOURCE_PREVIEW_CHARACTERS,
 } from "./api";
 import { filesT, readFailureText, readRetryHelps } from "./copy";
-import { artifactMetadataTarget, artUrl, previewSlice } from "./cache";
+import { artifactMetadataTarget, artUrl, newerVersionThan, previewSlice } from "./cache";
 import {
   artifactRendererDescriptor,
   compatibilityRendererDescriptor,
@@ -131,6 +132,33 @@ function appendResidues(
   return shown.length;
 }
 
+/** One record's alphabet, by the parser's own rule (`sequenceAlphabet`). */
+function recordAlphabet(sequence: string, fallback: string): string {
+  const letters = String(sequence || "").replace(/[-.*?~]/g, "");
+  if (!letters) return fallback;
+  if (/^[ACGTUN]+$/i.test(letters)) return /U/i.test(letters) && !/T/i.test(letters) ? "RNA" : "DNA";
+  return "protein";
+}
+
+/** Residues per line in the sequence viewer, the usual FASTA/GenBank width. */
+export const SEQUENCE_LINE_RESIDUES = 60;
+
+/**
+ * SCI-27: residues in lines of 60, each led by the 1-based position of its
+ * first residue, so a position can be read off without counting. Text goes in
+ * through `el`'s textContent only; nothing from the file reaches innerHTML.
+ */
+function appendSequenceLines(container: HTMLElement, sequence: string, alphabet: string, limit: number): number {
+  const shown = String(sequence || "").slice(0, Math.max(0, limit));
+  for (let start = 0; start < shown.length; start += SEQUENCE_LINE_RESIDUES) {
+    const line = el("div", "bio-seq-line");
+    line.appendChild(el("span", "bio-seq-pos", String(start + 1)));
+    appendResidues(line, shown.slice(start, start + SEQUENCE_LINE_RESIDUES), alphabet, SEQUENCE_LINE_RESIDUES);
+    container.appendChild(line);
+  }
+  return shown.length;
+}
+
 export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
   fetchArtifactText(url, { signal: previewReadSignal(container), onEncoding: noteEncodingIn(container) })
     .then((text) => {
@@ -159,10 +187,40 @@ export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, u
 const SOURCE_PREVIEW_CHARACTERS = TEXT_SOURCE_PREVIEW_CHARACTERS;
 
 /** Render bounded raw text; returns whether an exact-version download entry was included. */
+/** M-62: source files the chat's code highlighter already knows, by extension. */
+const CODE_LANGUAGES: Record<string, string> = {
+  py: "python",
+  r: "r",
+  jl: "julia",
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
+  js: "javascript",
+  mjs: "javascript",
+  ts: "javascript",
+  sql: "sql",
+  yaml: "yaml",
+  yml: "yaml",
+  toml: "toml",
+  rb: "ruby",
+};
+
+export function codeLanguage(filename: string | null | undefined): string | null {
+  const ext = /\.([A-Za-z0-9]+)$/.exec(String(filename || ""));
+  return (ext && CODE_LANGUAGES[(ext[1] || "").toLowerCase()]) || null;
+}
+
 export function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): boolean {
   const slice = previewSlice(text, SOURCE_PREVIEW_CHARACTERS);
-  const pre = el("pre", "renderer-source");
-  pre.textContent = slice.shown;
+  const lang = codeLanguage(a.filename);
+  const pre = el("pre", lang ? "renderer-source renderer-code" : "renderer-source");
+  // `mdHighlight` escapes every character it emits (its spans' text is the
+  // source byte for byte), so file text reaches the DOM only as text.
+  const show = (value: string): void => {
+    if (lang) pre.innerHTML = mdHighlight(value, lang);
+    else pre.textContent = value;
+  };
+  show(slice.shown);
   container.appendChild(pre);
   if (!slice.truncated) return false;
   partialNotice(container, slice.shown.length);
@@ -171,7 +229,7 @@ export function renderRawSource(container: HTMLElement, a: ArtifactRow, text: st
   const expand = el("button", "outline-btn small", filesT("viewer.text.expand"));
   expand.setAttribute("aria-expanded", "false");
   expand.onclick = () => {
-    pre.textContent = text;
+    show(text);
     expand.setAttribute("aria-expanded", "true");
     expand.disabled = true;
   };
@@ -255,7 +313,9 @@ export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, u
           "viewer.sequence.summary",
           parsed.records.length,
           parsed.total_length.toLocaleString(),
-          parsed.alphabet,
+          // Protein or nucleotide, in the UI language (the parser says
+          // "protein" / "DNA" / "RNA" / "unknown").
+          filesT(`viewer.seq.alphabet.${parsed.alphabet}`),
         ),
       );
       container.appendChild(summary);
@@ -267,22 +327,24 @@ export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, u
         const card = el("section", "sequence-record");
         const head = el("div", "sequence-head");
         head.appendChild(el("strong", null, record.name || "sequence"));
+        // Per record: a file can mix a protein with the gene that encodes it.
+        const alphabet = recordAlphabet(record.sequence, parsed.alphabet);
         head.appendChild(
           el(
             "span",
             null,
-            `${record.sequence.length.toLocaleString()} ${parsed.alphabet === "protein" ? "aa" : "nt"}`,
+            `${record.sequence.length.toLocaleString()} ${alphabet === "protein" ? "aa" : "nt"}`,
           ),
         );
         card.appendChild(head);
         if (record.description) {
           card.appendChild(el("div", "sequence-description", record.description));
         }
-        const sequence = el("div", "bio-sequence");
-        const used = appendResidues(
+        const sequence = el("div", "bio-sequence bio-sequence-lines");
+        const used = appendSequenceLines(
           sequence,
           record.sequence,
-          parsed.alphabet,
+          alphabet,
           Math.min(remaining, 10000),
         );
         remaining -= used;
@@ -519,15 +581,19 @@ function molecule2dSvg(model: MolfileModel | null | undefined): SVGElement | nul
 }
 
 export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: string): void {
-  if (readWorkbenchFlag()) {
+  // SCI-31: whether or not the Notebook has read the flag yet, and first in
+  // the container even when the answer arrives after the drawing. A SMILES
+  // file has no drawing to edit; its note below offers "Open in Ketcher".
+  const smilesFile = /\.(smi|smiles)$/i.test(String(a.filename || ""));
+  if (!smilesFile) withWorkbenchFlag(container, () => {
     const bar = el("div", "wb-ketcher-bar");
     const open = el("button", "solid-btn small", translate("wb.ketcher.edit"));
     open.onclick = () => {
       callWindow("openKetcher", a);
     };
     bar.appendChild(open);
-    container.appendChild(bar);
-  }
+    container.insertBefore(bar, container.firstChild);
+  });
   fetchArtifactText(url, { signal: previewReadSignal(container) })
     .then((text) => {
       if (!container.isConnected) return;
@@ -544,9 +610,28 @@ export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: s
         wrap.appendChild(head);
         wrap.appendChild(drawing);
       } else {
-        wrap.appendChild(el("div", "renderer-note", translate("viewer.chem.fallback")));
+        // SCI-26: say what is missing in the chemist's terms ("No safe 2D
+        // coordinates were found" read as an error), and where SMILES can be
+        // seen as a structure: Ketcher lays it out, when the editor is on.
         const smiles = runtime ? runtime.smilesLines(text) : [];
-        if (/\.(smi|smiles)$/i.test(String(a.filename || "")) && smiles.length) {
+        const isSmiles = smilesFile && smiles.length > 0;
+        const note = el(
+          "div",
+          "renderer-note",
+          filesT(isSmiles ? "viewer.chem.smilesNoDrawing" : "viewer.chem.noCoordinates"),
+        );
+        wrap.appendChild(note);
+        if (isSmiles) {
+          withWorkbenchFlag(note, () => {
+            const open = el("button", "outline-btn small chem-open-ketcher", filesT("viewer.chem.openKetcher"));
+            open.onclick = () => {
+              callWindow("openKetcher", a);
+            };
+            note.appendChild(document.createTextNode(" "));
+            note.appendChild(open);
+          });
+        }
+        if (isSmiles) {
           const list = el("div", "smiles-list");
           smiles.forEach((item) => {
             const row = el("div", "smiles-row");
@@ -693,12 +778,12 @@ function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void 
       });
   };
   load();
-  if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "pdf", frame);
+  withWorkbenchFlag(content, () => callWindow("renderLocatorComments", content, a, "pdf", frame));
 }
 
 function renderHtmlPreviewGlue(content: HTMLElement, a: ArtifactRow): void {
   renderHtmlPreview(content, a);
-  if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "html");
+  withWorkbenchFlag(content, () => callWindow("renderLocatorComments", content, a, "html"));
 }
 
 function renderMolecule3dGlue(content: HTMLElement, a: ArtifactRow, url: string, nm: string): void {
@@ -723,6 +808,32 @@ export function rendererLabel(rendererId: string, serverLabel?: unknown): string
   const key = "viewer.kind." + rendererId;
   const label = filesT(key);
   return label !== key ? label : publicText(String(serverLabel || rendererId), 80);
+}
+
+/**
+ * VIEW-3: a pinned tab stayed on pca.png's first version while four newer
+ * ones arrived, and only a small "固定版本" said anything. Once the file has
+ * moved on, the viewer says so and offers the latest beside the pin. Painted
+ * into its own slot so a new version never re-reads the preview on screen.
+ */
+export function paintNewerVersion(slot: HTMLElement): void {
+  const artifactId = slot.dataset.artifactId || "";
+  const pinned: ArtifactRow = { id: artifactId, version_id: slot.dataset.versionId || "", _exactVersion: true };
+  slot.innerHTML = "";
+  if (!artifactId || !newerVersionThan(pinned)) return;
+  slot.appendChild(el("span", "renderer-newer-text", filesT("viewer.version.newer")));
+  const open = el("button", "outline-btn small", filesT("viewer.version.openLatest"));
+  open.setAttribute("type", "button");
+  open.onclick = () => {
+    void import("./ui").then((ui) => ui.applyArtifactDeepLink({ artifactId, versionId: null }));
+  };
+  slot.appendChild(open);
+}
+
+/** Repaint every pinned viewer's newer-version slot (a new version arrived). */
+export function paintNewerVersions(root: ParentNode | null = typeof document !== "undefined" ? document : null): void {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  root.querySelectorAll(".renderer-newer").forEach((slot) => paintNewerVersion(slot as HTMLElement));
 }
 
 export function renderArtifactDescriptor(
@@ -779,6 +890,13 @@ export function renderArtifactDescriptor(
       if (versionHistoryOpener) versionHistoryOpener(a);
     };
     meta.appendChild(version);
+    if (a._exactVersion) {
+      const newer = el("span", "renderer-newer");
+      newer.dataset.artifactId = String(a.id);
+      newer.dataset.versionId = String(target.version_id);
+      paintNewerVersion(newer);
+      meta.appendChild(newer);
+    }
   } else {
     // No version identity: the preview reads latest, and this is visible.
     meta.appendChild(el("span", "renderer-version", filesT("viewer.preview.latest")));

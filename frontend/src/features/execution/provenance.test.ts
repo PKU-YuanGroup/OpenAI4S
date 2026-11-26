@@ -5,6 +5,7 @@ import { currentId, _openGen } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { setLang } from "../../i18n/runtime";
 import { provMode, provSub } from "../../stores/ui";
+import { artifactMetadataCacheKey } from "../artifacts/cache";
 import { filesT } from "../artifacts/copy";
 import type { ArtifactRow } from "../artifacts/types";
 import { renderNotebook } from "../notebook/Notebook";
@@ -236,6 +237,62 @@ describe("recorded Cell links preserve identity", () => {
     let frame!: () => void; vi.stubGlobal("requestAnimationFrame", (callback: () => void) => { frame = callback; });
     try { links(review())[0]!.onclick!(); frame(); expect(selected.scrollIntoView).toHaveBeenCalledOnce(); expect(wrong.scrollIntoView).not.toHaveBeenCalled(); expect(details.open).toBe(true); }
     finally { vi.runOnlyPendingTimers(); vi.useRealTimers(); }
+  });
+});
+
+describe("a downloaded file's provenance (SCI-10)", () => {
+  const a = { id: "a", root_frame_id: "f" };
+  const download = {
+    tool: "web_download",
+    url: "https://files.rcsb.org/download/1CRN.pdb",
+    downloaded_at: "2026-11-19T08:00:00Z",
+    size_bytes: 47061,
+    sha256: "ab".repeat(32),
+    approval: { how: "approved", scope: "conversation", target: "files.rcsb.org" },
+  };
+  const lin = {
+    ...empty,
+    interactions: [{ kind: "save", at: "2026-11-19T08:00:01Z" }],
+    producer: { kind: "non_cell", frame_id: "f", frame_kind: "turn" },
+    download,
+  };
+
+  it("Review names the source URL, size, digest and approval instead of a non-Cell action", () => {
+    const root = new Node();
+    renderProvReview(root as unknown as HTMLElement, a, lin);
+    const shown = text(root);
+    expect(shown).toContain(provenanceT("downloadTitle"));
+    expect(shown).toContain(download.url);
+    expect(shown).toContain(download.sha256);
+    expect(shown).toContain("47,061 B");
+    expect(shown).toContain(provenanceT("approvalConversation", "files.rcsb.org"));
+    expect(shown).not.toContain("non-Cell");
+    expect(shown).not.toContain(provenanceT("noInputs"));
+    const link = walk(root).find((n) => n.className.includes("prov-url")) as unknown as { href?: string; rel?: string };
+    expect(link?.href).toBe(download.url);
+    expect(link?.rel).toBe("noopener noreferrer");
+  });
+
+  it("Code says it was saved by the download tool, not that code is missing", () => {
+    const art = { id: "a", root_frame_id: "f" };
+    lineage.value = lin; _lineageFor.value = artifactMetadataCacheKey(art);
+    open(art, "code");
+    const root = view();
+    expect(text(root)).toContain(provenanceT("downloadTitle"));
+    expect(text(root)).not.toContain(provenanceT("noCode"));
+  });
+
+  it("a download nobody was asked about says so", () => {
+    const root = new Node();
+    renderProvReview(root as unknown as HTMLElement, a, { ...lin, download: { ...download, approval: { how: "no_prompt" } } });
+    expect(text(root)).toContain(provenanceT("approvalNoPrompt"));
+  });
+
+  it("a non-http URL is shown as text, never as a link", () => {
+    const root = new Node();
+    renderProvReview(root as unknown as HTMLElement, a, { ...lin, download: { ...download, url: "javascript:alert(1)" } });
+    expect(walk(root).some((n) => n.className.includes("prov-url"))).toBe(false);
+    expect(text(root)).toContain("javascript:alert(1)");
   });
 });
 

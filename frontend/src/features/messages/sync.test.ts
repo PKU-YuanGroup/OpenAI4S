@@ -9,7 +9,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLang } from "../../i18n/runtime";
-import { currentId } from "../../stores/session";
+import { artifacts } from "../../stores/artifacts";
+import { _openGen, currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { _replayGap, _seqSeen, _streamEpoch, permCards, running, stream } from "../../stores/stream";
 import { installSend } from "../send";
@@ -23,6 +24,7 @@ import { onEvent, resetWsHandlers } from "../ws/registry";
 import { registerMessageHandlers } from "./handlers";
 import {
   interleaveHistory,
+  lastStoredTurnKey,
   prependHistory,
   renderMissingSession,
   renderStored,
@@ -30,14 +32,19 @@ import {
   type HistoryItem,
 } from "./list";
 import { keepStripsLast } from "./dom";
+import { PROGRESS_COPY } from "./progress";
 import { cancelFrame } from "./raf";
 import { flushScrollNow, unbindMessageScroll, updateJumpPill } from "./scroll";
 import type { LiveStream } from "./stream";
 import { turnTextKey } from "./turnGroup";
-import { bindTurnStatus, notePassingHint, resetTurnStatus } from "./turnStatus";
+import { bindTurnStatus, notePassingHint, noteResumingHint, resetTurnStatus } from "./turnStatus";
+import { reconcileFinishedTurn } from "./open";
+import { settleLiveCellCard } from "./cardState";
+import { renderStoredCell } from "./cellCard";
 import { turnDone } from "../send/turn";
 import { t } from "../../i18n/runtime";
 import { _liveCell } from "../../stores/notebook";
+import { executionQueue } from "../../stores/timeline";
 import { _messagesFollow } from "../../stores/ui";
 
 // --------------------------------------------------------------------------
@@ -433,6 +440,93 @@ describe("the user's message reaches every tab", () => {
     expect(own.classList.contains("queued")).toBe(false);
   });
 
+  it("offers the branch point on the live bubble, as a reload does (SYNC-5)", () => {
+    const requestId = newRequestId();
+    const own = bubble("Fit it");
+    own.dataset.requestId = requestId;
+    messages().appendChild(own);
+    const event = { type: "user_message", root_frame_id: "f-1", content: "Fit it", fork_checkpoint_id: "cp-1" };
+    onEvent({ ...event, message_id: "m-5", request_id: requestId, seq: 3 });
+    // Another tab draws the question with it as well.
+    onEvent({ ...event, message_id: "m-6", request_id: "web-other", fork_checkpoint_id: "cp-2", seq: 4 });
+    const forks = Array.from(messages().querySelectorAll(".msg.user .msg-fork-btn")) as HTMLElement[];
+    expect(forks.map((button) => button.dataset.forkMessageId)).toEqual(["m-5", "m-6"]);
+    // The same bubble, as a reload renders it.
+    const stored = renderStored({ role: "user", content: "Fit it", message_id: "m-5", fork_checkpoint_id: "cp-1" }) as HTMLElement;
+    expect(Array.from(own.children).map((node) => (node as HTMLElement).className)).toEqual(
+      Array.from(stored.children).map((node) => (node as HTMLElement).className),
+    );
+  });
+
+  it("shows the files a question was sent with, in another tab and after a reload (M-10)", () => {
+    const files = [{ artifact_id: "a-1", name: "cohort.csv" }];
+    onEvent({
+      type: "user_message",
+      root_frame_id: "f-1",
+      message_id: "m-7",
+      content: "Summarise it",
+      request_id: "web-other-tab",
+      seq: 2,
+      attachments: files,
+    });
+    const chips = (row: HTMLElement) =>
+      (Array.from(row.querySelectorAll(".msg-refs .msg-ref-chip.sent")) as HTMLElement[]).map((chip) => [
+        chip.dataset.artifactId,
+        chip.textContent,
+      ]);
+    const live = messages().querySelector(".msg.user") as HTMLElement;
+    expect(chips(live)).toEqual([["a-1", "cohort.csv"]]);
+    const stored = renderStored({ role: "user", content: "Summarise it", message_id: "m-8", attachments: files }) as HTMLElement;
+    expect(chips(stored)).toEqual(chips(live));
+    // Drawn before the file list loads, a chip still opens the file it names.
+    const openViewer = vi.fn();
+    vi.stubGlobal("openViewer", openViewer);
+    const cohort = { artifact_id: "a-1", filename: "cohort.csv" };
+    artifacts.value = [cohort];
+    (stored.querySelector(".msg-ref-chip.sent") as HTMLElement).onclick!(new Event("click") as MouseEvent);
+    expect(openViewer).toHaveBeenCalledWith(cohort);
+    // A question sent without files has none.
+    const plain = renderStored({ role: "user", content: "no files", message_id: "m-9" }) as HTMLElement;
+    expect(plain.querySelector(".msg-ref-chip.sent")).toBeNull();
+  });
+
+  it("says which saved memories a turn was given, live and after a reload (M-81)", () => {
+    const memories = [
+      { memory_id: "mem-1", block: "preference", preview: "Label figures in English." },
+      { memory_id: "mem-2", block: "fact", preview: "Plates are in data/plates." },
+    ];
+    const requestId = newRequestId();
+    const own = bubble("Plot it");
+    own.dataset.requestId = requestId;
+    messages().appendChild(own);
+    const event = { type: "user_message", root_frame_id: "f-1", content: "Plot it", fork_checkpoint_id: "cp-1", memories };
+    onEvent({ ...event, message_id: "m-10", request_id: requestId, seq: 3 });
+    onEvent({ ...event, message_id: "m-11", request_id: "web-other-tab", seq: 4 });
+    const marks = Array.from(messages().querySelectorAll(".msg.user .msg-memories")) as HTMLElement[];
+    expect(marks.map((mark) => mark.querySelector(".msg-memories-toggle")?.textContent)).toEqual([
+      "2 saved memories applied",
+      "2 saved memories applied",
+    ]);
+    // The list opens on click and names each memory's type.
+    const toggle = marks[0]!.querySelector(".msg-memories-toggle") as HTMLButtonElement;
+    const list = marks[0]!.querySelector(".msg-memories-list") as HTMLElement;
+    expect(list.classList.contains("hidden")).toBe(true);
+    toggle.onclick!(new Event("click") as MouseEvent);
+    expect(list.classList.contains("hidden")).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(Array.from(list.querySelectorAll("li")).map((item) => item.textContent)).toEqual([
+      "PreferenceLabel figures in English.",
+      "FactPlates are in data/plates.",
+    ]);
+    // A reload draws the same row; a turn that carried none shows nothing.
+    const stored = renderStored({ role: "user", content: "Plot it", message_id: "m-10", fork_checkpoint_id: "cp-1", memories }) as HTMLElement;
+    expect(Array.from(own.children).map((node) => (node as HTMLElement).className)).toEqual(
+      Array.from(stored.children).map((node) => (node as HTMLElement).className),
+    );
+    const plain = renderStored({ role: "user", content: "no memory", message_id: "m-12" }) as HTMLElement;
+    expect(plain.querySelector(".msg-memories")).toBeNull();
+  });
+
   it("keeps the row a reload already rendered from REST", () => {
     renderStored({ role: "user", content: "Stored question", message_id: "m-3" });
     onEvent({
@@ -449,6 +543,36 @@ describe("the user's message reaches every tab", () => {
   it("ignores another session's question", () => {
     onEvent({ type: "user_message", root_frame_id: "f-2", message_id: "m-9", content: "x", seq: 1 });
     expect(userBubbles()).toEqual([]);
+  });
+
+  it("puts the whole message in place of a bubble drawn from the queue's preview (M-21)", () => {
+    renderStored({ role: "user", content: "First question", message_id: "m-1" });
+    const preview = bubble("Plot the survival curve by EGFR gro…", "msg user queued");
+    preview.dataset.executionId = "exec-q";
+    preview.dataset.queuePreview = "1";
+    messages().appendChild(preview);
+    const strip = document.createElement("div");
+    strip.className = "generated";
+    messages().appendChild(strip);
+    onEvent({
+      type: "user_message",
+      root_frame_id: "f-1",
+      message_id: "m-2",
+      content: "Plot the survival curve by EGFR group, split at the median",
+      request_id: "web-other-tab",
+      execution_id: "exec-q",
+      seq: 4,
+    });
+    expect(userBubbles()).toEqual([
+      "First question",
+      "Plot the survival curve by EGFR group, split at the median",
+    ]);
+    // Where the preview was, not after the file strip; still that execution's bubble.
+    const rows = Array.from(messages().children) as HTMLElement[];
+    expect(rows[1]?.dataset.messageId).toBe("m-2");
+    expect(rows[1]?.dataset.executionId).toBe("exec-q");
+    expect(rows[1]?.classList.contains("queued")).toBe(false);
+    expect(rows[2]).toBe(strip);
   });
 });
 
@@ -949,6 +1073,222 @@ describe("the session's file strips", () => {
 });
 
 // --------------------------------------------------------------------------
+// M-69: a turn's code cells are on screen live and after a reload
+// --------------------------------------------------------------------------
+
+/** The turn's cards and prose, a card by its sorted classes and its head's text. */
+function turnCards(): string[] {
+  const wrap = messages().querySelector(":scope > .msg.assistant") as HTMLElement | null;
+  if (!wrap) return [];
+  return Array.from(wrap.children).map((node) => {
+    const el = node as HTMLElement;
+    const classes = el.className.split(/\s+/).filter(Boolean).sort().join(".");
+    const head = el.querySelector(".a-head") || el.querySelector(".s-head");
+    if (head) return classes + " :: " + (head.textContent || "");
+    if (el.classList.contains("md")) return "md :: " + (el.textContent || "").trim();
+    return classes;
+  });
+}
+
+function toolChunk(text: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { type: "text_chunk", root_frame_id: "f-1", block_type: "tool", chunk: text, ...extra };
+}
+
+/** One Cell as the live stream sends it (`cell_run._start_stream` + `_emit_error`). */
+function streamCell(id: string, index: number, title: string, code: string, output: string, error = ""): void {
+  onEvent(toolChunk("⚙" + title + "\n", { cell_index: index, producing_cell_id: id }));
+  onEvent(toolChunk(code + "\n----- output -----\n", { producing_cell_id: id }));
+  if (output) onEvent(toolChunk(output, { producing_cell_id: id }));
+  if (error) onEvent(toolChunk("\n" + error, { producing_cell_id: id }));
+}
+
+describe("a turn's code cells, live and reopened", () => {
+  const CODE_1 = "# Load the plate\nfor i in range(3):\n    print('row', i)";
+  const CODE_2 = "# ===== Fit the model =====\nraise ValueError('bad shape')";
+  const TRACE = "Traceback (most recent call last):\nValueError: bad shape";
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({}, 404)));
+  });
+
+  it("shows the same cards, outcomes and code after a reload", async () => {
+    renderStored({ role: "user", content: "Fit it", message_id: "m-1" });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Loading the plate.\n\n"));
+    streamCell("c-1", 1, "Load the plate", CODE_1, "row 0\nrow 1\nrow 2\n");
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "artifact", title: "Load the plate", status: "running" });
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-1", status: "done", summary: "2 artifacts", output: { artifacts: [] } });
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-1", cell_index: 1, status: "ok" });
+    onEvent(chunk("The plate loaded.\n\n"));
+    streamCell("c-2", 2, "Fit the model", CODE_2, "fitting\n", TRACE);
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-2", cell_index: 2, status: "error", error: TRACE });
+    onEvent(chunk("This cell failed.\n"));
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    const live = turnCards();
+    const liveBodies = Array.from(messages().querySelectorAll(".activity pre")).map((pre) => pre.textContent);
+    expect(live).toEqual([
+      "md :: Loading the plate.",
+      "activity.has-steps.ok :: Load the plate3 output lines",
+      "step.step-artifact :: Load the plate2 artifacts",
+      "md :: The plate loaded.",
+      "activity.failed :: Fit the modelFailed · 3 output lines",
+      "md :: This cell failed.",
+      "msg-actions",
+    ]);
+
+    // Reopened: the stored rows, the step and the two Cells' execution-log entries.
+    messages().replaceChildren();
+    await paintHistory(interleaveHistory(
+      [
+        { role: "user", content: "Fit it", message_id: "m-1", created_at: at(0) },
+        { role: "assistant", content: "Loading the plate.", message_id: "m-2", created_at: at(1) },
+        { role: "assistant", content: "The plate loaded.", message_id: "m-3", created_at: at(4) },
+        { role: "assistant", content: "This cell failed.", message_id: "m-4", created_at: at(7) },
+      ],
+      [{ step_id: "s-1", kind: "artifact", title: "Load the plate", status: "done", summary: "2 artifacts", created_at: Date.parse(at(3)), seq: 0 }],
+      [],
+      [
+        {
+          producing_cell_id: "c-1", cell_index: 1, origin: "agent", title: "Load the plate", source: CODE_1,
+          stdout: "row 0\nrow 1\nrow 2\n", stderr: "", error: "", status: "ok",
+          started_at: Date.parse(at(2)), finished_at: Date.parse(at(2)) + 500,
+        },
+        {
+          producing_cell_id: "c-2", cell_index: 2, origin: "agent", title: "Fit the model", source: CODE_2,
+          stdout: "fitting\n", stderr: "", error: TRACE, status: "error",
+          started_at: Date.parse(at(5)), finished_at: Date.parse(at(5)) + 300,
+        },
+      ],
+    ));
+    expect(turnCards()).toEqual(live);
+    // The code and output are those the live card streamed, once it is opened.
+    const heads = Array.from(messages().querySelectorAll(".activity .a-head")) as Array<HTMLElement & { onclick: () => void }>;
+    heads.forEach((head) => head.onclick());
+    expect(Array.from(messages().querySelectorAll(".activity pre")).map((pre) => pre.textContent)).toEqual(liveBodies);
+  });
+
+  it("names a generated title as the ended card did, with the time the cell ran", async () => {
+    await paintHistory(interleaveHistory(
+      [{ role: "user", content: "Go", message_id: "m-1", created_at: at(0) }],
+      [],
+      [],
+      [
+        {
+          producing_cell_id: "c-3", cell_index: 3, origin: "agent", title: "Running analysis · cell 3",
+          source: "print('ok')", stdout: "ok\n", status: "ok", started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 65_000,
+        },
+        // A Notebook REPL cell never had a card in the conversation.
+        { producing_cell_id: "c-4", cell_index: 4, origin: "notebook", source: "x", status: "ok", started_at: Date.parse(at(2)) },
+      ],
+    ));
+    expect(turnCards()).toEqual(["activity.ok :: Analysis · cell 31:05"]);
+  });
+
+  it("shows the example session's cells as cards on reopen, as it streamed them (SCI-03)", async () => {
+    await paintHistory(interleaveHistory(
+      [{ role: "user", content: "Analyse the protein family", message_id: "m-1", created_at: at(0) }],
+      [],
+      [],
+      [
+        {
+          producing_cell_id: "c-e1", cell_index: 1, origin: "example", title: "Fetch the family records",
+          source: "# Fetch the family records\nprint('ok')", stdout: "ok\n", status: "ok",
+          started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 400,
+        },
+      ],
+    ));
+    expect(turnCards()).toEqual(["activity.ok :: Fetch the family records"]);
+  });
+
+  it("streams a reopened running turn's replay into the cards the reload drew", async () => {
+    await paintHistory(
+      interleaveHistory(
+        [{ role: "user", content: "Fit it", message_id: "m-1", created_at: at(0) }],
+        [],
+        [],
+        [{
+          producing_cell_id: "c-1", cell_index: 1, origin: "agent", title: "Load the plate", source: CODE_1,
+          stdout: "row 0\nrow 1\nrow 2\n", status: "ok", started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 100,
+        }],
+      ),
+      true,
+    );
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("Loading the plate.\n\n"));
+    streamCell("c-1", 1, "Load the plate", CODE_1, "row 0\nrow 1\nrow 2\n");
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-1", cell_index: 1, status: "ok" });
+    // One card, in the live turn, after the prose the replay put before it.
+    expect(messages().querySelectorAll(".activity")).toHaveLength(1);
+    expect(transcriptShape()).toEqual(["msg user", "turn:md,activity ok,md"]);
+    // The title is on the head, not echoed as the body's first line (CHAT-6).
+    expect(messages().querySelector(".activity pre")?.textContent).toBe(
+      CODE_1 + "\n----- output -----\nrow 0\nrow 1\nrow 2\n",
+    );
+  });
+
+  it("keeps a recorded Cell's duration when the replay streams into its reopened card (NB-4)", async () => {
+    const started = Date.parse(at(1));
+    await paintHistory(
+      interleaveHistory(
+        [{ role: "user", content: "Fit it", message_id: "m-1", created_at: at(0) }],
+        [],
+        [],
+        [{
+          producing_cell_id: "c-2", cell_index: 2, origin: "agent", title: "Running analysis · cell 2", source: CODE_1,
+          stdout: "row 0\n", status: "ok", started_at: started, finished_at: started + 3000,
+        }],
+      ),
+      true,
+    );
+    const time = () => messages().querySelector(".activity .a-time")?.textContent;
+    expect(time()).toBe("0:03");
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    streamCell("c-2", 2, "Running analysis · cell 2", CODE_1, "row 0\n");
+    // While the replay runs, the card says the recorded time, not the time since the Cell began.
+    expect(time()).toBe("0:03");
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-2", cell_index: 2, status: "ok" });
+    expect(messages().querySelectorAll(".activity")).toHaveLength(1);
+    expect(time()).toBe("0:03");
+  });
+
+  it("says in the UI language where to choose another R when the R kernel refused, live and reopened (M-58)", async () => {
+    await setLang("zh");
+    const NO_R =
+      "R kernel unavailable: no R interpreter available: build the prebuilt 'r' environment (openai4s setup), " +
+      "install R so Rscript is on PATH, or choose an R under Runtime environment (Python / R) in the session options";
+    const help = (): string[] =>
+      Array.from(messages().querySelectorAll(".activity .cell-help")).map((node) => node.textContent || "");
+    renderStored({ role: "user", content: "用 R 画生存曲线", message_id: "m-1" });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    streamCell("c-r", 1, "KM in R", "library(survival)", "", NO_R);
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-r", cell_index: 1, status: "error", error: NO_R });
+    const live = help();
+    expect(live).toHaveLength(1);
+    expect(live[0]).toContain("本会话没有可用的 R");
+    expect(live[0]).toContain("会话选项 → 运行环境（Python / R）");
+    // Settling again does not add a second line.
+    settleLiveCellCard({ type: "notebook_cell_finished", producing_cell_id: "c-r", cell_index: 1, status: "error", error: NO_R });
+    expect(help()).toEqual(live);
+    turnDone("failed", { type: "frame_update", status: "failed" });
+
+    messages().replaceChildren();
+    await paintHistory(interleaveHistory(
+      [{ role: "user", content: "用 R 画生存曲线", message_id: "m-1", created_at: at(0) }],
+      [],
+      [],
+      [{
+        producing_cell_id: "c-r", cell_index: 1, origin: "agent", title: "KM in R", source: "library(survival)",
+        stdout: "", stderr: "", error: NO_R, status: "error", started_at: Date.parse(at(1)), finished_at: Date.parse(at(1)) + 50,
+      }],
+    ));
+    expect(help()).toEqual(live);
+    // An ordinary failure gets no such line.
+    expect(help().some((line) => line.includes("Traceback"))).toBe(false);
+    await setLang("en");
+  });
+});
+
+// --------------------------------------------------------------------------
 // TURN-4: the conversation says what the running turn is doing
 // --------------------------------------------------------------------------
 
@@ -990,7 +1330,7 @@ describe("the running turn's status row", () => {
     renderStored({ role: "user", content: "Fold change?", message_id: "m-1" });
     running.value = true;
     // Before the turn's first event: under the question.
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
     expect(messages().lastElementChild).toBe(row());
     expect(row()?.getAttribute("aria-live")).toBe("polite");
 
@@ -1001,20 +1341,22 @@ describe("the running turn's status row", () => {
     _liveCell.value = { draft: true, status: "drafting", source: "import numpy as np\nx = 1\nprint(x)" };
     expect(label()).toBe("Writing a cell");
     expect(detail()).toContain("3 lines so far");
+    _liveCell.value = { draft: true, status: "drafting", source: "import numpy as np" };
+    expect(detail()).toContain("1 line so far");
     _liveCell.value = { status: "running", source: "print(1)" };
     expect(label()).toBe("Running the cell");
     _liveCell.value = null;
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
 
     onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-1", kind: "fetch", title: "Fetching", status: "running" });
     expect(label()).toBe("Waiting for the tool");
     onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-1", status: "done" });
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
 
     onEvent({ type: "await_permission", root_frame_id: "f-1", frame_id: "f-1", decision_id: "perm-s", tool: "bash", title: "Run" });
     expect(label()).toBe("Waiting for your approval");
     onEvent({ type: "permission_resolved", root_frame_id: "f-1", decision_id: "perm-s", allow: true, scope: "once" });
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
     // Still the row after the live turn, whatever the turn appended.
     expect(wrap.nextSibling).toBe(row());
 
@@ -1030,13 +1372,67 @@ describe("the running turn's status row", () => {
     vi.advanceTimersByTime(45_000);
     expect(detail()).toBe("45 s");
     expect(row()?.querySelector(".ts-detail")?.getAttribute("aria-hidden")).toBe("true");
-    expect(label()).toBe("Thinking");
+    expect(label()).toBe("Waiting for the model");
     // A new phase starts its own count.
     _liveCell.value = { status: "running", source: "x" };
     vi.advanceTimersByTime(3_000);
     expect(detail()).toBe("3 s");
     vi.advanceTimersByTime(62_000);
     expect(detail()).toBe("1 min 5 s");
+  });
+
+  it("tells waiting for the model from the model writing, and says a retry (CHAT-7)", () => {
+    running.value = true;
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    expect(label()).toBe("Waiting for the model");
+    onEvent(chunk("Loading the plate"));
+    expect(label()).toBe("The model is writing");
+    // A cell ran: the next model call waits for its first words again.
+    _liveCell.value = { status: "running", source: "x = 1" };
+    _liveCell.value = null;
+    expect(label()).toBe("Waiting for the model");
+    // The server streams a notice before it sends a request again.
+    onEvent(chunk("\n\n_The model service is busy; retrying (attempt 2)…_\n\n"));
+    expect(label()).toBe("Retrying (attempt 2)");
+    onEvent(chunk("\n\n_模型长时间没有返回数据，正在重新请求（第 3 次）…_\n\n"));
+    expect(label()).toBe("Retrying (attempt 3)");
+    onEvent(chunk("Back to the fit."));
+    expect(label()).toBe("The model is writing");
+  });
+
+  it("says its words again in the language just picked, without waiting for its next tick (I18N-1)", async () => {
+    running.value = true;
+    expect(label()).toBe("Waiting for the model");
+    await setLang("zh");
+    expect(label()).toBe("等待模型响应");
+    expect(detail()).toBe("已 0 秒");
+    await setLang("en");
+    expect(label()).toBe("Waiting for the model");
+  });
+
+  it("counts the model wait from the turn's server start and the last recorded cell, not the reload (CHAT-7)", () => {
+    const now = Date.now();
+    // A turn the server started two minutes ago, reopened now with one cell that ended 30 s ago.
+    executionQueue.value = { owner: { owner: { kind: "agent", id: "exec-1" }, started_at: (now - 120_000) / 1000 } };
+    running.value = true;
+    expect(label()).toBe("Waiting for the model");
+    expect(detail()).toBe("2 min 0 s");
+    // The reopen draws the turn's recorded cell (`renderStoredCell`, as the history paint does).
+    renderStoredCell({
+      producing_cell_id: "c-1", cell_index: 1, origin: "agent", title: "Load", source: "x = 1",
+      stdout: "", status: "ok", started_at: now - 33_000, finished_at: now - 30_000,
+    });
+    vi.advanceTimersByTime(1_000);
+    expect(detail()).toBe("31 s");
+    // A recorded tool step after it; its replayed events do not move the start to the replay.
+    renderStoredStep({ step_id: "s-r", kind: "fetch", title: "Fetching", status: "done", created_at: now - 10_000 });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent({ type: "step", root_frame_id: "f-1", step_id: "s-r", kind: "fetch", title: "Fetching", status: "running" });
+    onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-r", status: "done" });
+    vi.advanceTimersByTime(1_000);
+    expect(label()).toBe("Waiting for the model");
+    expect(detail()).toBe("12 s");
+    executionQueue.value = null;
   });
 
   it("replaces a status line that described one moment once the turn moves on", () => {
@@ -1063,6 +1459,34 @@ describe("the running turn's status row", () => {
     onEvent({ type: "step_update", root_frame_id: "f-1", step_id: "s-9", status: "done" });
     vi.advanceTimersByTime(20_000);
     expect(hintLine()).toBe("Stopping…");
+  });
+
+  it("the resume line goes with the reconnected stream's first event (SYNC-3)", () => {
+    const say = (text: string): void => (globalThis as unknown as { hint: (t: string) => void }).hint(text);
+    running.value = true;
+    say(t("conv.resuming.hint"));
+    noteResumingHint();
+    // Another session's event says nothing about this one's stream.
+    handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-2", seq: 3 }));
+    expect(hintLine()).toBe(t("conv.resuming.hint"));
+    // The first event of this one: the stream is back, though no phase changed.
+    handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-1", seq: 4 }));
+    expect(hintLine()).toBe(t("toast.running"));
+    // Only that line: a later event leaves whatever came after it alone.
+    say("Stopping…");
+    handleIncomingMessage(JSON.stringify({ type: "probe_event", root_frame_id: "f-1", seq: 5 }));
+    expect(hintLine()).toBe("Stopping…");
+  });
+
+  it("a turn that starts says so in every tab, whatever the line said before (SYNC-7)", () => {
+    const say = (text: string): void => (globalThis as unknown as { hint: (t: string) => void }).hint(text);
+    // The tab that pressed Stop, after the stopped turn ended; a watching tab had "".
+    say("Stopping the current turn… then the queued message runs");
+    running.value = false;
+    onEvent({ type: "frame_update", frame_id: "f-1", root_frame_id: "f-1", status: "processing", execution_id: "exec-q" });
+    expect(running.value).toBe(true);
+    // (The real status line draws its spinner before the words.)
+    expect(hintLine().trim()).toBe(t("toast.running"));
   });
 });
 
@@ -1121,5 +1545,161 @@ describe("a missing session", () => {
   it("offers only Home when the link's project is not one either", () => {
     renderMissingSession(messages(), { project: null, home: vi.fn() });
     expect(Array.from(messages().querySelectorAll("button")).map((b) => b.textContent)).toEqual(["Back to Home"]);
+  });
+
+  it("in team mode names the likely reason: no access to a teammate's session (TEAM-26)", async () => {
+    const { teamUser } = await import("../chrome/team-identity");
+    const sub = () => (messages().querySelector(".missing-session .es-sub") as HTMLElement).textContent || "";
+    renderMissingSession(messages(), { project: null, home: vi.fn() });
+    expect(sub()).toContain("does not exist or has been deleted");
+    messages().innerHTML = "";
+    teamUser.value = { username: "bob", role: "member" };
+    try {
+      renderMissingSession(messages(), { project: null, home: vi.fn() });
+      expect(sub()).toContain("you do not have access");
+      expect(sub()).toContain("visible to the project");
+    } finally {
+      teamUser.value = null;
+    }
+  });
+});
+
+// --------------------------------------------------------------------------
+// SYNC-13: a turn reads at its end as a reload shows it
+// --------------------------------------------------------------------------
+
+describe("a finished turn and its stored rows", () => {
+  it("keys the newest stored turn as a reload assembles it", () => {
+    const row = (role: string, content: string, extra: Record<string, unknown> = {}) => ({ role, content, ...extra });
+    expect(lastStoredTurnKey([row("user", "Fit it"), row("assistant", "Loading."), row("assistant", "Done:  fitted.")])).toBe(
+      "Loading. Done: fitted.",
+    );
+    // A stopped marker closes its turn; it is not prose.
+    expect(
+      lastStoredTurnKey([
+        row("user", "Fit it"),
+        row("assistant", "Loading."),
+        row("assistant", "Stopped by user", { cancelled: { reason: "user" } }),
+      ]),
+    ).toBe("Loading.");
+    // The page does not reach the turn's question: unknown, not "different".
+    expect(lastStoredTurnKey([row("assistant", "Loading.")])).toBeNull();
+  });
+
+  it("re-reads the transcript only when what streamed is not what was stored", async () => {
+    const urls: string[] = [];
+    const stored = {
+      messages: [
+        { role: "user", content: "Fit it", seq: 1, message_id: "m-1" },
+        { role: "assistant", content: "Done: fitted.", seq: 2, message_id: "m-2" },
+      ],
+      has_earlier: false,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(String(url));
+        return json(String(url).includes("/messages") ? stored : String(url).includes("/status") ? { running: false } : []);
+      }),
+    );
+    const gen = _openGen.value;
+    // The same prose: one read of the newest page, no repaint.
+    expect(await reconcileFinishedTurn("f-1", gen, "Done: fitted.")).toBe(false);
+    expect(urls.filter((url) => !url.includes("/messages"))).toEqual([]);
+    // A retry notice streamed live but never stored: the transcript is re-read.
+    urls.length = 0;
+    expect(await reconcileFinishedTurn("f-1", gen, "The model service is busy; retrying (attempt 2)… Done: fitted.")).toBe(true);
+    expect(urls.some((url) => !url.includes("/messages"))).toBe(true);
+    // Another session's turn, or a turn that started meanwhile, is left alone.
+    expect(await reconcileFinishedTurn("f-2", gen, "x")).toBe(false);
+    running.value = true;
+    expect(await reconcileFinishedTurn("f-1", gen, "x")).toBe(false);
+  });
+
+  it("is asked for at a turn's end with what streamed", async () => {
+    const asked: unknown[][] = [];
+    vi.stubGlobal("reconcileFinishedTurn", (...args: unknown[]) => asked.push(args));
+    renderStored({ role: "user", content: "Fit it", message_id: "m-1" });
+    running.value = true;
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent({ type: "text_chunk", root_frame_id: "f-1", block_type: "text", chunk: "Done:\n\n fitted." });
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    await Promise.resolve();
+    expect(asked).toEqual([["f-1", _openGen.value, "Done: fitted."]]);
+  });
+});
+
+// --------------------------------------------------------------------------
+// Decision 30: the server's progress lines in the UI language
+// --------------------------------------------------------------------------
+
+describe("the server's progress lines follow the UI language, the model's prose does not", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({}, 404)));
+  });
+
+  const turnMd = (): string =>
+    Array.from(messages().querySelectorAll(":scope > .msg.assistant .md"))
+      .map((node) => node.textContent || "")
+      .join("\n");
+
+  it("says a live English narration in a Chinese UI, and keeps what was sent for Copy", async () => {
+    await setLang("zh");
+    renderStored({ role: "user", content: "Fit the growth curves", message_id: "m-1" });
+    onEvent({ type: "text_reset", root_frame_id: "f-1" });
+    onEvent(chunk("The plate has 96 wells.\n\n"));
+    onEvent(chunk(PROGRESS_COPY.en["cell.r"] + "\n\n"));
+    onEvent(chunk(PROGRESS_COPY.en["finished.output"] + "\n```text\nslope 2.1\n```\n\n"));
+    turnDone("completed", { type: "frame_update", status: "completed" });
+    const shown = turnMd();
+    expect(shown).toContain(PROGRESS_COPY.zh["cell.r"]);
+    expect(shown).toContain(PROGRESS_COPY.zh["finished.output"]);
+    expect(shown).toContain("slope 2.1");
+    expect(shown).not.toContain(PROGRESS_COPY.en["cell.r"]);
+    // The model's own sentence is never translated.
+    expect(shown).toContain("The plate has 96 wells.");
+    // Copy and the rating read what the turn sent, as its stored rows say it.
+    expect(turnTexts()[0]).toContain(turnTextKey(PROGRESS_COPY.en["cell.r"]));
+  });
+
+  it("says a stored Chinese row in an English UI, with its output block verbatim", async () => {
+    const rows = [
+      { role: "user", content: "拟合生长曲线", message_id: "m-1", created_at: at(0) },
+      { role: "assistant", content: "先看一下孔板。", message_id: "m-2", created_at: at(1) },
+      { role: "assistant", content: PROGRESS_COPY.zh["cell.python"], message_id: "m-3", created_at: at(2) },
+      {
+        role: "assistant",
+        content: [PROGRESS_COPY.zh["finished.head"], "```text\n斜率 2.1\n```", "（共 9 行，完整输出在 Notebook。）"].join("\n"),
+        message_id: "m-4",
+        created_at: at(3),
+      },
+      { role: "assistant", content: "更新了计划（3 步，完成 1 步）。", message_id: "m-5", created_at: at(4) },
+    ];
+    await setLang("en");
+    await paintHistory(interleaveHistory(rows, [], []));
+    const shown = turnMd();
+    expect(shown).toContain(PROGRESS_COPY.en["cell.python"]);
+    expect(shown).toContain(PROGRESS_COPY.en["finished.head"]);
+    expect(shown).toContain("斜率 2.1");
+    expect(shown).toContain("(9 lines in total; the full output is in the Notebook.)");
+    expect(shown).toContain("Updated the plan (3 steps, 1 done).");
+    expect(shown).toContain("先看一下孔板。");
+    expect(shown).not.toContain(PROGRESS_COPY.zh["cell.python"]);
+    // The rating key is the stored text, whatever the language on screen.
+    const key = turnTexts()[0];
+
+    // The same rows after a switch to Chinese (what the transcript's language
+    // re-read paints): Chinese again, the same key.
+    messages().replaceChildren();
+    await setLang("zh");
+    await paintHistory(interleaveHistory(rows, [], []));
+    expect(turnMd()).toContain(PROGRESS_COPY.zh["cell.python"]);
+    expect(turnTexts()[0]).toBe(key);
+  });
+
+  it("says a single stored row in the UI language too", async () => {
+    await setLang("en");
+    const row = renderStored({ role: "assistant", content: PROGRESS_COPY.zh.plan, message_id: "m-9" }) as HTMLElement;
+    expect(row.querySelector(".md")?.textContent || "").toContain(PROGRESS_COPY.en.plan);
   });
 });

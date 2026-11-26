@@ -1,6 +1,6 @@
 """Change three frontmatter fields without touching the rest.
 
-Editing a skill in Web Customize rebuilt its frontmatter from scratch:
+Editing a skill in Web Settings rebuilt its frontmatter from scratch:
 
     ---
     name: <name>
@@ -39,7 +39,7 @@ from __future__ import annotations
 #: and breaks silently.
 OWNED_FIELDS = ("name", "description", "origin")
 
-#: Web Customize import always stamps this origin. The author's other
+#: Web Settings import always stamps this origin. The author's other
 #: frontmatter, including keys this code has never heard of, is the seed.
 IMPORT_ORIGIN = "user"
 

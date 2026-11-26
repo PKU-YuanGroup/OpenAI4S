@@ -209,7 +209,8 @@ def test_scoped_interrupt_requires_exact_session_ticket_and_owner():
 def test_exception_safe_context_releases_owner_and_admits_next_ticket():
     coordinator = SessionExecutionCoordinator(id_factory=_ids())
     first = coordinator.submit("s", owner="agent", owner_id="one")
-    second = coordinator.submit("s", owner="agent", owner_id="two")
+    # Not another agent turn: those are held after a failed one (M-31, below).
+    second = coordinator.submit("s", owner="user_repl", owner_id="two")
 
     error = ValueError("science failed")
     assert coordinator.fail(first, error)
@@ -460,3 +461,89 @@ def test_the_pending_queue_has_a_depth_cap():
     )
     coordinator.submit("s-1", owner="agent", owner_id="after")
     coordinator.complete(admitted)
+
+
+# --------------------------------------------------------------------------
+# M-31: a failed agent turn holds the agent turns queued behind it
+# --------------------------------------------------------------------------
+
+
+def _queue(coordinator, session, kind, owner_id):
+    return coordinator.submit(session, owner=kind, owner_id=owner_id)
+
+
+def test_a_failed_agent_turn_holds_the_agent_turns_queued_behind_it():
+    """A follow-up typed during a turn usually builds on that turn's result.
+
+    It started on its own the moment the turn failed; now it waits for the
+    user. Anything else behind it -- a Notebook cell -- is not made to wait.
+    """
+    events: list[dict] = []
+    coordinator = SessionExecutionCoordinator(
+        id_factory=_ids(), event_sink=events.append
+    )
+    turn = _queue(coordinator, "s", "agent", "job-1")
+    follow_up = _queue(coordinator, "s", "agent", "job-2")
+    cell = _queue(coordinator, "s", "user_repl", "cell-1")
+    assert turn.state is TicketState.RUNNING
+
+    coordinator.fail(turn, "the model call failed")
+
+    assert follow_up.state is TicketState.QUEUED
+    assert cell.state is TicketState.RUNNING
+    queue = coordinator.snapshot("s")["queue"]
+    assert [(item["execution_id"], item["held"]) for item in queue] == [
+        (follow_up.execution_id, True)
+    ]
+    assert coordinator.held_ids("s") == {follow_up.execution_id}
+    # The Notebook cell ends: the held turn still waits.
+    coordinator.complete(cell)
+    assert follow_up.state is TicketState.QUEUED
+    assert coordinator.snapshot("s")["owner"] is None
+
+    events.clear()
+    assert coordinator.release_held("s") == 1
+    assert follow_up.state is TicketState.RUNNING
+    assert coordinator.held_ids("s") == frozenset()
+    queue_events = [e for e in events if e["type"] == "execution_queue_changed"]
+    assert (
+        queue_events
+        and queue_events[-1]["owner"]["execution_id"] == follow_up.execution_id
+    )
+    # Nothing left to release.
+    assert coordinator.release_held("s") == 0
+
+
+def test_only_a_failure_holds_the_queue():
+    """Stop hands the session to the next message at once ("stop and send
+    now"), and a turn that finished starts it as before."""
+    coordinator = SessionExecutionCoordinator(id_factory=_ids())
+    first = _queue(coordinator, "s", "agent", "job-1")
+    second = _queue(coordinator, "s", "agent", "job-2")
+    third = _queue(coordinator, "s", "agent", "job-3")
+    coordinator.complete(first)
+    assert second.state is TicketState.RUNNING
+    assert coordinator.request_interrupt(
+        session_id="s", execution_id=second.execution_id, owner=second.owner
+    )
+    coordinator.fail(second, "interrupted")  # cancellation wins over the error
+    assert second.state is TicketState.CANCELLED
+    assert third.state is TicketState.RUNNING
+    assert coordinator.held_ids("s") == frozenset()
+
+
+def test_a_message_sent_after_the_failure_runs_and_a_dropped_one_is_forgotten():
+    coordinator = SessionExecutionCoordinator(id_factory=_ids())
+    turn = _queue(coordinator, "s", "agent", "job-1")
+    held = _queue(coordinator, "s", "agent", "job-2")
+    coordinator.fail(turn, "failed")
+    assert held.state is TicketState.QUEUED
+    # Sent after the failure, with the queue on hold: it is not held.
+    later = _queue(coordinator, "s", "agent", "job-3")
+    assert later.state is TicketState.RUNNING
+    assert coordinator.cancel_queued(
+        session_id="s", execution_id=held.execution_id, owner=held.owner
+    )
+    assert coordinator.held_ids("s") == frozenset()
+    coordinator.complete(later)
+    assert coordinator.snapshot("s")["queue"] == []

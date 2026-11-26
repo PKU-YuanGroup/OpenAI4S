@@ -959,6 +959,102 @@ def test_fork_from_second_message_keeps_earlier_file_and_leaves_root_active(tmp_
         runner.close()
 
 
+def test_fork_before_a_question_ends_just_before_it(tmp_path):
+    """VIEW-2b: "branch from this question" puts the question back in the
+    composer to be asked again, so the branch must not already hold it."""
+
+    runner, handler, frame_id = _setup(tmp_path)
+    runner.store.update_frame(frame_id, name="question branch")
+    written = {"n": 0}
+
+    def loop(st, _emit, _visible):
+        written["n"] += 1
+        name = "A.txt" if written["n"] == 1 else "B.txt"
+        (st.workspace / name).write_text(name + "\n", encoding="utf-8")
+        st.dispatcher.last_output = {"output": "done"}
+        return "submitted"
+
+    runner._loop = loop
+    try:
+        for text in ("message one", "message two"):
+            response = runner.run_message(frame_id, "project-domain", text)
+            assert response["status"] == "completed"
+        code, messages = _call(handler, "GET", f"/frames/{frame_id}/messages")
+        assert code == 200
+        original = [(item["role"], item["content"]) for item in messages["messages"]]
+        question = next(
+            item for item in messages["messages"] if item["content"] == "message two"
+        )
+
+        code, fork = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/fork",
+            body={
+                "from_message_id": question["message_id"],
+                "name": "message two",
+                "before_source": True,
+            },
+        )
+        assert code == 200
+        assert fork["source_kind"] == "message"
+        assert fork["source_id"] == question["message_id"]
+        assert fork["from_checkpoint_id"] != question["fork_checkpoint_id"]
+        assert fork["active"] is False
+
+        code, branch_messages = _call(
+            handler,
+            "GET",
+            f"/frames/{frame_id}/messages",
+            query={"branch_id": [fork["branch_id"]]},
+        )
+        assert code == 200
+        before = original[: original.index(("user", "message two"))]
+        assert before and before[0] == ("user", "message one")
+        assert [
+            (item["role"], item["content"]) for item in branch_messages["messages"]
+        ] == before
+        # The same workspace as the question's own checkpoint.
+        message_checkpoint = runner.store.get_session_checkpoint(
+            question["fork_checkpoint_id"]
+        )
+        boundary = runner.store.get_session_checkpoint(fork["from_checkpoint_id"])
+        assert boundary["workspace_tree_id"] == message_checkpoint["workspace_tree_id"]
+        fork_workspace = runner.workspace_for_branch(frame_id, fork["branch_id"])
+        assert (fork_workspace / "A.txt").read_text(encoding="utf-8") == "A.txt\n"
+        assert not (fork_workspace / "B.txt").exists()
+        # The main line is unchanged and still active.
+        code, after = _call(handler, "GET", f"/frames/{frame_id}/messages")
+        assert [(item["role"], item["content"]) for item in after["messages"]] == (
+            original
+        )
+        assert runner.store.active_session_branch(frame_id) == frame_id
+
+        for body, reason in (
+            (
+                {"from_message_id": question["message_id"], "before_source": "yes"},
+                "before_source must be a boolean",
+            ),
+            (
+                {"from_cell_id": "cell-1", "before_source": True},
+                "before_source applies only to from_message_id",
+            ),
+            (
+                {
+                    "from_checkpoint_id": question["fork_checkpoint_id"],
+                    "before_source": True,
+                },
+                "before_source applies only to from_message_id",
+            ),
+        ):
+            with pytest.raises(gateway_mod.GatewayError) as refused:
+                _call(handler, "POST", f"/frames/{frame_id}/branches/fork", body=body)
+            assert refused.value.code == 400
+            assert refused.value.message == reason
+    finally:
+        runner.close()
+
+
 def test_message_snapshot_failure_does_not_fail_message_or_advertise_fork(tmp_path):
     runner, handler, frame_id = _setup(tmp_path)
     runner.store.update_frame(frame_id, name="snapshot failure")
@@ -1310,5 +1406,198 @@ def test_promote_route_keeps_a_pointer_for_an_unrecorded_figure(tmp_path):
             "recorded for this Cell)" in text
         )
         assert "plot()" in text and "drew" in text
+    finally:
+        runner.close()
+
+
+def _turns_that_save_a_file(runner, frame_id):
+    """Each turn writes the next of A.txt, B.txt, C.txt with one step."""
+
+    written = {"n": 0}
+
+    def loop(st, _emit, _visible):
+        name = "ABC"[written["n"]] + ".txt"
+        written["n"] += 1
+        path = st.workspace / name
+        path.write_text(name + "\n", encoding="utf-8")
+        runner.store.add_step(
+            step_id=f"step-{name}",
+            frame_id=frame_id,
+            kind="artifact",
+            title=f"Saving {name}",
+            status="done",
+        )
+        runner.store.save_artifact(
+            path=str(path),
+            filename=name,
+            content_type="text/plain",
+            size_bytes=path.stat().st_size,
+            checksum=hashlib.sha256(path.read_bytes()).hexdigest(),
+            frame_id=frame_id,
+            root_frame_id=frame_id,
+            project_id="project-domain",
+        )
+        st.dispatcher.last_output = {"output": "done"}
+        return "submitted"
+
+    runner._loop = loop
+
+
+def _titles(handler, frame_id):
+    code, steps = _call(handler, "GET", f"/frames/{frame_id}/steps")
+    assert code == 200
+    return [step["title"] for step in steps["steps"]]
+
+
+def _filenames(handler, frame_id):
+    code, artifacts = _call(handler, "GET", f"/frames/{frame_id}/artifacts")
+    assert code == 200
+    return sorted(artifact["filename"] for artifact in artifacts)
+
+
+def test_activated_branch_lists_only_its_own_steps_and_files(tmp_path):
+    """M-73: after activating a branch forked at the second question, the
+    conversation still showed the original branch's later step cards, and its
+    later files under "generated"."""
+
+    runner, handler, frame_id = _setup(tmp_path)
+    runner.store.update_frame(frame_id, name="two turns")
+    _turns_that_save_a_file(runner, frame_id)
+    try:
+        for text in ("message one", "message two"):
+            assert runner.run_message(frame_id, "project-domain", text)["status"] == (
+                "completed"
+            )
+        assert _titles(handler, frame_id) == ["Saving A.txt", "Saving B.txt"]
+        # A real turn ends its cells with a cursor checkpoint; this loop has none.
+        code, _ = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/checkpoints",
+            body={"reason": "turn two done"},
+        )
+        assert code == 200
+        code, messages = _call(handler, "GET", f"/frames/{frame_id}/messages")
+        second = next(m for m in messages["messages"] if m["content"] == "message two")
+        code, fork = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/fork",
+            body={"from_message_id": second["message_id"]},
+        )
+        assert code == 200
+        # Named after the question it was forked from, not a bare br-… id.
+        assert fork["name"] == "message two"
+        code, _activated = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/{fork['branch_id']}/activate",
+        )
+        assert code == 200
+
+        assert _titles(handler, frame_id) == ["Saving A.txt"]
+        assert _filenames(handler, frame_id) == ["A.txt"]
+
+        # What the branch does next is its own and follows the inherited part.
+        runner.run_message(frame_id, "project-domain", "message three")
+        assert _titles(handler, frame_id) == ["Saving A.txt", "Saving C.txt"]
+        assert _filenames(handler, frame_id) == ["A.txt", "C.txt"]
+
+        # Back on the original branch: its history, without the fork's step.
+        code, _ = _call(
+            handler, "POST", f"/frames/{frame_id}/branches/{frame_id}/activate"
+        )
+        assert code == 200
+        assert _titles(handler, frame_id) == ["Saving A.txt", "Saving B.txt"]
+        assert _filenames(handler, frame_id) == ["A.txt", "B.txt"]
+    finally:
+        runner.close()
+
+
+def test_restore_runs_on_an_activated_fork_branch(tmp_path):
+    """M-73: a fork's head is its parent's checkpoint, whose kernel manifest
+    names the parent's workspace. Restore on the activated fork refused with
+    "checkpoint working directory does not match this session workspace"."""
+
+    runner, handler, frame_id = _setup(tmp_path)
+    runner.store.update_frame(frame_id, name="restore on a fork")
+    _turns_that_save_a_file(runner, frame_id)
+    try:
+        assert runner.start_kernel(frame_id, "project-domain")["state"] == "running"
+        runner.run_message(frame_id, "project-domain", "message one")
+        # A cell that wrote a file is never replayed, so recovery stays partial.
+        runner.store.log_cell(
+            frame_id=frame_id,
+            root_frame_id=frame_id,
+            project_id="project-domain",
+            code="x = 1\nopen('A.txt', 'w').write('A')\n",
+            result={"status": "ok", "stdout": "", "error": None},
+            cell_index=1,
+            state_revision=1,
+            files_written=["A.txt"],
+        )
+        runner.run_message(frame_id, "project-domain", "message two")
+        code, messages = _call(handler, "GET", f"/frames/{frame_id}/messages")
+        second = next(m for m in messages["messages"] if m["content"] == "message two")
+        code, fork = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/branches/fork",
+            body={"from_message_id": second["message_id"]},
+        )
+        branch_id = fork["branch_id"]
+        code, activated = _call(
+            handler, "POST", f"/frames/{frame_id}/branches/{branch_id}/activate"
+        )
+        assert code == 200 and activated["status"] == "partial"
+
+        code, restored = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/recovery/actions/restore",
+            body={"branch_id": branch_id},
+        )
+        # It ran: the same honest partial outcome, not a refusal to start.
+        assert restored["status"] == "partial", restored
+        issues = [issue for item in restored["results"] for issue in item["issues"]]
+        assert issues and not any(
+            "working directory" in str(issue.get("error") or "") for issue in issues
+        )
+        assert runner._existing_state(frame_id).branch_id == branch_id
+    finally:
+        runner.close()
+
+
+def test_r_cells_can_go_back_to_the_default_r(tmp_path):
+    """SCI-20: once a local R environment was picked for a session's R cells,
+    the runtime menu had no entry that went back to the default."""
+
+    runner, handler, frame_id = _setup(tmp_path)
+    try:
+        state = runner._state(frame_id, "project-domain")
+        dispatcher = runner._ensure_runtime(state)
+        dispatcher.active_r_env = "lab_env"
+        state.r_env_name = "lab_env"
+        code, listing = _call(handler, "GET", f"/frames/{frame_id}/environments")
+        assert code == 200 and listing["current_r"] == "lab_env"
+
+        code, result = _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/kernel/env",
+            body={"env": "", "language": "r"},
+        )
+        assert code == 200
+        assert result["ok"] is True and result["language"] == "r"
+        assert result["env"] is None
+        code, listing = _call(handler, "GET", f"/frames/{frame_id}/environments")
+        assert listing["current_r"] is None
+        assert dispatcher.active_r_env is None
+        changed = [
+            event
+            for event in runner.hub.events
+            if event.get("type") == "kernel_status" and event.get("language") == "r"
+        ]
+        assert changed and changed[-1]["env"] == {"name": None, "language": "r"}
     finally:
         runner.close()

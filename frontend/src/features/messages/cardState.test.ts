@@ -68,4 +68,20 @@ describe("a cell card's elapsed time", () => {
     markCardSucceeded(quick as unknown as HTMLElement);
     expect(quickHead.querySelector(".a-time")).toBeNull();
   });
+
+  it("counts a cell still running at a reopen from its start event, not from the reopen (NB-4)", () => {
+    vi.stubGlobal("document", { createElement: () => new Node(), querySelector: () => null });
+    const now = vi.spyOn(Date, "now");
+    const card = new Node();
+    const head = card.appendChild(new Node());
+    head.className = "a-head";
+
+    // The replayed start event says the cell began 90 s before the reopen.
+    now.mockReturnValue(5_000_000);
+    markCardRunning(card as unknown as HTMLElement, { type: "notebook_cell_start", started_at: 4_910_000 });
+    expect(card.dataset.startedAt).toBe("4910000");
+    now.mockReturnValue(5_000_000 + 10_000);
+    markCardSucceeded(card as unknown as HTMLElement);
+    expect(head.querySelector(".a-time")?.textContent).toBe("1:40");
+  });
 });

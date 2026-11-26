@@ -999,7 +999,8 @@ def test_format_observation_reminds_models_that_host_is_injected():
         {"error": "ModuleNotFoundError: No module named 'host'"}
     )
 
-    assert "never `import host`" in observation
+    assert "`import host` returns that same object" in observation
+    assert "never `import host`" not in observation
 
 
 def test_a_reply_delivered_before_cancellation_keeps_its_usage(monkeypatch):

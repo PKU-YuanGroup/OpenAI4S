@@ -550,6 +550,29 @@ def test_the_example_seed_message_keeps_the_full_claim_when_everything_ran(
     ):
         assert f"- [{name}]({API_ROOT}/artifacts/{ids[name]}) — " in content
     assert "**family_biochemistry.csv**" not in content
+    # SCI-02: Notebook and Files were bold, so they read as links that did
+    # nothing, and the Notebook is not a tab.
+    assert "**Notebook**" not in content and "**Files**" not in content
+    assert "Notebook tab" not in content
+
+
+def test_the_example_figure_is_saved_under_a_name_that_says_what_it_is(
+    tmp_path, monkeypatch
+):
+    """SCI-02: the summary called it the hydropathy figure; the file was the
+    auto-captured `figure_cell3_1.png`."""
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("numpy")
+    monkeypatch.chdir(tmp_path)
+    ns: dict = {"__name__": "__kernel__"}
+    # Cell 1 without a `host` falls back to the bundled real sequences.
+    exec(compile(gateway_mod._DEMO_UNIPROT, "<cell1>", "exec"), ns)
+    exec(compile(gateway_mod._DEMO_PLOT, "<cell3>", "exec"), ns)
+    assert (tmp_path / "hydropathy_profile.png").is_file()
+    import matplotlib.pyplot as plt
+
+    # Saved and closed: nothing is left for the figure auto-capture.
+    assert plt.get_fignums() == []
 
 
 def test_the_example_is_written_in_the_language_it_was_asked_for_in(
@@ -664,6 +687,50 @@ def test_the_example_biochemistry_cell_runs_without_biopython(tmp_path, monkeypa
     report = (tmp_path / "nif3_report.md").read_text()
     assert "built-in formulas (Biopython is not installed)" in report
     assert "Biopython (ProtParam" not in report
+
+
+@pytest.mark.parametrize(
+    "error, reason",
+    [
+        (
+            "web_fetch: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate "
+            "verify failed: unable to get local issuer certificate (_ssl.c:1032)>",
+            "server's certificate could not be verified on this machine",
+        ),
+        ("web_fetch: <urlopen error timed out>", "could not be reached"),
+    ],
+)
+def test_the_example_report_says_why_the_structure_is_missing_in_words(
+    tmp_path, monkeypatch, capsys, error, reason
+):
+    """SCI-01: the RCSB step failed and the raw urlopen/SSL exception string
+    was written into nif3_report.md's "Data sources". The report says why in
+    words; the exception stays in the cell's output."""
+    pytest.importorskip("pandas")
+    monkeypatch.setitem(sys.modules, "Bio", None)
+    monkeypatch.chdir(tmp_path)
+
+    class _Host:
+        def web_fetch(self, *_args, **_kwargs):
+            raise RuntimeError(error)
+
+    ns: dict = {"__name__": "__kernel__"}
+    exec(compile(gateway_mod._DEMO_UNIPROT, "<cell1>", "exec"), ns)
+    exec(compile(gateway_mod._DEMO_CSV, "<cell4>", "exec"), ns)
+    ns["host"] = _Host()
+    exec(compile(gateway_mod._DEMO_PDB, "<cell5>", "exec"), ns)
+    exec(compile(gateway_mod._DEMO_MD, "<cell6>", "exec"), ns)
+
+    report = (tmp_path / "nif3_report.md").read_text()
+    assert (
+        "- Representative 3D structure: not fetched this run (the RCSB PDB API "
+        + reason
+        + ")"
+    ) in report
+    for raw in ("urlopen", "_ssl.c", "web_fetch", "Traceback"):
+        assert raw not in report
+    assert not (tmp_path / "nif3_structure.pdb").exists()
+    assert error in capsys.readouterr().out
 
 
 def test_the_example_seed_counts_interrupted_cells_as_failures(tmp_path, monkeypatch):
@@ -2769,6 +2836,143 @@ def _install_artifact_submission(
     return captured
 
 
+@pytest.mark.stubbed_backend
+def test_the_summary_after_failed_turns_lists_what_they_produced(tmp_path, monkeypatch):
+    """M-59: a task cut into three turns by two failures ended with a summary
+    whose artifact list held only the last turn's files; the survival curve
+    the user had asked for came from an earlier, failed turn. A turn after a
+    completed one still lists only its own files."""
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    plan = iter(
+        [
+            ("km_new_drug_vs_control.png", "max_turns"),
+            ("cleaned_cohort.csv", "max_turns"),
+            ("report.md", "submitted"),
+            ("followup_table.csv", "submitted"),
+        ]
+    )
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def one_turn(state, emit, visible):
+        del visible
+        filename, reason = next(plan)
+        path = state.workspace / filename
+        path.write_bytes(b"x\n")
+        assert runner._register_file(state, path, f"cell-{filename}", emit)
+        if reason == "submitted":
+            state.dispatcher.last_output = {
+                "output": {"summary": "The analysis is complete."},
+                "completion_bullets": ["Wrote the report"],
+            }
+        state.last_model_prose = ""
+        return reason
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", one_turn)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+
+    def summary_after(request):
+        result = runner.run_message(frame_id, "default", request)
+        rows = runner.store.list_messages(frame_id, limit=None)
+        return result["status"], str(rows[-1]["content"])
+
+    try:
+        assert summary_after("Compare the arms")[0] == "failed"
+        assert summary_after("Continue")[0] == "failed"
+        status, final = summary_after("Continue")
+        assert status == "completed"
+        listed = final.split("Artifacts:", 1)[1]
+        for name in (
+            "km_new_drug_vs_control.png",
+            "cleaned_cohort.csv",
+            "report.md",
+        ):
+            assert f"[{name}](" in listed, name
+
+        status, later = summary_after("One more table")
+        assert status == "completed"
+        assert "[followup_table.csv](" in later
+        assert "report.md" not in later
+        assert "km_new_drug_vs_control.png" not in later
+    finally:
+        runner.close()
+
+
+def test_the_summary_after_a_failed_turn_lists_a_file_it_only_rewrote(
+    tmp_path, monkeypatch
+):
+    """M-59, the gap the first fix named: a file that already existed and was
+    only rewritten during a failed turn was not listed by the summary that
+    finally completed the task (its row's `created_at` is older). A file the
+    earlier completed turn wrote and nobody touched since stays unlisted."""
+    import time
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    plan = iter(
+        [
+            ((("km_curve.png", b"v1\n"), ("notes.csv", b"n\n")), "submitted"),
+            ((("km_curve.png", b"v2 with the arms split\n"),), "max_turns"),
+            ((("report.md", b"# report\n"),), "submitted"),
+        ]
+    )
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def one_turn(state, emit, visible):
+        del visible
+        files, reason = next(plan)
+        for filename, data in files:
+            path = state.workspace / filename
+            path.write_bytes(data)
+            assert runner._register_file(state, path, f"cell-{filename}", emit)
+        state.dispatcher.last_output = (
+            {
+                "output": {"summary": "The analysis is complete."},
+                "completion_bullets": ["Wrote the report"],
+            }
+            if reason == "submitted"
+            else None
+        )
+        state.last_model_prose = ""
+        return reason
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", one_turn)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+
+    def summary_after(request):
+        # Turns a millisecond apart at least: versions are compared by time.
+        time.sleep(0.01)
+        result = runner.run_message(frame_id, "default", request)
+        rows = runner.store.list_messages(frame_id, limit=None)
+        return result["status"], str(rows[-1]["content"])
+
+    try:
+        assert summary_after("Plot the curve")[0] == "completed"
+        assert summary_after("Split it by arm")[0] == "failed"
+        status, final = summary_after("Continue")
+        assert status == "completed"
+        listed = final.split("Artifacts:", 1)[1]
+        assert "[km_curve.png](" in listed
+        assert "[report.md](" in listed
+        assert "notes.csv" not in listed
+    finally:
+        runner.close()
+
+
 def test_a_context_spill_is_not_listed_as_a_turn_deliverable(tmp_path, monkeypatch):
     """ART-10: the model's large-output spill (context-output-*.json) is an
     Artifact so it stays readable by version, but it was listed first in the
@@ -4815,7 +5019,8 @@ def test_plan_restore_and_delete_artifact_created_shapes(tmp_path):
     rec = runner._write_plan_artifact(st, plan, None, events.append)
     ev = [e for e in events if e.get("type") == "artifact_created"][-1]
     assert "artifact" not in ev
-    assert set(ev) == {"type", "frame_id", "artifact_id", "filename"}
+    assert set(ev) == {"type", "frame_id", "artifact_id", "filename", "role"}
+    assert ev["role"] == "process"  # owner decision 33
     assert ev["artifact_id"] == rec["artifact_id"]
     assert ev["filename"].startswith("plan_") and ev["filename"].endswith(".json")
 
@@ -5322,14 +5527,19 @@ def test_execution_log_route_serializer_contract(tmp_path):
         "figures",
         "files_written",
         "files_read",
+        "inlined_script",
         "cpu_seconds",
         "peak_rss_kb",
+        "title",
+        "started_at",
+        "finished_at",
         "attempt_group_id",
         "attempt",
         "revision_of",
         "is_latest_attempt",
         "attempt_count",
     }
+    assert e1["inlined_script"] is None  # NB-1: only a run-this-file Cell has one
     assert e1["producing_cell_id"] == "cell-1"
     assert e1["fork_checkpoint_id"] is None
     assert e1["state_revision"] == 1
@@ -5355,6 +5565,88 @@ def test_execution_log_route_serializer_contract(tmp_path):
     assert e2["status"] == "error"
     assert e2["error"] == "ZeroDivisionError"
     assert e2["figures"] == [] and e2["files_written"] == []
+    # M-69: the conversation card's title, as the live card had it; a Cell
+    # with no attempt rows is placed by the time it was recorded.
+    assert e1["title"] == "Running analysis · cell 1"
+    assert isinstance(e1["started_at"], int) and e1["started_at"] > 0
+    assert e1["finished_at"] == e1["started_at"]
+
+
+def test_a_dislike_can_carry_a_reason_that_stays_local(tmp_path):
+    """M-72: POST /frames/{fid}/feedback takes an optional reason with a 👎;
+    the ratings the conversation reads back are unchanged."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    store = get_store(cfg.db_path)
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    replies = []
+    handler._query = lambda: {}
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+
+    handler._body = lambda: {
+        "key": "m1",
+        "rating": "down",
+        "reason": "  wrong column  ",
+    }
+    handler._api("POST", f"/frames/{fid}/feedback")
+    assert replies[-1] == (200, {"ok": True})
+    handler._body = lambda: {}
+    handler._api("GET", f"/frames/{fid}/feedback")
+    assert replies[-1] == (200, {"feedback": {"m1": "down"}})
+    assert store.get_setting(f"fb:{fid}:m1:reason") == "wrong column"
+
+
+def test_execution_log_places_a_cell_by_when_it_ran(tmp_path):
+    """M-69: a reopened conversation puts each Cell's card where the live turn
+    showed it, before the files the Cell saved. The Cell is recorded only after
+    it ran and its files were saved, so the record's own time sorts the card
+    after its own artifact step; the attempt's start does not."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    store = get_store(cfg.db_path)
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    store.append_action_group(
+        group_id="ag-cell", root_frame_id=fid, turn_id="turn", kind="code"
+    )
+    store.allocate_execution_attempt(
+        group_id="ag-cell",
+        producing_cell_id="cell-1",
+        attempt_id="xa-1",
+        allocated_at=1_000,
+    )
+    store.mark_execution_attempt_started("xa-1", started_at=1_001)
+    store.mark_execution_attempt_response("xa-1", response_at=4_000)
+    store.mark_execution_attempt_capture("xa-1", capture_at=4_400)
+    store.finish_execution_attempt(
+        "xa-1", terminal_state="completed", finished_at=4_500
+    )
+    store.log_cell(
+        frame_id=fid,
+        root_frame_id=fid,
+        code="# ===== QC =====\nprint('hi')",
+        result={"id": "cell-1", "stdout": "hi\n", "stderr": "", "error": None},
+        cell_index=1,
+        kernel_id="python",
+        language="python",
+    )
+
+    replies = []
+    handler._query = lambda: {}
+    handler._body = lambda: {}
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    handler._api("GET", f"/frames/{fid}/execution-log")
+
+    code, body = replies[-1]
+    assert code == 200
+    (entry,) = body["entries"]
+    assert entry["started_at"] == 1_001
+    assert entry["finished_at"] == 4_500
+    # A banner comment is not the title (cell_run.activity_title).
+    assert entry["title"] == "QC"
 
 
 def test_lineage_serializer_producing_cell_and_inputs(tmp_path):
@@ -6927,7 +7219,7 @@ def test_prose_streamer_hides_nested_tool_example_inside_python_cell():
 
 
 def test_kernel_install_route_is_not_gated_by_notebook_repl(tmp_path):
-    """Regression: prebuilt-env package install (Customize → Compute) is a
+    """Regression: prebuilt-env package install (Settings → Compute) is a
     separate affordance from the code REPL and must stay reachable in the
     default read-only build — it must NOT return 403."""
     cfg = _cfg(tmp_path)
@@ -8013,7 +8305,7 @@ def test_the_session_dispatcher_gets_the_key_the_install_configures(
     tmp_path, monkeypatch
 ):
     """The dispatcher is built once per session from the BOOT config, and on the
-    documented install that config has no key: it is entered in Customize →
+    documented install that config has no key: it is entered in Settings →
     Models and lives in settings. So everything the dispatcher owns that reaches
     a provider was dead there — `host.llm` raised MissingCredentialError, and
     the injection screener's nuanced pass returned "not injected" without
@@ -8116,3 +8408,93 @@ def test_a_pin_only_message_keeps_the_users_comments_as_its_text():
         [{"number": 1, "body": "标题改大一点"}, {"number": 2, "body": " "}, None]
     )
     assert text == "[1] 标题改大一点"
+
+
+# --------------------------------------------------------------------------
+# SCI-03: the example's cells are the conversation's, not hidden REPL cells
+# --------------------------------------------------------------------------
+
+
+def test_the_example_seed_runs_its_cells_as_example_cells_and_shows_its_question(
+    tmp_path, monkeypatch
+):
+    """The seed ran its cells as Notebook REPL cells (origin `user`), whose
+    chat events are filtered out and whose execution-log rows the conversation
+    skips, so the example showed a question and a summary and no cells. They
+    now carry their own origin, and the question reaches an open page live."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    origins: list[str] = []
+    hub = _Hub()
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, hub)
+
+    def _fake_run_repl(self, root_frame_id, project_id, code, *args, **kwargs):
+        origins.append(kwargs.get("origin", "user"))
+        return {"status": "completed", "cell": {"error": None}}
+
+    monkeypatch.setattr(gateway_mod.SessionRunner, "run_repl", _fake_run_repl)
+    try:
+        gateway_mod._seed_demo_session(cfg, runner)
+    finally:
+        runner.close()
+    assert origins == ["example"] * 6
+    fid = _example_frame(get_store(cfg.db_path))["frame_id"]
+    asked = [
+        event
+        for event in hub.events
+        if event.get("type") == "user_message" and event.get("frame_id") == fid
+    ]
+    assert len(asked) == 1
+    stored = get_store(cfg.db_path).list_messages(fid)[0]
+    assert stored["role"] == "user"
+    assert asked[0]["content"] == stored["content"]
+    # The stored row's id, so a page that then reads the history keeps one bubble.
+    assert str(asked[0]["message_id"]).startswith("m-")
+
+
+def test_an_example_cell_reaches_the_conversation_without_the_agent_screener(
+    tmp_path, monkeypatch
+):
+    """Through the real runner and kernel: an `example` cell streams its card
+    to the conversation, is logged with its own origin (which the
+    conversation shows on reload), and is never screened as an agent cell
+    (that would be a model call per example cell). A Notebook REPL cell
+    still stays out of the conversation."""
+    screened: list[str] = []
+    real_refusal = gateway_mod.SessionRunner._safety_refusal
+
+    def _spy(self, st, code, origin):
+        screened.append(origin)
+        return real_refusal(self, st, code, origin)
+
+    monkeypatch.setattr(gateway_mod.SessionRunner, "_safety_refusal", _spy)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub)
+    fid = runner.store.new_frame(kind="turn", project_id="default", status="done")
+    try:
+        outcome = runner.run_repl(
+            fid, "default", "print('hydropathy ready')", origin="example"
+        )
+        assert outcome["cell"]["status"] == "ok"
+        tool_chunks = [
+            e
+            for e in hub.events
+            if e.get("type") == "text_chunk" and e.get("block_type") == "tool"
+        ]
+        assert any("hydropathy ready" in str(e.get("chunk")) for e in tool_chunks)
+        # The seed ends its one turn itself; a cell does not.
+        assert not [e for e in hub.events if e.get("type") == "frame_update"]
+        assert [cell["origin"] for cell in runner.store.list_cells(fid)] == ["example"]
+        assert screened == ["example"]
+
+        hub.events.clear()
+        runner.run_repl(fid, "default", "print('typed by hand')")
+        assert not [e for e in hub.events if e.get("type") == "text_chunk"]
+        assert [cell["origin"] for cell in runner.store.list_cells(fid)] == [
+            "example",
+            "user",
+        ]
+        with pytest.raises(ValueError):
+            runner.run_repl(fid, "default", "print(1)", origin="agent")
+    finally:
+        runner.close()

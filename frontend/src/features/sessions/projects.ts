@@ -30,8 +30,8 @@ import {
 import { beginNavigation } from "./navigation";
 import { chooseSessionPackage, downloadArtifactBundle } from "./actions";
 import { recoverConversation } from "../messages/open";
-import { displayProjectName, projectFilesCopy, projectHistoryCopy } from "./copy";
-import { openProjectFiles, projectFolderErrorText, resetProjectFolderPicker } from "./project-files";
+import { displayProjectName, projectActivityCopy, projectFilesCopy, projectHistoryCopy } from "./copy";
+import { browseProjectFolder, openProjectFiles, projectFolderErrorText, resetProjectFolderPicker } from "./project-files";
 import { openProjectHistory } from "./project-history";
 
 type ProjectLike = {
@@ -97,13 +97,42 @@ export function sanitizeProjectLineage(payload: unknown): {
   };
 }
 
+/**
+ * M-48: the files of a project lineage payload, one per Artifact: its latest
+ * name, how many versions it has, and the cell that made the latest one.
+ */
+export function projectFiles(
+  nodes: ReturnType<typeof sanitizeProjectLineage>["nodes"],
+): Array<{ id: string; name: string; versions: number; cell: string }> {
+  const files = new Map<string, { id: string; name: string; versions: number; cell: string; latest: boolean }>();
+  for (const node of nodes) {
+    if (node.kind !== "artifact_version") continue;
+    const id = String(node.artifact_id || node.id || "");
+    const name = String(node.filename || publicText(node.version_id, 12));
+    const cell = String(node.cell_id || "");
+    const latest = !!node.latest;
+    const file = files.get(id);
+    if (!file) {
+      files.set(id, { id, name, versions: 1, cell, latest });
+      continue;
+    }
+    file.versions += 1;
+    if (latest || !file.latest) {
+      file.name = name;
+      file.cell = cell || file.cell;
+      file.latest = latest;
+    }
+  }
+  return [...files.values()].map(({ id, name, versions, cell }) => ({ id, name, versions, cell }));
+}
+
 export async function openProjectResearchView(initialTab = "timeline"): Promise<void> {
   if (!project.value) return;
   const projectId = project.value;
   const mode = "project-research:" + projectId;
   _modalMode.value = mode;
   const title = $("#modal-title");
-  if (title) title.textContent = t("projectResearch.title", projName(projectId));
+  if (title) title.textContent = projectActivityCopy("title", projName(projectId));
   const dl = $("#modal-download");
   if (dl) dl.style.display = "none";
   const body = $("#modal-body");
@@ -125,7 +154,7 @@ export async function openProjectResearchView(initialTab = "timeline"): Promise<
     const summary = el(
       "div",
       "project-research-summary",
-      t("projectResearch.timelineSummary", data.session_count || 0, data.total_count || data.count || 0),
+      projectActivityCopy("activitySummary", data.session_count || 0, data.total_count || data.count || 0),
     );
     content.appendChild(summary);
     if (!(data.groups || []).length) {
@@ -153,29 +182,26 @@ export async function openProjectResearchView(initialTab = "timeline"): Promise<
       el(
         "div",
         "project-research-summary",
-        t("projectResearch.lineageSummary", data.artifact_count, data.version_count, data.edges.length),
+        projectActivityCopy("filesSummary", data.artifact_count, data.version_count, data.edges.length),
       ),
     );
     const byId = new Map((data.nodes || []).map((item) => [item.id, item]));
-    (data.nodes || [])
-      .filter((item) => item.kind === "artifact_version")
-      .forEach((item) => {
-        const row = el("div", "project-lineage-node");
-        row.appendChild(
-          el("span", "project-lineage-name", String(item.filename || publicText(item.version_id, 12))),
-        );
-        if (item.latest) row.appendChild(el("span", "timeline-pill", t("projectResearch.latest")));
-        if (item.cell_id) {
-          row.appendChild(el("span", "project-lineage-cell", publicText(item.cell_id, 12)));
-        }
-        content.appendChild(row);
-      });
+    for (const file of projectFiles(data.nodes || [])) {
+      const row = el("div", "project-lineage-node");
+      row.appendChild(el("span", "project-lineage-name", file.name));
+      // One row per file: a file written three times used to be three rows.
+      if (file.versions > 1) {
+        row.appendChild(el("span", "timeline-pill", projectActivityCopy("versions", file.versions)));
+      }
+      if (file.cell) row.appendChild(el("span", "project-lineage-cell", publicText(file.cell, 12)));
+      content.appendChild(row);
+    }
     if (!(data.nodes || []).some((item) => item.kind === "artifact_version")) {
-      content.appendChild(el("div", "dock-empty", t("projectResearch.noLineage")));
+      content.appendChild(el("div", "dock-empty", projectActivityCopy("noFiles")));
     }
     if ((data.edges || []).length) {
       const edges = el("details", "project-lineage-edges");
-      edges.appendChild(el("summary", null, t("projectResearch.edges", data.edges.length)));
+      edges.appendChild(el("summary", null, projectActivityCopy("links", data.edges.length)));
       data.edges.slice(0, 500).forEach((edge) => {
         const from = byId.get(edge.from);
         const to = byId.get(edge.to);
@@ -228,8 +254,8 @@ export async function openProjectResearchView(initialTab = "timeline"): Promise<
   };
   (
     [
-      ["timeline", t("projectResearch.timeline")],
-      ["lineage", t("projectResearch.lineage")],
+      ["timeline", projectActivityCopy("activity")],
+      ["lineage", projectActivityCopy("files")],
     ] as Array<[string, string]>
   ).forEach(([key, label]) => {
     const button = el("button", "seg-btn", label);
@@ -287,7 +313,7 @@ export function renderProjMenu(): void {
     if (cur?.folder_path) item(projectHistoryCopy("menu"), "clock", () => {
       void openProjectHistory(cur.project_id || cur.id || "", cur.name || t("proj.fallbackName"));
     });
-    item(t("projectResearch.menu"), "provenance", () => {
+    item(projectActivityCopy("menu"), "provenance", () => {
       void openProjectResearchView("timeline");
     });
     item(t("sessionPackage.import"), "cloud-upload", () => {
@@ -312,7 +338,7 @@ export function renderProjMenu(): void {
   item(t("proj.menu.allProjects"), "arrow-left", showDashboard);
   (projects.value as ProjectLike[]).forEach((p) => {
     if ((p.project_id || p.id) !== project.value) {
-      item((p.name || t("proj.fallbackName")).slice(0, 26), "box", () => {
+      item((displayProjectName(p) || t("proj.fallbackName")).slice(0, 26), "box", () => {
         void openProject(p.project_id || p.id || "").catch(reportFailure);
       });
     }
@@ -429,6 +455,31 @@ export function closeProjectModal(): void {
 // when it changed, so an unrelated edit never revalidates an unavailable folder.
 let editingFolderPath = "";
 
+// ONB-6: the folder-field value the open picker was last sent to.
+let pickerFollows: string | null = null;
+
+/** Browse: open the folder picker at the path typed in the folder field. */
+export function browseTypedProjectFolder(): void {
+  pickerFollows = (($("#pm-folder") as HTMLInputElement | null)?.value || "").trim();
+  void browseProjectFolder();
+}
+
+/**
+ * ONB-6: a path typed into the folder field moves an open picker there (a
+ * missing folder is said in the picker). Leaving the field moves it only
+ * when the path was edited since, so it never undoes the folders clicked
+ * through meanwhile; Enter always goes to what is typed.
+ */
+function followTypedProjectFolder(force: boolean): void {
+  const picker = $("#pm-folder-picker");
+  const field = $("#pm-folder") as HTMLInputElement | null;
+  if (!picker || !field || picker.classList.contains("hidden")) return;
+  const typed = field.value.trim();
+  if (!typed || (!force && typed === pickerFollows)) return;
+  pickerFollows = typed;
+  void browseProjectFolder(typed);
+}
+
 export function openProjectModal(proj?: ProjectLike | null): void {
   const p = proj || null;
   editingProject.value = p ? p.project_id || p.id : null;
@@ -452,6 +503,16 @@ export function openProjectModal(proj?: ProjectLike | null): void {
   if (desc) desc.value = p ? p.description || "" : "";
   if (ctx) ctx.value = p ? p.context || p.agent_context || "" : "";
   resetProjectFolderPicker(p?.folder_path || "");
+  pickerFollows = null;
+  const folder = $("#pm-folder") as HTMLInputElement | null;
+  if (folder) {
+    folder.onkeydown = (event) => {
+      if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      followTypedProjectFolder(true);
+    };
+    folder.onblur = () => followTypedProjectFolder(false);
+  }
   showProjectModalError("");
   const create = $("#pm-create");
   if (create) create.textContent = t(p ? "common.save" : "projModal.create");

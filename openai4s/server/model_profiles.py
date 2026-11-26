@@ -190,7 +190,7 @@ def _probe_detail(error: Exception, public: dict) -> str:
     `org-Acme-Research-Lab` all survive. The redaction is shape-based and a
     provider body carries more than credentials -- an absolute path with the
     account name on it, internal network topology, private model identifiers --
-    into a 200 body and the Customize -> Models panel.
+    into a 200 body and the Settings -> Models panel.
 
     `gateway._friendly_error` solved exactly this for the turn path and its
     docstring lays out the same reasoning. This is the surface that treatment
@@ -218,7 +218,7 @@ def _probe_detail(error: Exception, public: dict) -> str:
     if status == 401 or code in ("invalid_api_key", "unauthorized"):
         return (
             "the provider rejected the credential; check the API key for this "
-            "profile in Customize -> Models"
+            "profile in Settings -> Models"
         )
     if status == 403 or code == "forbidden":
         return (
@@ -1089,7 +1089,7 @@ class ModelProfileService:
 
         The distinction is the whole design. Everything here is derived from
         local state — is there a key, is the protocol one we can dispatch, is
-        there an endpoint and a model — so opening Customize answers "is this
+        there an endpoint and a model — so opening Settings answers "is this
         usable" for every profile at zero network cost and with no chance of a
         page load spending someone's API quota or waking a rate limiter.
 
@@ -1152,18 +1152,21 @@ class ModelProfileService:
             "checked_endpoint": False,
         }
 
-    def public_profile(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+    def public_profile(
+        self, profile: Mapping[str, Any], *, hide_endpoint: bool = False
+    ) -> dict[str, Any]:
         """Return a profile projection that never includes the raw API key.
 
         ``has_api_key`` resolves rather than testing the field, so a profile
         whose keychain entry was revoked reports honestly instead of claiming a
-        credential it can no longer produce.
+        credential it can no longer produce. ``hide_endpoint`` blanks
+        ``base_url`` for a team member (`team_policy.hides_instance_endpoint`).
         """
         return {
             "id": profile.get("id"),
             "name": profile.get("name") or "",
             "provider": profile.get("provider") or "",
-            "base_url": profile.get("base_url") or "",
+            "base_url": "" if hide_endpoint else (profile.get("base_url") or ""),
             "model": profile.get("model") or "",
             "has_api_key": bool(self.resolve_key(profile)),
             # Where the credential this profile is dispatched under comes from:
@@ -1190,13 +1193,16 @@ class ModelProfileService:
             "effective_capabilities": self.effective_capabilities(profile),
         }
 
-    def models_payload(self, default_model_id: str) -> dict[str, Any]:
+    def models_payload(
+        self, default_model_id: str, *, hide_endpoint: bool = False
+    ) -> dict[str, Any]:
         """Build the header selector from the live model and the saved profiles.
 
         Built-in provider defaults are deliberately absent. An endpoint the user
         never configured must not be selectable: picking it would only fail at
         send time for want of a key. A profile that leaves `model` blank still
-        appears, resolved through its protocol's default.
+        appears, resolved through its protocol's default. ``hide_endpoint``
+        leaves each profile's ``base_url`` out of its entry and description.
         """
         live = self.store.get_setting("llm_model") or self.cfg.llm.model or "default"
         models: list[dict[str, Any]] = []
@@ -1222,11 +1228,22 @@ class ModelProfileService:
         live_provider = str(
             self.store.get_setting("llm_provider") or self.cfg.llm.provider or ""
         )
-        add(
-            live,
-            live,
-            " · ".join(part for part in (live_provider, str(live)) if part),
-        )
+        # M-7: once the active profile *is* the live configuration (it was
+        # activated and nothing rewrote the live settings since), the bare live
+        # entry is the same model listed twice -- "doubao-seed (environment)"
+        # beside "doubao-seed" after the wizard saved the environment's model --
+        # and the composer showed the bare one until the first send pinned the
+        # profile, when the selection moved by itself. One entry, the profile's;
+        # the default that named the live model names it.
+        live_profile = self._active_live_profile(str(live), live_provider)
+        if live_profile is None:
+            add(
+                live,
+                live,
+                " · ".join(part for part in (live_provider, str(live)) if part),
+            )
+        elif str(default_model_id or "").strip() in {"", "default", str(live)}:
+            default_model_id = str(live_profile["id"])
         # One entry per profile, keyed on `profile_id`. This deduped on a
         # `seen: set[str]` of bare model *names*, so two profiles naming the same
         # model against different providers collapsed to one and the second
@@ -1243,7 +1260,7 @@ class ModelProfileService:
                 profile.get("provider"), profile.get("model")
             )
             provider = str(profile.get("provider") or "")
-            base_url = str(profile.get("base_url") or "")
+            base_url = "" if hide_endpoint else str(profile.get("base_url") or "")
             add(
                 profile_id,
                 profile.get("name") or model_id or "profile",
@@ -1260,7 +1277,39 @@ class ModelProfileService:
             )
         return {"models": {"default": models}, "default_model_id": default_model_id}
 
-    def profiles_payload(self) -> tuple[dict[str, Any], str | None]:
+    def _active_live_profile(
+        self, live_model: str, live_provider: str
+    ) -> dict[str, Any] | None:
+        """The active profile when the live settings are still exactly it."""
+        active_id = str(self.store.get_setting("active_model_profile") or "").strip()
+        if not active_id:
+            return None
+        profile = next(
+            (
+                item
+                for item in self.store.list_model_profiles()
+                if str(item.get("id") or "") == active_id and not item.get("deleted_at")
+            ),
+            None,
+        )
+        if profile is None:
+            return None
+
+        def bare(value: Any) -> str:
+            return str(value or "").strip().rstrip("/")
+
+        live_base = bare(self.store.get_setting("llm_base_url"))
+        same = (
+            bare(profile.get("provider")).lower() == bare(live_provider).lower()
+            and bare(profile.get("base_url")) == live_base
+            and self.effective_model_id(profile.get("provider"), profile.get("model"))
+            == live_model
+        )
+        return profile if same else None
+
+    def profiles_payload(
+        self, *, hide_endpoint: bool = False
+    ) -> tuple[dict[str, Any], str | None]:
         """Return saved profiles without materializing built-in endpoints.
 
         Older releases seeded the model catalog into every user's saved profile
@@ -1308,7 +1357,10 @@ class ModelProfileService:
         ]
         return (
             {
-                "profiles": [self.public_profile(profile) for profile in profiles],
+                "profiles": [
+                    self.public_profile(profile, hide_endpoint=hide_endpoint)
+                    for profile in profiles
+                ],
                 "active_id": self.store.get_setting("active_model_profile") or "",
                 "protocols": list(PROFILE_PROTOCOLS),
             },

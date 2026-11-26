@@ -133,6 +133,55 @@ def _suffix(filename: str) -> str:
     return filename[dot:].lower() if dot >= 0 else ""
 
 
+def _inlined_script(cell: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    script = cell.get("inlined_script")
+    if (
+        not isinstance(script, Mapping)
+        or type(script.get("path")) is not str
+        or not script.get("path")
+        or type(script.get("content")) is not str
+    ):
+        return None
+    return script
+
+
+def _export_source(cell: Mapping[str, Any], *, zh: bool = False) -> str:
+    """NB-1: a run-this-file Cell exports the script it ran, not the call.
+
+    The call stays above it as a comment, so the notebook says what the Cell
+    was and still runs top to bottom once the file is gone. A script that was
+    too long to keep whole is not inlined -- half a script that runs is worse
+    than a call that fails -- and the comment says why.
+    """
+
+    code = str(cell.get("code") or "")
+    script = _inlined_script(cell)
+    if script is None:
+        return code
+    path = str(script["path"])
+    original = "".join(
+        f"# {line}\n" for line in code.strip("\n").splitlines() if line.strip()
+    )
+    if script.get("truncated"):
+        size = script.get("size_bytes")
+        note = (
+            f"# {path} 运行时有 {size} 字节，只记录了开头部分，所以这里没有内联它。\n"
+            if zh
+            else f"# {path} was {size} bytes when it ran; only its beginning was "
+            "recorded, so it is not inlined here.\n"
+        )
+        return note + code
+    header = (
+        f"# 内联自 {path}（运行时内容）；单元原文：\n"
+        if zh
+        else f"# inlined from {path} as it was when run; the cell itself was:\n"
+    )
+    content = str(script["content"])
+    if content and not content.endswith("\n"):
+        content += "\n"
+    return header + original + content
+
+
 def _cell_failed(cell: Mapping[str, Any]) -> bool:
     return bool(
         str(cell.get("error") or "").strip()
@@ -239,6 +288,43 @@ def _clean_header(
     )
 
 
+#: M-61: outside OpenAI4S there is no ``host``, and the first cell calling it
+#: stopped the notebook with a NameError. This cell, placed before them, makes
+#: every ``host.*`` call a printed no-op there and leaves a real ``host`` alone.
+_HOST_STUB_SOURCE = """\
+# OpenAI4S: `host` exists only in an OpenAI4S kernel. Outside it, this stub
+# turns each host.* call into a printed no-op returning None, so the notebook
+# runs top to bottom; what those calls did (files, skills, sub-agents, model
+# calls) is not reproduced.
+try:
+    host
+except NameError:
+    class _OpenAI4SHostStub:
+        def __init__(self, name="host"):
+            self._name = name
+
+        def __getattr__(self, attribute):
+            return _OpenAI4SHostStub(f"{self._name}.{attribute}")
+
+        def __call__(self, *args, **kwargs):
+            print(f"[skipped outside OpenAI4S] {self._name}(...)")
+            return None
+
+    host = _OpenAI4SHostStub()
+"""
+_HOST_STUB_NOTE = {
+    "en": (
+        "The first code cell is a stub: run outside OpenAI4S, `host.*` calls "
+        "print a note and return None instead of stopping the notebook."
+    ),
+    "zh": "第一个代码单元是桩：在 OpenAI4S 之外运行时，`host.*` 调用只打印提示并返回 None，不会中断 Notebook。",
+}
+_BACKGROUND_NOTE = (
+    "# Ran as a background task (host.exec_background) in a kernel of its own;\n"
+    "# it shares no variables with the cells around it.\n"
+)
+
+
 class NotebookExportService:
     """Project append-only cell records into canonical Jupyter documents."""
 
@@ -311,10 +397,20 @@ class NotebookExportService:
             f"{stem}.python.ipynb": self._encode(
                 self.notebook(root_frame_id, "python", branch_id=branch_id)
             ),
-            f"{stem}.r.ipynb": self._encode(
-                self.notebook(root_frame_id, "r", branch_id=branch_id)
-            ),
         }
+        # M-61: a session with no R cell no longer ships an empty r.ipynb.
+        r_notebook = self.notebook(root_frame_id, "r", branch_id=branch_id)
+        if r_notebook["cells"]:
+            documents[f"{stem}.r.ipynb"] = self._encode(r_notebook)
+        return self._zip(documents, root_frame_id, branch_id)
+
+    def _zip(
+        self,
+        documents: dict[str, bytes],
+        root_frame_id: str,
+        branch_id: str | None,
+    ) -> bytes:
+        documents = dict(documents)
         manifest = {
             "version": 1,
             "root_frame_id": root_frame_id,
@@ -476,6 +572,24 @@ class NotebookExportService:
             lines.append(source.rstrip("\n"))
             lines.append("```")
             lines.append("")
+            script = _inlined_script(cell)
+            if script is not None:
+                # NB-1: the file this Cell ran, as it was when it ran.
+                cut = " (truncated: only its beginning was recorded)"
+                lines.append(
+                    f"Script `{script['path']}` as it ran"
+                    + (cut if script.get("truncated") else "")
+                    + ":"
+                )
+                lines.append("")
+                body = str(script["content"]).rstrip("\n")
+                ticks = "```"
+                while ticks in body:
+                    ticks += "`"
+                lines.append(f"{ticks}{fence}")
+                lines.append(body)
+                lines.append(ticks)
+                lines.append("")
             # The same three fields `_cell` reads, so the two exports cannot
             # disagree about what a cell produced.
             for name, label in (("stdout", "Output"), ("stderr", "Stderr")):
@@ -517,29 +631,53 @@ class NotebookExportService:
         """Return immutable bytes plus the exact HTTP descriptor Gateway needs."""
 
         stem = self._safe_stem(root_frame_id)
+        # CLI-2: every form is named after the session, as the clean notebook
+        # already was; the Markdown and raw forms said `f-7f16ab70f984.md`
+        # beside `RNA-seq质控与差异分析.ipynb`. The frame id stays the fallback.
+        human = _human_stem(title)
+        base = human or stem
         if variant is not None and str(variant).lower() == "clean":
-            document = self.clean_notebook(
-                root_frame_id, language, branch_id=branch_id, title=title
+            automatic = language is None or str(language).lower() == "auto"
+            # M-61: one .ipynb for a one-language session; both clean
+            # notebooks in a zip only when Python and R cells both remain.
+            both = (
+                self._clean_documents(root_frame_id, branch_id=branch_id, title=title)
+                if automatic
+                else {}
             )
-            data = self._encode(document)
-            human = _human_stem(title)
-            suffix = document["metadata"]["openai4s"]["language"]
-            filename = f"{human}.ipynb" if human else f"{stem}.{suffix}.ipynb"
-            content_type = "application/x-ipynb+json"
+            if len(both) == 2:
+                data = self._zip(
+                    {
+                        f"{base}.{name}.ipynb": self._encode(document)
+                        for name, document in both.items()
+                    },
+                    root_frame_id,
+                    branch_id,
+                )
+                filename = f"{base}.notebooks.zip"
+                content_type = "application/zip"
+            else:
+                document = next(iter(both.values()), None) or self.clean_notebook(
+                    root_frame_id, language, branch_id=branch_id, title=title
+                )
+                data = self._encode(document)
+                suffix = document["metadata"]["openai4s"]["language"]
+                filename = f"{human}.ipynb" if human else f"{stem}.{suffix}.ipynb"
+                content_type = "application/x-ipynb+json"
         elif language is not None and str(language).lower() == "markdown":
             data = self.markdown(root_frame_id, branch_id=branch_id)
-            filename = f"{stem}.md"
+            filename = f"{base}.md"
             content_type = "text/markdown; charset=utf-8"
         elif language is None or str(language).lower() == "bundle":
             data = self.bundle(root_frame_id, branch_id=branch_id)
-            filename = f"{stem}.notebooks.zip"
+            filename = f"{base}.notebooks.zip"
             content_type = "application/zip"
         else:
             normalized = str(language).lower()
             data = self._encode(
                 self.notebook(root_frame_id, normalized, branch_id=branch_id)
             )
-            filename = f"{stem}.{normalized}.ipynb"
+            filename = f"{base}.{normalized}.ipynb"
             content_type = "application/x-ipynb+json"
         return {
             "filename": filename,
@@ -615,12 +753,24 @@ class NotebookExportService:
             response_language(" ".join(str(m.get("content") or "") for m in narration))
             == "zh"
         )
-        out: list[dict[str, Any]] = [
-            self._markdown_cell(
-                "header",
-                _clean_header(title, language, failed, diagnostic, zh=zh),
+        header = _clean_header(title, language, failed, diagnostic, zh=zh)
+        needs_stub = language == "python" and any(
+            _HOST_CALL.search(_export_source(cell)) for cell in kept
+        )
+        if needs_stub:
+            header += "\n\n" + _HOST_STUB_NOTE["zh" if zh else "en"]
+        out: list[dict[str, Any]] = [self._markdown_cell("header", header)]
+        if needs_stub:
+            out.append(
+                {
+                    "cell_type": "code",
+                    "execution_count": None,
+                    "id": self._jupyter_id("openai4s-host-stub"),
+                    "metadata": {"openai4s": {"stub": "host"}},
+                    "outputs": [],
+                    "source": self._lines(_HOST_STUB_SOURCE),
+                }
             )
-        ]
         budget = {"bytes": 0}
         count = 0
         for _at, _order, kind, item in timeline:
@@ -639,6 +789,7 @@ class NotebookExportService:
                     count,
                     bindings.get(str(item.get("producing_cell_id") or ""), []),
                     budget,
+                    zh=zh,
                 )
             )
         document = self.notebook(root_frame_id, language, branch_id=branch_id)
@@ -651,6 +802,34 @@ class NotebookExportService:
             }
         )
         return document
+
+    def _clean_documents(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        title: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """The clean notebook of each language that kept at least one cell."""
+
+        present = {
+            _cell_language(cell)
+            for cell in self._branch_cells(root_frame_id, branch_id or root_frame_id)
+        }
+        documents: dict[str, dict[str, Any]] = {}
+        for name in ("python", "r"):
+            if name not in present:
+                continue
+            document = self.clean_notebook(
+                root_frame_id, name, branch_id=branch_id, title=title
+            )
+            if any(
+                cell["cell_type"] == "code"
+                and cell["metadata"].get("openai4s", {}).get("producing_cell_id")
+                for cell in document["cells"]
+            ):
+                documents[name] = document
+        return documents
 
     def _output_bindings(
         self, root_frame_id: str, cells: list[Mapping[str, Any]]
@@ -678,6 +857,8 @@ class NotebookExportService:
         count: int,
         bindings: list[dict[str, str]],
         budget: dict[str, int],
+        *,
+        zh: bool = False,
     ) -> dict[str, Any]:
         outputs: list[dict[str, Any]] = []
         for name in ("stdout", "stderr"):
@@ -734,7 +915,7 @@ class NotebookExportService:
                     ],
                 }
             )
-        source = str(cell.get("code") or "")
+        source = _export_source(cell, zh=zh)
         uses = sorted(set(_HOST_CALL.findall(source)))
         if uses:
             source = (
@@ -743,6 +924,8 @@ class NotebookExportService:
                 + " only exist there.\n"
                 + source
             )
+        if "background" in str(cell.get("kernel_id") or ""):
+            source = _BACKGROUND_NOTE + source
         cell_id = str(cell.get("producing_cell_id") or f"clean-{count}")
         return {
             "cell_type": "code",
@@ -828,28 +1011,35 @@ class NotebookExportService:
                 }
             )
         cell_id = str(cell.get("producing_cell_id") or f"export-{revision}")
+        metadata: dict[str, Any] = {
+            "producing_cell_id": cell_id,
+            "cell_index": cell.get("cell_index"),
+            "kernel_id": cell.get("kernel_id"),
+            "origin": cell.get("origin"),
+            "status": cell.get("status"),
+            "state_revision": revision,
+            "generation_id": cell.get("generation_id"),
+            "created_at": cell.get("created_at"),
+            "figures": figures,
+            "files_read": list(cell.get("files_read") or ()),
+            "files_written": list(cell.get("files_written") or ()),
+            "history_is_read_only": True,
+        }
+        script = _inlined_script(cell)
+        if script is not None:
+            # The source below carries the content; this says where it came
+            # from and whether it is whole.
+            metadata["inlined_script"] = {
+                key: script.get(key)
+                for key in ("path", "size_bytes", "sha256", "truncated")
+            }
         return {
             "cell_type": "code",
             "execution_count": cls._execution_count(cell, revision),
             "id": cls._jupyter_id(cell_id),
-            "metadata": {
-                "openai4s": {
-                    "producing_cell_id": cell_id,
-                    "cell_index": cell.get("cell_index"),
-                    "kernel_id": cell.get("kernel_id"),
-                    "origin": cell.get("origin"),
-                    "status": cell.get("status"),
-                    "state_revision": revision,
-                    "generation_id": cell.get("generation_id"),
-                    "created_at": cell.get("created_at"),
-                    "figures": figures,
-                    "files_read": list(cell.get("files_read") or ()),
-                    "files_written": list(cell.get("files_written") or ()),
-                    "history_is_read_only": True,
-                }
-            },
+            "metadata": {"openai4s": metadata},
             "outputs": outputs,
-            "source": cls._lines(str(cell.get("code") or "")),
+            "source": cls._lines(_export_source(cell)),
         }
 
     @staticmethod

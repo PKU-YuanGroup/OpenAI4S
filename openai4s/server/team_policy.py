@@ -266,7 +266,15 @@ INSTANCE_CONFIG_PREFIXES = ("/model-profiles/",)
 #:   user's own machine; in team mode it is arbitrary command execution as
 #:   the daemon for every member. This is the finding that put this table
 #:   here.
-DAEMON_OPERATION_PATHS = frozenset({"/compute/jobs"})
+#: - `/compute/ssh-aliases` and `/compute/remote`: both answer from the
+#:   daemon account's own `~/.ssh/config` -- every `Host` alias the operator
+#:   keeps there, registered with OpenAI4S or not -- and the second also opens
+#:   an SSH connection to each registered host as the daemon. Registering
+#:   remote compute was already the operator's; the listing it is picked from
+#:   was not, so every member could read the operator's personal host names.
+DAEMON_OPERATION_PATHS = frozenset(
+    {"/compute/jobs", "/compute/ssh-aliases", "/compute/remote"}
+)
 DAEMON_OPERATION_PREFIXES = (
     "/compute/jobs/",
     # Diagnostics: daemon-local posture and a redacted support zip. Admin-only
@@ -378,6 +386,18 @@ def may_change_instance_config(handler: Any) -> bool:
     writer's choosing, which delivers everyone's prompts and the group
     credential in the outgoing header. That is an operator's action."""
     return not enabled(handler) or is_admin(handler)
+
+
+def hides_instance_endpoint(handler: Any) -> bool:
+    """Whether this reader is shown the instance model endpoints blanked.
+
+    A member reads which provider and model are active -- the UI names them --
+    but not where the admin sends the traffic: an internal gateway's address
+    is the operator's to give out, and the member cannot change it anyway.
+    Every route that projects the live `llm_base_url` or a saved profile's
+    `base_url` asks this, so the answer cannot differ between them.
+    """
+    return enabled(handler) and not is_admin(handler)
 
 
 # --- permission rules -------------------------------------------------------

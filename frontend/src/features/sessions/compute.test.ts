@@ -212,6 +212,23 @@ describe("Run location", () => {
     await openRunLocationDialog("f");
     expect(modalBody.texts()).toContain(t("compute.profiles.empty"));
   });
+
+  it("says it in the user's words, not the daemon's (SET-4)", async () => {
+    const { LANG, setLang } = await import("../../i18n/runtime");
+    const before = LANG;
+    try {
+      for (const lang of ["zh", "en"] as const) {
+        await setLang(lang);
+        for (const key of ["compute.profiles.empty", "compute.status.unsupported"]) {
+          expect(t(key)).not.toMatch(/daemon/i);
+        }
+      }
+      await setLang("zh");
+      expect(t("compute.profiles.empty")).toBe("这台服务器还没有配置集群。");
+    } finally {
+      await setLang(before);
+    }
+  });
 });
 
 describe("compute read failures", () => {
@@ -543,7 +560,11 @@ describe("run-location read tri-state", () => {
   it("does not read a missing session as a daemon without the feature", async () => {
     failingApi(404, { error: "session not found" });
     await refreshComputeStatus("f");
-    expect(computeStatus.value?.phase).toBe("unavailable");
+    expect(computeStatus.value?.phase).not.toBe("unsupported");
+    // TEAM-26: nor as a second failure beside "Session not found" -- a
+    // session this login cannot see has no run location to report.
+    expect(computeStatus.value).toBeNull();
+    expect(byId("compute-badge")).toBeNull();
   });
 
   it("keeps a malformed 200 payload as a failed read, not a capability answer", async () => {

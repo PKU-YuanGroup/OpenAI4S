@@ -40,6 +40,10 @@ def test_delegate_injects_profile_into_string_without_mutating_input():
         "You are acting as the specialist **CHEMIST**.\n"
         "Think like a chemist.\n\nAnalyze the sample."
     )
+    # SCI-21: how much of the request is the persona, so the child is named
+    # by "Analyze the sample." on an approval card.
+    persona_chars = submitted[0]["_persona_chars"]
+    assert submitted[0]["request"][persona_chars:] == "Analyze the sample."
     assert submitted[0]["context"] is original["context"]
 
 

@@ -4,11 +4,18 @@ import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
 import { confirmAction, hint } from "../../features/customize/host";
 import {
+  categoryLabel,
+  decisionLabel,
   globalRulesSummary,
+  groupDecision,
+  groupRules,
+  installRule,
   permT,
+  ruleCount,
   toolDescription,
   type PermRule,
 } from "../../features/customize/permissions";
+import { roleT, settingsReadOnly } from "../../features/customize/roles";
 import { currentId } from "../../stores/session";
 import { useOptimistic, useTabRead } from "./hooks";
 import { Hdr, IconGhost, Note } from "./ui";
@@ -17,13 +24,16 @@ type ScopeMeta = { scope: string; scope_id: string; label: string };
 type ScopeKey = "conversation" | "project" | "global";
 type Rule = PermRule;
 
+/** `installs`: a rule about package installs, which may not allow (PERM-1). */
 function DecSelect({
   value,
   disabled,
+  installs,
   onChange,
 }: {
   value: string;
   disabled?: boolean;
+  installs?: boolean;
   onChange: (v: string) => void;
 }) {
   return (
@@ -33,25 +43,38 @@ function DecSelect({
       disabled={disabled}
       onChange={(e) => onChange((e.target as HTMLSelectElement).value)}
     >
-      <option value="allow">{t("perm.btn.allow")}</option>
+      <option
+        value="allow"
+        disabled={!!installs}
+        title={installs ? permT("permrules.installOnce") : undefined}
+      >
+        {t("perm.btn.allow")}
+      </option>
       <option value="ask">{t("cust.perm.decision.ask")}</option>
       <option value="deny">{t("perm.btn.deny")}</option>
     </select>
   );
 }
 
-function ResetRow() {
+/** `locked`: a team member, who may not reset the global tier (TEAM-23). */
+function ResetRow({ locked }: { locked: boolean }) {
   return (
     <div class="cust-row">
       <div class="info">
         <div class="nm">{t("cust.perm.resetName")}</div>
-        <div class="ds">{t("cust.perm.resetDesc")}</div>
+        <div class="ds">
+          {t("cust.perm.resetDesc")}
+          {locked ? " " + roleT("role.perm.resetMember") : ""}
+        </div>
       </div>
       <button
         type="button"
         class="outline-btn small"
+        disabled={locked}
+        title={locked ? roleT("role.perm.resetMember") : undefined}
         onClick={async () => {
-          if (!confirmAction(t("cust.perm.resetConfirm"))) return;
+          if (locked) return;
+          if (!(await confirmAction(t("cust.perm.resetConfirm")))) return;
           try {
             await api("/permissions/reset", { method: "POST" });
             refreshCustTab("permissions");
@@ -73,7 +96,7 @@ function ResetRow() {
  * re-rendered, so Preact never reset the select -- while the rule kept its
  * old decision.
  */
-function RuleRow({ g, r }: { g: ScopeMeta; r: Rule }) {
+function RuleRow({ g, r, locked }: { g: ScopeMeta; r: Rule; locked: boolean }) {
   const decision = useOptimistic<string>(
     r.decision,
     (next) =>
@@ -93,18 +116,24 @@ function RuleRow({ g, r }: { g: ScopeMeta; r: Rule }) {
     },
   );
   const what = toolDescription(r.tool);
+  const installs = installRule(r.tool, r.pattern);
   return (
     <div class="perm-rule">
       <span class="perm-rtool">{r.tool}</span>
       <span class="perm-rwhat">
         {what ? <span class="perm-rdesc">{what}</span> : null}
         <span class="perm-rpat mono">{r.pattern}</span>
+        {installs && r.decision === "allow" ? (
+          <span class="perm-rdesc">{permT("permrules.installIgnored")}</span>
+        ) : null}
       </span>
       <DecSelect
         value={decision.value ?? r.decision}
-        disabled={decision.busy}
+        disabled={decision.busy || locked}
+        installs={installs}
         onChange={decision.set}
       />
+      {locked ? null : (
       <IconGhost
         name="trash-2"
         title={t("common.delete")}
@@ -117,7 +146,40 @@ function RuleRow({ g, r }: { g: ScopeMeta; r: Rule }) {
           }
         }}
       />
+      )}
     </div>
+  );
+}
+
+/**
+ * PERM-3: one collapsible group of a scope's rules -- what they govern and
+ * what they amount to on the header, the tool names and patterns inside.
+ */
+function RuleGroup({
+  g,
+  category,
+  rules,
+  locked,
+}: {
+  g: ScopeMeta;
+  category: string;
+  rules: Rule[];
+  locked: boolean;
+}) {
+  const decision = groupDecision(rules);
+  return (
+    <details class="perm-grp" data-category={category} data-decision={decision}>
+      <summary class="perm-grp-h">
+        <span class="perm-grp-name">{categoryLabel(category)}</span>
+        {" · "}
+        <span class="perm-grp-dec">{decisionLabel(decision)}</span>
+        {" · "}
+        <span class="perm-grp-n">{ruleCount(rules.length)}</span>
+      </summary>
+      {rules.map((r) => (
+        <RuleRow key={r.rule_id} g={g} r={r} locked={locked} />
+      ))}
+    </details>
   );
 }
 
@@ -125,6 +187,8 @@ function AddRow({ g }: { g: ScopeMeta }) {
   const [tool, setTool] = useState("");
   const [pat, setPat] = useState("*");
   const [dec, setDec] = useState("ask");
+  const installs = installRule(tool.trim(), pat.trim() || "*");
+  const refused = installs && dec === "allow";
   return (
     <div class="perm-rule perm-add">
       <input
@@ -139,13 +203,19 @@ function AddRow({ g }: { g: ScopeMeta }) {
         value={pat}
         onInput={(e) => setPat((e.target as HTMLInputElement).value)}
       />
-      <DecSelect value={dec} onChange={setDec} />
+      <DecSelect value={dec} installs={installs} onChange={setDec} />
+      {refused ? <span class="perm-rdesc">{permT("permrules.installOnce")}</span> : null}
       <button
         type="button"
         class="outline-btn small"
         onClick={async () => {
           if (!tool.trim()) {
             hint(t("toast.perm.enterTool"), true);
+            return;
+          }
+          if (refused) {
+            // The server refuses it too; say why here instead of a failed save.
+            hint(permT("permrules.installOnce"), true);
             return;
           }
           try {
@@ -211,6 +281,9 @@ export function PermissionsTab() {
     : null;
 
   const byScope = (data && (data.rules as Record<string, Rule[]> | undefined)) || {};
+  // Team member: the global tier is the admin's (403 `admin_only`); their own
+  // conversation and project rules stay editable.
+  const readOnly = settingsReadOnly();
 
   return (
     <div>
@@ -221,19 +294,31 @@ export function PermissionsTab() {
         ? scopes.map((k) => {
             const g = meta[k]!;
             const rules = byScope[k] || [];
+            const locked = readOnly && k === "global";
             return (
               <div class="perm-sec" key={k}>
                 <div class="perm-sec-h">{g.label}</div>
+                {locked ? (
+                  <div data-admin-only="">
+                    <Note>{roleT("role.perm.globalMember")}</Note>
+                  </div>
+                ) : null}
                 {!rules.length ? <Note>{t("cust.perm.noRules")}</Note> : null}
-                {rules.map((r) => (
-                  <RuleRow key={r.rule_id} g={g} r={r} />
+                {groupRules(rules).map((group) => (
+                  <RuleGroup
+                    key={group.category}
+                    g={g}
+                    category={group.category}
+                    rules={group.rules}
+                    locked={locked}
+                  />
                 ))}
-                <AddRow g={g} />
+                {locked ? null : <AddRow g={g} />}
               </div>
             );
           })
         : null}
-      <ResetRow />
+      <ResetRow locked={readOnly} />
     </div>
   );
 }

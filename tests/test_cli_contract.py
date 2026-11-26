@@ -256,7 +256,7 @@ def test_url_command_is_offline_and_returns_success(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "get_config",
-        lambda: SimpleNamespace(host="127.0.0.1", port=9876),
+        lambda **_: SimpleNamespace(host="127.0.0.1", port=9876),
     )
 
     assert module.main(["url"]) == 0
@@ -305,7 +305,7 @@ def test_url_uses_the_live_recorded_endpoint_without_losing_url_semantics(
     config = _recorded_daemon_config(tmp_path, host=recorded_host)
     token = local_auth.load_or_mint(tmp_path)
 
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
     monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
 
@@ -319,7 +319,7 @@ def test_url_ignores_a_recorded_endpoint_when_the_pid_is_not_live(
     module = _cli_module()
     config = _recorded_daemon_config(tmp_path)
 
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: False)
 
     assert module.cmd_url(SimpleNamespace()) == 0
@@ -336,7 +336,7 @@ def test_url_ignores_a_recorded_endpoint_when_the_pid_is_not_live(
 def test_url_does_not_warn_when_the_daemon_is_live(tmp_path, monkeypatch, capsys):
     module = _cli_module()
     config = _recorded_daemon_config(tmp_path)
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
     monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
 
@@ -360,7 +360,7 @@ def test_url_follows_team_mode_recorded_by_the_live_daemon(
     config.statefile.write_text(json.dumps(payload), encoding="utf-8")
     token = _plant_token(tmp_path)
 
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
     monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
 
@@ -384,7 +384,7 @@ def test_url_follows_a_single_user_daemon_even_when_this_shell_says_team(
     config.team_mode = True
     token = _plant_token(tmp_path)
 
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
     monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
 
@@ -397,7 +397,7 @@ def test_url_in_team_mode_without_a_live_daemon_uses_cfg(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "get_config",
-        lambda: SimpleNamespace(
+        lambda **_: SimpleNamespace(
             host="127.0.0.1", port=9876, team_mode=True, pidfile=None
         ),
     )
@@ -413,7 +413,7 @@ def test_url_falls_back_to_cfg_when_an_old_statefile_omits_team_mode(
     config = _recorded_daemon_config(tmp_path, host="172.25.100.5")
     config.team_mode = True
     token = _plant_token(tmp_path)
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
     monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
 
@@ -432,7 +432,7 @@ def test_url_ignores_a_non_bool_team_mode_in_the_statefile(
     payload["team_mode"] = "false"
     config.statefile.write_text(json.dumps(payload), encoding="utf-8")
     token = _plant_token(tmp_path)
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
     monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
 
@@ -452,7 +452,7 @@ def test_url_ignores_team_mode_recorded_for_a_different_pid(
     payload["team_mode"] = True
     config.statefile.write_text(json.dumps(payload), encoding="utf-8")
     token = _plant_token(tmp_path)
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
     monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
 
@@ -608,7 +608,7 @@ def test_url_on_macos_names_the_port_the_daemon_was_started_on(
     config = _live_darwin_daemon(tmp_path)
     token = local_auth.load_or_mint(tmp_path)
     _as_darwin(module, monkeypatch, _darwin_kinfo_record())
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
 
     assert module.cmd_url(SimpleNamespace()) == 0
     assert capsys.readouterr().out.strip() == (f"http://127.0.0.1:9734/?token={token}")
@@ -620,7 +620,7 @@ def test_status_on_macos_probes_the_port_the_daemon_was_started_on(
     module = _cli_module()
     config = _live_darwin_daemon(tmp_path)
     _as_darwin(module, monkeypatch, _darwin_kinfo_record())
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     opened = []
 
     class Response:
@@ -655,7 +655,7 @@ def test_a_reused_pid_on_macos_still_falls_back_to_the_callers_config(
     module = _cli_module()
     config = _live_darwin_daemon(tmp_path, port=9734)
     _as_darwin(module, monkeypatch, _darwin_kinfo_record(micros=654_321))
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
 
     assert module._daemon_alive(config, os.getpid()) is False
     assert module.cmd_url(SimpleNamespace()) == 0
@@ -695,7 +695,7 @@ def test_stage1_run_allows_control_only_agent_before_any_readiness_probe(
     calls: list[tuple[str, object]] = []
 
     class Agent:
-        def __init__(self, *, cfg, verbose, task_mode=None):
+        def __init__(self, *, cfg, verbose, task_mode=None, **_reporting):
             calls.append(("construct", (cfg, verbose, task_mode)))
 
         def run(self, task):
@@ -758,7 +758,7 @@ def test_stage1_run_projects_typed_first_cell_readiness_refusal(
     }
 
     class Agent:
-        def __init__(self, *, cfg, verbose, task_mode=None):
+        def __init__(self, *, cfg, verbose, task_mode=None, **_reporting):
             del cfg, verbose, task_mode
 
         def run(self, task):
@@ -794,7 +794,7 @@ def test_flag_off_run_preserves_agent_execution_without_readiness_probe(
     calls: list[tuple[str, object]] = []
 
     class Agent:
-        def __init__(self, *, cfg, verbose, task_mode=None):
+        def __init__(self, *, cfg, verbose, task_mode=None, **_reporting):
             calls.append(("construct", (cfg, verbose, task_mode)))
 
         def run(self, task):
@@ -849,7 +849,7 @@ def test_run_that_did_not_complete_exits_non_zero_with_its_result_intact(
     )
 
     class Agent:
-        def __init__(self, *, cfg, verbose, task_mode=None):
+        def __init__(self, *, cfg, verbose, task_mode=None, **_reporting):
             del cfg, verbose, task_mode
 
         def run(self, task):
@@ -1467,7 +1467,7 @@ def test_status_reports_the_local_data_dir_without_trusting_health(monkeypatch, 
         def read(self):
             return b'{"status":"ok","model":"demo","data_dir":"/leaked"}'
 
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_read_pid", lambda cfg: 123)
     monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(
@@ -1552,7 +1552,7 @@ def test_status_probes_and_reports_the_live_recorded_endpoint(
         opened.append((request, timeout))
         return Response()
 
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
     monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
     monkeypatch.setattr(module, "_open_daemon", open_daemon)
@@ -1591,7 +1591,7 @@ def test_status_never_prints_the_access_token_and_points_at_url(
         def read():
             return b'{"status":"ok","model":"demo"}'
 
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
     monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
     monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
     monkeypatch.setattr(module, "_open_daemon", lambda *_a, **_k: Response())
@@ -2170,7 +2170,7 @@ def test_status_reports_a_daemon_that_does_not_answer_health(
     module = _cli_module()
     config = _live_darwin_daemon(tmp_path)
     _as_darwin(module, monkeypatch, _darwin_kinfo_record())
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "get_config", lambda **_: config)
 
     class Response:
         def __enter__(self):

@@ -1,7 +1,7 @@
 ---
 origin: openai4s
 name: figure-style
-description: "Publication-grade figure correctness and legibility rules. Load before drawing any plot and call `apply_figure_style()` — sets a role-mapped font-size ladder, outward ticks, frameless legends, and 300-dpi output. The skill is a checklist, not a house look: data fidelity (claim-titles tested against every row, excluded data never enters summaries), label economy (floor and ceiling), colour threading, chart-choice-by-data-shape, layout, and a render-then-verify QA loop (bbox collision + per-panel perceptual check). Ships helpers: focal_palette, bar_with_points, strip_with_median, end_of_line_labels, panel_letter, set_frame, panel_crops. For multi-panel figures load `figure-composer`; for whole-paper figure arc load `paper-narrative`."
+description: "Publication-grade figure correctness and legibility rules. Load before drawing any plot and call `apply_figure_style()` — sets a role-mapped font-size ladder, outward ticks, frameless legends, and 300-dpi output. The skill is a checklist, not a house look: data fidelity (claim-titles tested against every row, excluded data never enters summaries), label economy (floor and ceiling), colour threading, chart-choice-by-data-shape, layout, and a render-then-verify QA loop (bbox collision + per-panel perceptual check). Ships helpers: focal_palette, bar_with_points, strip_with_median, end_of_line_labels, panel_letter, set_frame, panel_crops, layout_issues. For multi-panel figures load `figure-composer`; for whole-paper figure arc load `paper-narrative`."
 license: Apache-2.0
 capabilities:
   network:
@@ -309,20 +309,25 @@ After `fig.savefig(...)`, before `host.save_artifact(...)`:
 
 **9.1 Geometric (bbox) check.**
 ```python
-fig.draw_without_rendering()  # lays text out on any backend; no renderer handle
-texts = [(t, t.get_window_extent()) for t in fig.findobj(mpl.text.Text)
-         if t.get_text().strip() and t.get_visible()]
-spines = [(s, s.get_window_extent()) for ax in fig.axes
-          for s in ax.spines.values() if s.get_visible()]
-ticklabels = {ax: set(ax.get_xticklabels(which='both') + ax.get_yticklabels(which='both'))
-              for ax in fig.axes}
-overlaps  = [(a, b) for i, (a, ba) in enumerate(texts) for b, bb in texts[i+1:] if ba.overlaps(bb)]
-overlaps += [(t, s) for t, bt in texts for s, bs in spines
-             if bt.overlaps(bs) and t not in ticklabels[s.axes]]
-# assert: overlaps == [] and every text box lies within fig.bbox
+import importlib
+fs = importlib.import_module("figure-style.kernel")
+fig.savefig("volcano.png")
+report = fs.layout_issues(fig, "volcano")  # name: the figure's file stem
+print(report)  # overlaps, spine_hits, out_of_bounds, round, rerender, note
 ```
-Overlap is defined between *visible* boxes, and a tick label sitting on its own
-spine is not a finding. Fix (move, shorten, stagger) and re-save until clean.
+Overlap is defined between boxes a draw actually renders, and a tick label
+sitting on its own spine is not a finding. A tick label whose tick lies outside
+the axis limits is never drawn, so it is not counted. Out-of-bounds means
+outside the *saved* image: under `bbox_inches='tight'` (what
+`apply_figure_style` sets) a label past the canvas edge is inside the PNG and is
+not a finding. Pass `layout_issues` the `bbox_inches=`/`pad_inches=` you gave
+`savefig`, if you gave any.
+
+**Cap: at most 2 geometry re-renders per figure.** Fix (move, shorten, stagger)
+and re-render only while `report["rerender"]` is True. After the second
+re-render, keep the saved figure and write what is left into the completion's
+`limitations` instead of rendering it again; a residual near-overlap is not
+worth another cell, and the user's "stop" ends the loop at once.
 
 **9.2 Perceptual check.** The bbox check is geometric, not perceptual — it will
 not catch a low-contrast label, a leader that crosses three others, or a series

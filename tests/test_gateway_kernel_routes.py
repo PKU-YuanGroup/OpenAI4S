@@ -777,3 +777,56 @@ def test_the_background_routes_list_and_stop_through_the_runner(tmp_path):
     code, payload = _call(handler, "POST", f"/frames/{fid}/background/-bad/stop")
     assert code == 400
     assert stops == [(fid, "exec-abc123"), (fid, "exec-gone")]
+
+
+def test_the_kernel_route_reports_the_r_slot_of_an_r_only_session(tmp_path):
+    """SCI-35: every other field of `/kernel` is the Python slot's. A session
+    that only ever ran R cells read as "not started" (and "ended" once the
+    daemon closed it) while its R kernel was live. The R slot reports its own
+    state beside them, through the real route, from a real R worker process
+    (the protocol-faithful fake interpreter) and, once the session is gone,
+    from its persisted generation."""
+    import stat
+    from pathlib import Path
+
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    fake = Path(__file__).parent / "fixtures" / "fake_rscript.py"
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    runner, handler, fid = _setup(tmp_path)
+
+    code, payload = _call(handler, "GET", f"/frames/{fid}/kernel")
+    assert code == 200
+    assert payload["r"] == {"state": "none", "alive": False, "generation_id": None}
+
+    st = runner._state(fid, "proj-kernel")
+    lease = st.kernels.ensure(
+        "r",
+        None,
+        lambda: spawn_r_kernel(cwd=str(st.workspace), rscript=str(fake)),
+    )
+    try:
+        code, payload = _call(handler, "GET", f"/frames/{fid}/kernel")
+        assert code == 200
+        # The Python slot never started, and says so; the R slot is live.
+        assert payload["alive"] is False and payload["state"] == "none"
+        assert payload["generation_id"] is None
+        assert payload["r"] == {
+            "state": "running",
+            "alive": True,
+            "generation_id": lease.generation_id,
+        }
+        code, status = _call(handler, "GET", f"/frames/{fid}/status")
+        assert code == 200 and status["kernel"]["r"]["alive"] is True
+    finally:
+        runner.close()
+
+    later = gateway_mod.SessionRunner(runner.cfg, _Hub(), start_idle_sweeper=False)
+    try:
+        assert later.kernel_status(fid)["r"] == {
+            "state": "ended",
+            "alive": False,
+            "generation_id": lease.generation_id,
+        }
+    finally:
+        later.close()

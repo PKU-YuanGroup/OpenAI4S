@@ -947,6 +947,17 @@ class ArtifactManager:
         if getattr(self.store, "_artifact_manager_backend", None) is None:
             self.store._artifact_manager_backend = self
 
+    def _role(self, artifact_id: Any, filename: Any) -> str:
+        """`artifact_role` with the role the server recorded for this artifact
+        (owner decision 33: a plan's JSON is a process file, whatever its name).
+        A store without the lookup falls back to the filename."""
+        marks: Mapping[str, str] = {}
+        try:
+            marks = self.store.artifact_role_marks([str(artifact_id or "")])
+        except Exception:  # noqa: BLE001 - a label never fails the event
+            marks = {}
+        return artifact_role(filename, marks.get(str(artifact_id or "")))
+
     @contextmanager
     def writer_transaction(self) -> Iterator[None]:
         """Serialize an entire higher-level Artifact policy/write boundary."""
@@ -2211,7 +2222,7 @@ class ArtifactManager:
                         "id": artifact_id,
                         "artifact_id": artifact_id,
                         "filename": restored.get("filename"),
-                        "role": artifact_role(restored.get("filename")),
+                        "role": self._role(artifact_id, restored.get("filename")),
                         "content_type": restored.get("content_type"),
                         "version_id": restored_version_id,
                         "root_frame_id": root_frame_id,
@@ -2316,7 +2327,7 @@ class ArtifactManager:
                 "artifact": {
                     "id": artifact_id,
                     "filename": artifact["filename"],
-                    "role": artifact_role(artifact["filename"]),
+                    "role": self._role(artifact_id, artifact["filename"]),
                     "version_id": version_id,
                     "root_frame_id": root_frame_id,
                 },
@@ -2443,7 +2454,7 @@ class ArtifactManager:
                 "artifact": {
                     "id": artifact_id,
                     "filename": filename,
-                    "role": artifact_role(filename),
+                    "role": self._role(artifact_id, filename),
                     "root_frame_id": root_frame_id,
                 },
             },
@@ -3800,7 +3811,7 @@ class ArtifactManager:
                     "filename": display_filename,
                     # The list routes' classification (ART-4), so a scratch
                     # script is folded live exactly as it is after a reload.
-                    "role": artifact_role(display_filename),
+                    "role": self._role(record["artifact_id"], display_filename),
                     "content_type": record.get("content_type"),
                     "size_bytes": size,
                     "project_id": session.project_id,
@@ -4421,9 +4432,15 @@ class BackgroundCaptureLifetime:
         self._emit = emit
         self._before: WorkspaceSnapshot | None = None
         self._exec_id = "background"
+        self._outcome: Mapping[str, Any] | None = None
 
     def bind_background_exec(self, exec_id: str) -> None:
         self._exec_id = str(exec_id or "background")
+
+    def record_background_outcome(self, outcome: Mapping[str, Any]) -> None:
+        """The finished job, written as a Notebook cell when the lease ends."""
+
+        self._outcome = outcome
 
     def __enter__(self) -> Any:
         entered = self._lease.__enter__()
@@ -4435,15 +4452,118 @@ class BackgroundCaptureLifetime:
         return entered
 
     def __exit__(self, *exc_info: Any) -> Any:
+        records: list[dict] = []
         try:
             if self._before is not None:
-                self._manager.capture_background(
+                records = self._manager.capture_background(
                     self._session, self._exec_id, self._before, self._emit
                 )
         except Exception as error:  # noqa: BLE001 — the job's outcome stands
             record_diagnostic(error, surface="artifacts:capture:background")
+        try:
+            if self._outcome is not None and self._exec_id != "background":
+                record_background_cell(
+                    self._manager.store,
+                    self._session,
+                    self._exec_id,
+                    self._outcome,
+                    records,
+                    self._emit,
+                )
+        except Exception as error:  # noqa: BLE001 — the job's outcome stands
+            record_diagnostic(error, surface="artifacts:record:background")
         finally:
             return self._lease.__exit__(*exc_info)
+
+
+#: The Notebook runtime segment a background cell is shown under. It ran in a
+#: kernel of its own, so nothing it defined exists in the session's kernel.
+BACKGROUND_KERNEL_ID = "python — background"
+
+
+def record_background_cell(
+    store: Any,
+    session: ArtifactSession,
+    exec_id: str,
+    outcome: Mapping[str, Any],
+    records: list[dict],
+    emit: EventSink | None = None,
+) -> None:
+    """Write one finished ``host.exec_background`` job into the Notebook (TEAM-11).
+
+    The cell's id is the job id, which is also the producer its captured
+    Artifact versions name, so "produced by" resolves and a session package
+    carries the code that made its files. Source and output are the job's;
+    it is never replayed. The revision is the session's next one, taken from
+    the in-memory cursor foreground cells advance, so a cell started after
+    this one cannot reuse it.
+    """
+
+    root = session.root_frame_id
+    latest = int(store.latest_state_revision(root) or 0)
+    current = getattr(session, "cell_index", None)
+    current = current if isinstance(current, int) else 0
+    revision = (current if current > latest else latest) + 1
+    if hasattr(session, "cell_index"):
+        setattr(session, "cell_index", revision)
+    written = [
+        str(record.get("filename"))
+        for record in records or ()
+        if isinstance(record, Mapping) and record.get("filename")
+    ]
+    result = {
+        "id": exec_id,
+        "stdout": str(outcome.get("stdout") or ""),
+        "error": outcome.get("error") or None,
+        "interrupted": bool(outcome.get("interrupted")),
+        "usage": dict(outcome.get("usage") or {}),
+    }
+    origin = "user" if outcome.get("origin") == "user" else "agent"
+    code = str(outcome.get("code") or "")
+    store.log_cell(
+        frame_id=root,
+        root_frame_id=root,
+        project_id=session.project_id,
+        code=code,
+        result=result,
+        origin=origin,
+        cell_seq=revision,
+        cell_index=revision,
+        state_revision=revision,
+        kernel_id=BACKGROUND_KERNEL_ID,
+        language="python",
+        replay_policy="never",
+        files_written=written,
+    )
+    if emit is None:
+        return
+    status = (
+        "interrupted"
+        if result["interrupted"]
+        else ("error" if result["error"] else "ok")
+    )
+    emit(
+        {
+            "type": "notebook_cell_finished",
+            "frame_id": root,
+            "root_frame_id": root,
+            "producing_cell_id": exec_id,
+            "cell_index": revision,
+            "state_revision": revision,
+            "generation_id": None,
+            "kernel_id": BACKGROUND_KERNEL_ID,
+            "language": "python",
+            "origin": origin,
+            "source": code,
+            "stdout": result["stdout"][:65536],
+            "stderr": "",
+            "error": str(result["error"] or "")[:65536],
+            "status": status,
+            "figures": [],
+            "files_written": written,
+            "files_read": [],
+        }
+    )
 
 
 def _capture_snippet(index: int, *, save: bool = True) -> str:
@@ -4467,8 +4587,14 @@ def _capture_snippet(index: int, *, save: bool = True) -> str:
     # from `Figure.stale`, which matplotlib 3.11 leaves True after every
     # `fig.savefig`, so the test never held. A figure with no mark (a kernel
     # whose hook did not install) is saved, as an unsaved one is.
+    #
+    # SCI-28: "figure_cell3_1.png" said nothing about the figure, and a
+    # report citing it could not be matched to it. The figure's own title
+    # (its suptitle, else its first axes title) is appended to the name; the
+    # "figure_cellN_" prefix stays, because image annotations read N from it.
     return (
         "import json as __oj\n"
+        "import re as __ore\n"
         "__osfigs=[]\n"
         "try:\n"
         " import sys as __sys\n"
@@ -4478,6 +4604,13 @@ def _capture_snippet(index: int, *, save: bool = True) -> str:
         f"   __nm='figure_cell{index}_'+str(__n)+'.png'\n"
         "   try:\n"
         "    __f=__plt.figure(__n)\n"
+        "    try:\n"
+        "     __st=getattr(__f,'_suptitle',None)\n"
+        "     __t=(__st.get_text() if __st is not None else '') or next("
+        "(__a.get_title() for __a in __f.axes if __a.get_title()),'')\n"
+        "     __t=__ore.sub(r'\\W+','_',str(__t)).strip('_')[:40].strip('_')\n"
+        f"     if __t: __nm='figure_cell{index}_'+str(__n)+'_'+__t+'.png'\n"
+        "    except Exception: pass\n"
         "    __kept=getattr(__f,'_openai4s_saved',False) is True\n"
         "    __drawn=any(getattr(__f,__a,None) for __a in ('axes','texts',"
         "'lines','patches','images','legends','artists','subfigs'))\n"

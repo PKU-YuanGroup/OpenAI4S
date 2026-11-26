@@ -489,3 +489,26 @@ def test_steps_route_returns_the_scrubbed_delegate_card(tmp_path):
     assert "BULLET_MARKER" in rendered
     assert "CONCLUSION_MARKER" in rendered
     assert "reports/report.md" in rendered
+
+
+def test_the_delegate_call_names_its_step_to_the_children_it_starts(dispatcher):
+    # SCI-22: a child's relayed steps could not be put under their delegation
+    # card -- nothing tied them to it until the delegate step ended.
+    from openai4s.observability import delegate_step
+
+    seen: list[str] = []
+
+    def fake_delegate(spec):
+        seen.append(delegate_step())
+        return _envelope()
+
+    dispatcher._delegate_fn = fake_delegate
+    steps: list[dict] = []
+    dispatcher.on_step = steps.append
+
+    dispatcher("delegate", [{"request": "do it", "name": "helper", "wait": True}])
+
+    begin = next(step for step in steps if step.get("phase") == "begin")
+    assert seen == [begin["step_id"]]
+    # Only for the call's duration: the next call starts with none.
+    assert delegate_step() == ""

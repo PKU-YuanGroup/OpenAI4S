@@ -77,3 +77,60 @@
   font-weight: 600;
   color: var(--text-400);
 }
+
+/* M-54: a cell whose results hold shows no state badge; then the row is empty. */
+.notebook-cell > .nbc-cell-meta:empty {
+  display: none;
+}
+
+/* SCI-23: why a cell is stale, in words beside its badge. */
+.nbc-state-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--warn-text);
+  font-size: 12px;
+}
+
+/* SYNC-27: a refused manual run, said beside the input it was typed into. */
+.nb-repl-notice {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* SCI-32: under a cell that failed on a missing package, what to install and where. */
+.nbc-missing {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: var(--hair);
+  color: var(--text-200);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.nbc-missing .nbc-action {
+  margin-inline-start: 4px;
+}
+
+/* NB-1: the script a run-this-file cell ran, folded under its source. */
+.nbc-script {
+  border-top: var(--hair);
+  font-size: 12px;
+}
+.nbc-script > summary {
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--text-300);
+  font-family: var(--mono);
+}
+.nbc-script-note {
+  padding: 0 12px 6px;
+  color: var(--text-400);
+  line-height: 1.5;
+}
+.nbc-script-src {
+  max-height: 360px;
+  overflow: auto;
+}

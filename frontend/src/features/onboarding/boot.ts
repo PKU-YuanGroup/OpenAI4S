@@ -9,6 +9,16 @@ function mountWizard(): Promise<void> {
 }
 
 /**
+ * Whether the wizard has anything for this reader: setup is not complete and
+ * the reader may save it. A team member may not (TEAM-10) -- the model setup
+ * is an admin's, and both Continue and Skip answered 403 -- so a member never
+ * gets the wizard, whatever state the admin left it in.
+ */
+export function wizardWanted(status: OnboardingStatus): boolean {
+  return !status.complete && status.can_configure;
+}
+
+/**
  * Load the first-run wizard only when it has something to show. A complete
  * setup, the usual case, hides it for the whole session (`hydrate` with
  * `complete`), so it used to ship in every first load for nothing. A status
@@ -27,10 +37,11 @@ export async function startOnboarding(
     await mount();
     return;
   }
-  if (!status.complete) {
+  if (wizardWanted(status)) {
     await mount();
     return;
   }
+  if (!status.can_configure) return;
   const resume = resolveResume(readResumeMarker(), status);
   if (resume.kind === "clear") clearResumeMarker();
   if (resume.kind === "test" || resume.kind === "choose") await mount();

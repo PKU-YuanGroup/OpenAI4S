@@ -3,8 +3,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { contractStub } from "../../compat/stub";
+import { artifacts, artifactsFrameId } from "../../stores/artifacts";
 import { skillsCatalog } from "../../stores/customize";
-import { currentId } from "../../stores/session";
+import { currentId, projects, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -267,7 +268,7 @@ describe("F-20 command palette", () => {
 
     // The empty query lists "New session" first. Typing a command and
     // pressing Enter before /search answers must run that command.
-    type(t("palette.action.customize").toLowerCase());
+    type(t("common.settings").toLowerCase());
     enter();
     expect(openCust).toHaveBeenCalledTimes(1);
     expect(newSession).not.toHaveBeenCalled();
@@ -281,6 +282,51 @@ describe("F-20 command palette", () => {
     await vi.waitFor(() => expect(openConversation).toHaveBeenCalledWith("frame_z", null));
     expect(newSession).not.toHaveBeenCalled();
     expect(PAL.open).toBe(false);
+  });
+
+  // SYNC-9: Escape (or the scrim) left focus on <body>; a keyboard user had to
+  // Tab from "Skip to content" back to the composer.
+  it("Escape and the scrim give focus back to what had it when the palette opened", async () => {
+    const made: Array<Record<string, any>> = [];
+    const composer = { focus: vi.fn(), isConnected: true };
+    vi.stubGlobal("document", {
+      activeElement: composer,
+      createElement: (tag: string) => {
+        const listeners: Record<string, (e: unknown) => void> = {};
+        const node: Record<string, any> = {
+          tagName: tag.toUpperCase(),
+          style: {},
+          listeners,
+          appendChild: vi.fn(),
+          setAttribute: vi.fn(),
+          remove: vi.fn(),
+          focus: vi.fn(),
+          querySelectorAll: () => [],
+          addEventListener: (type: string, fn: (e: unknown) => void) => {
+            listeners[type] = fn;
+          },
+        };
+        made.push(node);
+        return node;
+      },
+      body: { appendChild: vi.fn() },
+    });
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
+    const { PAL, closePalette, openPalette } = await import("./palette");
+    closePalette();
+
+    openPalette();
+    const input = made.filter((node) => node.tagName === "INPUT").at(-1)!;
+    input.listeners.keydown!({ key: "Escape", isComposing: false, keyCode: 27, preventDefault: vi.fn() });
+    expect(PAL.open).toBe(false);
+    expect(composer.focus).toHaveBeenCalledTimes(1);
+
+    openPalette();
+    const overlay = made.filter((node) => node.className === "palette-ov").at(-1)!;
+    overlay.onclick({ target: overlay });
+    expect(PAL.open).toBe(false);
+    expect(composer.focus).toHaveBeenCalledTimes(2);
   });
 
   // EXP-2: a word inside an answer, a cell or its output finds the session;
@@ -356,6 +402,107 @@ describe("F-20 command palette", () => {
     ]);
     // Nothing from the snippet was ever assigned as HTML.
     expect(made.some((node) => String(node.innerHTML).includes("onclick"))).toBe(false);
+  });
+
+  it("M-47: a hit names its project, its session and how long ago, so a copy in another project differs", async () => {
+    resetStoreFields();
+    skillsCatalog.value = [];
+    projects.value = [
+      { project_id: "p-orig", name: "Survival study" },
+      { project_id: "p-copy", name: "Survival study (imported)" },
+    ];
+    const now = Date.now();
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("document", {
+      createElement: () => ({ appendChild: vi.fn(), setAttribute: vi.fn(), addEventListener: vi.fn(), style: {} }),
+      body: { appendChild: vi.fn() },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            sessions: [{ id: "f-1", name: "KM curves", project_id: "p-orig", match: "title", snippet: null, updated_at: now - 3 * 86400_000 }],
+            artifacts: [
+              { id: "a-1", filename: "KM_arm.png", content_type: "image/png", project_id: "p-orig", root_frame_id: "f-1", session_name: "KM curves", updated_at: now - 3 * 86400_000 },
+              { id: "a-2", filename: "KM_arm.png", content_type: "image/png", project_id: "p-copy", root_frame_id: "f-9", session_name: "KM curves", updated_at: now - 600_000 },
+            ],
+            datapro: [],
+          }),
+      })),
+    );
+    const { PAL, palSearch } = await import("./palette");
+    PAL.listEl = null;
+    await palSearch("KM");
+
+    expect(PAL.items.find((it) => it.label === "KM curves")!.sub).toBe("Survival study · 3d");
+    const files = PAL.items.filter((it) => it.label === "KM_arm.png").map((it) => it.sub);
+    expect(files).toEqual([
+      "Survival study · KM curves · 3d · image/png",
+      "Survival study (imported) · KM curves · 10m · image/png",
+    ]);
+  });
+
+  // VIEW-5: ⌘K opened on the commands and the first six skills in catalogue
+  // order, with their English blurbs; nothing the user had worked on.
+  it("opens on recent sessions and this session's files, with the skills last", async () => {
+    stubPaletteDom();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const openConversation = vi.fn();
+    const openViewer = vi.fn();
+    vi.stubGlobal("window", { openConversation, openViewer });
+    const now = Date.now();
+    const iso = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
+    projects.value = [{ project_id: "p-1", name: "Survival study" }];
+    currentId.value = "f-open";
+    sessions.value = [
+      { id: "f-old", name: "Old notes", project_id: "p-1", updated_at: iso(3 * 24 * 60), message_count: 4 },
+      { id: "f-open", name: "The open one", project_id: "p-1", updated_at: iso(1), message_count: 9 },
+      { id: "f-new", name: "KM curves", project_id: "p-1", updated_at: iso(10), message_count: 2 },
+      { id: "f-empty", project_id: "p-1", updated_at: iso(0), message_count: 0 },
+    ];
+    artifactsFrameId.value = "f-open";
+    artifacts.value = [
+      { id: "a-1", filename: "km.png", content_type: "image/png", created_at: iso(30), role: "deliverable" },
+      { id: "a-2", filename: "scratch.py", content_type: "text/x-python", created_at: iso(5), role: "process" },
+      { id: "a-3", filename: "table.csv", content_type: "text/csv", created_at: iso(2), role: "deliverable" },
+    ];
+    skillsCatalog.value = [{ name: "admet_genetic", displayName: "admet_genetic", description: "ADMET helper" }];
+    const { t } = await import("../../i18n/runtime");
+    const { PAL, palSearch, palPick } = await import("./palette");
+    PAL.listEl = paletteList() as unknown as HTMLElement;
+    await palSearch("");
+
+    const labels = PAL.items.map((it) => it.label);
+    // Most recent first, not the open session, not an untouched empty one.
+    expect(labels.slice(0, 2)).toEqual(["KM curves", "Old notes"]);
+    // This session's files, newest first, without its process files.
+    expect(labels.slice(2, 4)).toEqual(["table.csv", "km.png"]);
+    expect(labels).not.toContain("scratch.py");
+    expect(labels[4]).toBe(t("palette.action.newSession"));
+    // The skills come after everything else.
+    expect(labels.at(-1)).toBe("admet_genetic");
+    expect(PAL.items[0]!.sub).toBe("Survival study · 10m");
+    // No request: all of it is already on the page.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    palPick(0);
+    expect(openConversation).toHaveBeenCalledWith("f-new", "p-1");
+    // Picking closed the palette; open it again for the file row.
+    await palSearch("");
+    palPick(2);
+    expect(openViewer).toHaveBeenCalledWith(expect.objectContaining({ id: "a-3", filename: "table.csv", root_frame_id: "f-open" }));
+
+    // Another session's file list is not this one's recent files.
+    artifactsFrameId.value = "f-new";
+    await palSearch("");
+    expect(PAL.items.map((it) => it.label)).not.toContain("table.csv");
+    // A query searches; the recent rows are the empty state only.
+    fetchMock.mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify({ sessions: [], artifacts: [], datapro: [] }) }));
+    await palSearch("zzz");
+    expect(PAL.items.map((it) => it.label)).not.toContain("KM curves");
   });
 
   it("source gates later-lane names with isReady and never imports window-exports", () => {

@@ -9,6 +9,17 @@ A loaded Skill's manifest is intersected with the measured sandbox posture
 (``enforced`` / ``self_test_passed`` / ``network_policy``), Host egress
 permission, and the caller's skill allowlist. The manifest never calls
 ``grant_domain`` and never widens ``OPENAI4S_KERNEL_ALLOW_RAW_NETWORK``.
+
+A declared ``host_only`` manifest limits the network of that Skill's OWN
+helper code (its ``kernel.py`` sidecar) to the domains it declares (owner
+decision 34). The SDK names the Skill whose sidecar is on the calling stack
+(``sdk.host.attribute_caller``) and the dispatcher enters
+``frame_scope(frame, caller_skill=...)``; only such an attributed Host request
+is held to the manifest. Native tools, the agent's own Cell code and its
+``host.bash`` keep the session's ordinary network policy. Loading a
+``host_only`` Skill still requires a kernel that cannot reach the network
+except through the Host (``admit_load`` / ``admit_cell``), since otherwise its
+helpers could bypass the limit.
 """
 
 from __future__ import annotations
@@ -36,6 +47,11 @@ _CURRENT_FRAME: ContextVar[str | None] = ContextVar(
 _ACTIVE_HOST_ONLY_DOMAINS: ContextVar[tuple[str, ...] | None] = ContextVar(
     "skill_network_host_only_domains", default=None
 )
+#: The Skill whose helper code made the Host request being served, if any.
+_ACTIVE_CALLER_SKILL: ContextVar[str | None] = ContextVar(
+    "skill_network_caller_skill", default=None
+)
+_UNSET: Any = object()
 
 CELL_SINK = "cell"
 SHELL_SINK = "shell"
@@ -280,24 +296,36 @@ def reset_frame(token: Any) -> None:
 
 
 class frame_scope:
-    def __init__(self, frame_id: str | None) -> None:
+    """Serve one Host request for ``frame_id``, made by ``caller_skill``'s helpers.
+
+    Only a request a bound ``host_only`` Skill's own helper code made is held
+    to that Skill's declared domains. With no caller Skill -- a native tool,
+    the agent's own Cell code -- the scope narrows nothing, including inside
+    an outer scope that did.
+    """
+
+    def __init__(self, frame_id: str | None, caller_skill: str | None = None) -> None:
         self._frame_id = frame_id
+        self._caller_skill = str(caller_skill or "").strip() or None
         self._token: Any = None
+        self._caller_token: Any = None
         self._domains_token: Any = None
 
     def __enter__(self) -> "frame_scope":
         self._token = _CURRENT_FRAME.set(
             str(self._frame_id) if self._frame_id else None
         )
-        domains = host_only_declared_domains(self._frame_id)
+        self._caller_token = _ACTIVE_CALLER_SKILL.set(self._caller_skill)
         self._domains_token = _ACTIVE_HOST_ONLY_DOMAINS.set(
-            domains if domains is not None else None
+            helper_host_only_domains(self._frame_id, self._caller_skill)
         )
         return self
 
     def __exit__(self, *exc: object) -> None:
         if self._domains_token is not None:
             _ACTIVE_HOST_ONLY_DOMAINS.reset(self._domains_token)
+        if self._caller_token is not None:
+            _ACTIVE_CALLER_SKILL.reset(self._caller_token)
         if self._token is not None:
             _CURRENT_FRAME.reset(self._token)
 
@@ -305,8 +333,10 @@ class frame_scope:
 def host_only_declared_domains(frame_id: str | None = None) -> tuple[str, ...] | None:
     """Union of declared host_only destinations, or None if none are bound.
 
-    ``None`` means no extra constraint. An empty tuple means a host_only Skill
-    is bound with no destinations, so every host is undeclared.
+    ``None`` means no ``host_only`` Skill is bound. An empty tuple means one is
+    bound with no destinations, so its helpers may reach no host at all. A
+    description of the frame's bindings; what a request is held to is
+    ``active_host_only_domains``.
     """
 
     key = str(frame_id or _CURRENT_FRAME.get() or "").strip()
@@ -325,11 +355,46 @@ def host_only_declared_domains(frame_id: str | None = None) -> tuple[str, ...] |
     return tuple(sorted(set(declared)))
 
 
+def helper_bindings(
+    frame_id: str | None, skill: str | None
+) -> list[SkillNetworkBinding]:
+    """The declared ``host_only`` bindings of ``skill`` in the frame."""
+
+    name = str(skill or "").strip()
+    if not name:
+        return []
+    return [
+        item
+        for item in _declared_host_only(bindings_for(frame_id))
+        if item.skill_id == name
+    ]
+
+
+def helper_host_only_domains(
+    frame_id: str | None, skill: str | None
+) -> tuple[str, ...] | None:
+    """Domains ``skill``'s helper code may reach, or None when not limited."""
+
+    bound = helper_bindings(frame_id, skill)
+    if not bound:
+        return None
+    return host_only_declared_domains_from(bound)
+
+
 def active_host_only_domains() -> tuple[str, ...] | None:
-    current = _ACTIVE_HOST_ONLY_DOMAINS.get()
-    if current is not None:
-        return current
-    return host_only_declared_domains(_CURRENT_FRAME.get())
+    """Domains the Host request being served is held to, or None.
+
+    Set only by a ``frame_scope`` whose caller is a bound ``host_only``
+    Skill's helper code; every other request keeps the session's policy.
+    """
+
+    return _ACTIVE_HOST_ONLY_DOMAINS.get()
+
+
+def active_caller_skill() -> str | None:
+    """The Skill whose helper code made the Host request being served."""
+
+    return _ACTIVE_CALLER_SKILL.get()
 
 
 def _declared_host_only(
@@ -343,17 +408,21 @@ def _declared_host_only(
     ]
 
 
-def narrowing_summary(frame_id: str | None = None) -> dict[str, Any] | None:
-    """Which loaded Skills narrow this frame's network, and to what.
+def narrowing_summary(
+    frame_id: str | None = None, skill: str | None = None
+) -> dict[str, Any] | None:
+    """Which loaded Skills' helpers are limited in this frame, and to what.
 
-    ``None`` when no declared ``host_only`` Skill is bound. The domain list is
-    the union every Host request is held to, the same one ``check_url`` and
-    shell admission read; it is a description for people and the model and
-    grants nothing.
+    With ``skill``, that Skill alone. ``None`` when no matching declared
+    ``host_only`` Skill is bound. The domains are what those Skills' own
+    helper code may reach; the rest of the session is not limited by them.
+    A description for people and the model that grants nothing.
     """
 
     key = str(frame_id or _CURRENT_FRAME.get() or "").strip()
-    host_only = _declared_host_only(bindings_for(key))
+    host_only = (
+        helper_bindings(key, skill) if skill else _declared_host_only(bindings_for(key))
+    )
     if not host_only:
         return None
     return {
@@ -365,11 +434,11 @@ def narrowing_summary(frame_id: str | None = None) -> dict[str, Any] | None:
 def narrowing_notice(
     frame_id: str | None, candidate: SkillNetworkBinding
 ) -> dict[str, Any] | None:
-    """The session notice a load owes the user, or None when nothing changes.
+    """The notice a load owes the user, or None when nothing changes.
 
-    Only a declared ``host_only`` manifest narrows the network, and only the
-    first load of a given manifest in a frame changes what the session can
-    reach; a repeat load says nothing new. Call before binding ``candidate``.
+    Only a declared ``host_only`` manifest limits a Skill's helpers, and only
+    the first load of a given manifest in a frame says something new. Call
+    before binding ``candidate``.
     """
 
     if candidate.capability.mode != "host_only":
@@ -382,17 +451,15 @@ def narrowing_notice(
             and item.manifest_digest == candidate.manifest_digest
         ):
             return None
-    bound = _declared_host_only(bindings_for(frame_id))
-    union = host_only_declared_domains_from([*bound, candidate])
-    skills = list(
-        dict.fromkeys([*(item.skill_id for item in bound), candidate.skill_id])
+    domains = host_only_declared_domains_from(
+        [*helper_bindings(frame_id, candidate.skill_id), candidate]
     )
     return {
         "notice": "skill_network",
         "skill": candidate.skill_id,
         "skill_domains": list(candidate.capability.domains),
-        "skills": skills,
-        "domains": list(union),
+        "skills": [candidate.skill_id],
+        "domains": list(domains),
     }
 
 
@@ -507,15 +574,23 @@ def admit(
     sandbox_status: Mapping[str, Any] | None,
     command_domains: Sequence[str] = (),
     urls: Sequence[str] = (),
+    caller_skill: Any = _UNSET,
 ) -> AdmissionDecision:
-    """Intersect bound manifests with measured posture and Host egress."""
+    """Intersect bound manifests with measured posture and Host egress.
 
+    Destinations (``command_domains`` / ``urls``) are held to a manifest only
+    for a request ``caller_skill``'s own helpers made; it defaults to the
+    caller of the Host request being served (``frame_scope``).
+    """
+
+    caller = active_caller_skill() if caller_skill is _UNSET else caller_skill
     return _admit_bindings(
         bindings_for(frame_id),
         sink=sink,
         sandbox_status=sandbox_status,
         command_domains=command_domains,
         urls=urls,
+        caller_skill=caller,
     )
 
 
@@ -592,9 +667,10 @@ def _admit_bindings(
     sandbox_status: Mapping[str, Any] | None,
     command_domains: Sequence[str] = (),
     urls: Sequence[str] = (),
+    caller_skill: str | None = None,
 ) -> AdmissionDecision:
     if sink == HOST_FETCH_SINK:
-        return _admit_host_fetch(bindings, urls)
+        return _admit_host_fetch(_caller_host_only(bindings, caller_skill), urls)
     if not bindings:
         return _allow(sink=sink, bindings=(), sandbox=sandbox_status)
 
@@ -639,10 +715,25 @@ def _admit_bindings(
         )
 
     if sink == SHELL_SINK:
-        return _admit_shell_domains(
-            host_only, command_domains, sandbox_status, bindings
-        )
+        helper = _caller_host_only(host_only, caller_skill)
+        if helper:
+            # A command a Skill's own helpers run is held to its manifest; the
+            # agent's own commands keep the session's network policy.
+            return _admit_shell_domains(
+                helper, command_domains, sandbox_status, bindings
+            )
     return _allow(sink=sink, bindings=bindings, sandbox=sandbox_status)
+
+
+def _caller_host_only(
+    bindings: Sequence[SkillNetworkBinding], caller_skill: str | None
+) -> list[SkillNetworkBinding]:
+    """The declared ``host_only`` bindings of the calling Skill, if any."""
+
+    name = str(caller_skill or "").strip()
+    if not name:
+        return []
+    return [item for item in _declared_host_only(bindings) if item.skill_id == name]
 
 
 def _admit_shell_domains(
@@ -740,81 +831,110 @@ UNDECLARED_MARK = "skill host_only manifest does not declare"
 _LISTED_DOMAINS = 24
 
 
+def _limit_subject(skill: str) -> str:
+    """How a refusal names the Skill; ``refusal_view`` recognizes it."""
+
+    return f"the {skill} Skill's own helper code"
+
+
 def _limit_clause(bindings: Sequence[SkillNetworkBinding]) -> str:
     host_only = _declared_host_only(bindings)
     skills = list(dict.fromkeys(item.skill_id for item in host_only))
     declared = host_only_declared_domains_from(host_only)
     if not skills:
-        subject = "a loaded Skill limits"
-    elif len(skills) == 1:
-        subject = f"the loaded {skills[0]} Skill limits"
+        subject = "a loaded Skill's own helper code"
     else:
-        subject = f"the loaded {', '.join(skills)} Skills limit"
+        subject = " and ".join(_limit_subject(skill) for skill in skills)
     shown = ", ".join(declared[:_LISTED_DOMAINS])
     if len(declared) > _LISTED_DOMAINS:
         shown += ", …"
     count = f"{len(declared)} domain" + ("" if len(declared) == 1 else "s")
-    return f"{subject} this session's network to {count}" + (
-        f" ({shown})" if shown else ""
-    )
+    return f"{subject} may only reach {count}" + (f" ({shown})" if shown else "")
+
+
+#: The other half of every Skill-limit refusal: the limit is not the session's.
+_ONLY_HELPERS = (
+    "This limit covers only that Skill's own helpers; the rest of this "
+    "session's network is unchanged"
+)
 
 
 def undeclared_destination_reason(
     host: str, bindings: Sequence[SkillNetworkBinding]
 ) -> str:
-    """Why a request to ``host`` is refused, in words a person can act on.
+    """Why a Skill helper's request to ``host`` is refused, in actionable words.
 
-    It used to be only the first clause, which named neither the Skill nor
-    the domains it allows, and the Cell then rewrote it to "host authorization
-    unavailable". Approval is named because the request is refused whatever
-    anyone approves.
+    It names the Skill and the domains its helpers may reach, says approval
+    cannot change it, and that nothing else in the session is limited: a
+    model told only "refused" spent twenty minutes working around a limit
+    that never applied to its own requests.
     """
 
     return (
         f"{UNDECLARED_MARK} destination {host!r}: {_limit_clause(bindings)}. "
         "The request was not sent, and approving it cannot widen a Skill's "
-        "network limit; use one of those domains or the Skill's own helpers."
+        f"network limit. {_ONLY_HELPERS}: make this request from your own "
+        "code or with a built-in tool (web_fetch, science_search) instead."
     )
 
 
 def search_engines_reason(engines: Sequence[str]) -> str:
-    """Why a web search was refused: no enabled engine is a declared host.
+    """Why a Skill helper's web search was refused: no engine is declared.
 
     A refused search used to come back as "0 results" with the reason in a
     note, so it read as "nothing on the web" and the model retried it.
     """
 
-    key = str(_CURRENT_FRAME.get() or "").strip()
     named = ", ".join(str(item) for item in engines if item) or "none"
     return (
         f"{UNDECLARED_MARK} any enabled search engine ({named}): "
-        f"{_limit_clause(bindings_for(key))}. The search was not sent and "
-        "retrying will not help; use the Skill's own lookup helpers, or "
-        "host.web_fetch on one of those domains."
+        f"{_limit_clause(_active_caller_bindings())}. The search was not sent "
+        f"and retrying it from the Skill's helpers will not help. "
+        f"{_ONLY_HELPERS}: search from your own code or with the web_search "
+        "tool instead."
     )
+
+
+def _active_caller_bindings(frame_id: str | None = None) -> list[SkillNetworkBinding]:
+    key = str(frame_id or _CURRENT_FRAME.get() or "").strip()
+    return helper_bindings(key, active_caller_skill())
 
 
 def undeclared_destination_reason_for_frame(
     host: str, frame_id: str | None = None
 ) -> str:
-    """``undeclared_destination_reason`` for the current (or given) frame."""
+    """``undeclared_destination_reason`` for the request being served."""
 
-    key = str(frame_id or _CURRENT_FRAME.get() or "").strip()
-    return undeclared_destination_reason(host, bindings_for(key))
+    return undeclared_destination_reason(host, _active_caller_bindings(frame_id))
 
 
 def refusal_view(reason: str, frame_id: str | None) -> dict[str, Any] | None:
-    """The structured "blocked by a Skill's network limit" view of a refusal.
+    """The structured "blocked by a Skill helper's network limit" view.
 
     ``None`` unless ``reason`` is one this module worded. The Skill and domain
     lists come from the frame's bindings, not from parsing the text, which
-    elides a long domain list.
+    elides a long domain list; the Skill is the one the refusal names
+    (``_limit_subject``), since the request's own scope has ended by the time
+    its card is drawn.
     """
 
     text = str(reason or "")
     if UNDECLARED_MARK not in text:
         return None
-    summary = narrowing_summary(frame_id) or {"skills": [], "domains": []}
+    key = str(frame_id or _CURRENT_FRAME.get() or "").strip()
+    named = [
+        item
+        for item in _declared_host_only(bindings_for(key))
+        if _limit_subject(item.skill_id) in text
+    ]
+    summary = (
+        {
+            "skills": list(dict.fromkeys(item.skill_id for item in named)),
+            "domains": list(host_only_declared_domains_from(named)),
+        }
+        if named
+        else narrowing_summary(key) or {"skills": [], "domains": []}
+    )
     destination = ""
     marker = f"{UNDECLARED_MARK} destination "
     start = text.find(marker)
@@ -849,7 +969,8 @@ def request_refusal(method: str, spec: Any) -> str | None:
     then failed. Answering here, before the gate, keeps the user from being
     asked to approve something that cannot happen. Granting network access to
     an undeclared domain is the same case: the grant cannot widen a Skill's
-    limit. Uses the frame scope the dispatcher has already entered.
+    limit. Uses the frame scope the dispatcher has already entered, so only a
+    request a ``host_only`` Skill's own helpers made is refused here.
     """
 
     key = _TARGET_KEYS.get(method)
@@ -928,20 +1049,24 @@ def admit_shell(
     frame_id: str | None,
     sandbox_status: Mapping[str, Any] | None,
     command_domains: Sequence[str] = (),
+    caller_skill: Any = _UNSET,
 ) -> AdmissionDecision:
     return admit(
         sink=SHELL_SINK,
         frame_id=frame_id,
         sandbox_status=sandbox_status,
         command_domains=command_domains,
+        caller_skill=caller_skill,
     )
 
 
 def constrain_check_url(url: str) -> str | None:
-    """Return a blocked-domain host if a bound host_only Skill forbids ``url``.
+    """Return a blocked-domain host if the calling Skill's manifest forbids ``url``.
 
-    Does not grant access. ``None`` means this layer has no extra denial;
-    ``check_url`` still applies the Host allowlist.
+    Only a request a bound ``host_only`` Skill's own helper code made is held
+    to its manifest (``frame_scope``). Does not grant access. ``None`` means
+    this layer has no extra denial; ``check_url`` still applies the Host
+    allowlist.
     """
 
     from openai4s.egress import domain_of

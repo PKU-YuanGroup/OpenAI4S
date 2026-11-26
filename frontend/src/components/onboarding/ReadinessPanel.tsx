@@ -82,11 +82,6 @@ export function EnvironmentCard({
         </div>
         {action}
       </div>
-      {readiness.ready ? null : (
-        <div class="standard-readiness-explicit" data-readiness-optional="">
-          {ot("onboarding.env.optional")}
-        </div>
-      )}
       {absent.length ? (
         <div class="standard-readiness-gap">
           <div class="standard-readiness-label">{ot("onboarding.env.missing")}</div>
@@ -111,21 +106,29 @@ export function EnvironmentCard({
           </div>
         ) : null,
       )}
-      {readiness.remediation ? (
-        <div class="standard-readiness-remediation">
-          {/* FR-3: one instruction wherever environments are missing -- the
-              CLI banner's and `doctor`'s. The daemon's generation-repair
-              commands (`env plan` / `env apply`) are not a second path here. */}
-          <div class="standard-readiness-label">{ot("onboarding.env.remediation")}</div>
-          {absent.length ? (
+      {readiness.ready ? null : (
+        // No route builds these environments from the browser (M-5), so the
+        // terminal step stays, one click away instead of a wall of text.
+        // FR-3: one instruction wherever environments are missing -- the CLI
+        // banner's and `doctor`'s; the daemon's generation-repair commands
+        // (`env plan` / `env apply`) are not a second path here.
+        <details class="standard-readiness-remediation" data-readiness-commands="">
+          <summary>{ot("onboarding.env.showCommand")}</summary>
+          <div class="standard-readiness-explicit" data-readiness-optional="">
+            {ot("onboarding.env.optional")}
+          </div>
+          {readiness.remediation ? (
+            <div class="standard-readiness-label">{ot("onboarding.env.remediation")}</div>
+          ) : null}
+          {readiness.remediation && absent.length ? (
             <>
               <div class="standard-readiness-explicit">{t("environment.readiness.explicitOnly")}</div>
               <CopyCommand item={{ command: SETUP_COMMAND, label: "" }} />
               <div class="standard-readiness-explicit">{ot("onboarding.env.notOnPath")}</div>
             </>
           ) : null}
-        </div>
-      ) : null}
+        </details>
+      )}
     </section>
   );
 }
@@ -163,21 +166,24 @@ function NetworkCard({
             : ot("onboarding.readiness.appNetworkOff"),
         )}
       </div>
-      <div class="ds" data-network="egress">
-        {network.egress === "allowlist"
-          ? ot("onboarding.readiness.egressOn")
-          : ot("onboarding.readiness.egressOff")}
-      </div>
-      <div class="ds" data-network="kernel">
-        {ot("onboarding.readiness.kernelNetwork")}
-      </div>
-      {network.contacted ? null : (
-        <div class="ds">{ot("onboarding.readiness.notContacted")}</div>
-      )}
       <div class="ds">
         {ot("onboarding.readiness.platform", systemName(platform))} ·{" "}
         {nativeRuntime ? ot("onboarding.readiness.runtimeYes") : ot("onboarding.readiness.runtimeNo")}
       </div>
+      <details class="onb-more">
+        <summary>{ot("onboarding.readiness.more")}</summary>
+        <div class="ds" data-network="egress">
+          {network.egress === "allowlist"
+            ? ot("onboarding.readiness.egressOn")
+            : ot("onboarding.readiness.egressOff")}
+        </div>
+        <div class="ds" data-network="kernel">
+          {ot("onboarding.readiness.kernelNetwork")}
+        </div>
+        {network.contacted ? null : (
+          <div class="ds">{ot("onboarding.readiness.notContacted")}</div>
+        )}
+      </details>
     </section>
   );
 }
