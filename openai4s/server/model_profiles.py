@@ -198,7 +198,7 @@ def _probe_detail(error: Exception, public: dict) -> str:
     """
     status = getattr(error, "status", None)
     code = str(getattr(error, "error_code", "") or "")
-    from openai4s.llm import llm_failure_code
+    from openai4s.llm import llm_error_kind, llm_failure_code
 
     failure_code = llm_failure_code(error)
     if failure_code == "llm_deadline_exceeded":
@@ -225,6 +225,14 @@ def _probe_detail(error: Exception, public: dict) -> str:
             "the credential is valid but not permitted to use this model; "
             "check the model name and the account's entitlements"
         )
+    if status == 404 and llm_error_kind(error) == "llm_request_target_not_found":
+        # NV-05: only a listed provider code says the *model* is missing. A
+        # bare 404 is as often a wrong base URL path, so it names both, as the
+        # turn's failure message for the same error does.
+        return (
+            "the endpoint has nothing at the requested address (HTTP 404); "
+            "check the base URL and the model id"
+        )
     if status == 404 or code in ("model_not_found", "not_found"):
         return "the provider does not have a model by that name at this endpoint"
     if failure_code == "llm_rate_limited":
@@ -234,6 +242,12 @@ def _probe_detail(error: Exception, public: dict) -> str:
             "the provider returned a server error; this is not a configuration problem"
         )
     if _network_failure(error):
+        if llm_error_kind(error) == "llm_endpoint_unreachable":
+            return (
+                "the endpoint could not be reached: the connection was refused "
+                "or the host name did not resolve, so no request was sent; "
+                "check the base URL"
+            )
         return (
             "the endpoint could not be reached, or the connection dropped; "
             "check the base URL and this machine's network access"

@@ -457,3 +457,303 @@ def test_a_report_that_says_it_failed_while_status_is_passed_is_refused():
     report["failure"] = {"check": "serve", "detail": "x"}
     with pytest.raises(ReceiptError, match="reports a failure"):
         release_receipts.normalize_runtime_smoke(report, artifact_sha256=_TARBALL_SHA)
+
+
+# --------------------------------------------------------------------------
+# upgrade readback: the previous stable bundle's data, opened by this release
+#
+# A release after 1.0.1 must show that data the pinned previous Linux bundle
+# wrote is migrated and read back by this tarball, and that the pre-migration
+# copy still opens in the previous bundle. Each way the evidence can be
+# missing or wrong is refused, and the refusals keep their causes apart.
+# --------------------------------------------------------------------------
+
+_CANDIDATE = "OpenAI4S-1.1.0-linux-x86_64.tar.gz"
+#: The previous stable bundle the lead verified against v1.0.1's SHA256SUMS.
+_PINNED = {
+    "name": "OpenAI4S-1.0.1-linux-x86_64.tar.gz",
+    "version": "1.0.1",
+    "sha256": "026c753daf705a186dfc694e7c79f428e0395e27d9607c56d739746b4df4503b",
+}
+
+
+def _upgrade(**changes):
+    from tests._runtime_smoke import passing_upgrade_readback
+
+    document = passing_upgrade_readback(
+        candidate_name=_CANDIDATE, candidate_sha256=_TARBALL_SHA
+    )
+    for path, value in changes.items():
+        target = document
+        parts = path.split(".")
+        for part in parts[:-1]:
+            target = target[part]
+        target[parts[-1]] = value
+    return document
+
+
+def _bind(upgrade, *, name=_CANDIDATE, pin=None):
+    report = _probe_report()
+    if upgrade is not None:
+        report["upgrade_readback"] = upgrade
+    return release_receipts.normalize_runtime_smoke(
+        report,
+        artifact_sha256=_TARBALL_SHA,
+        artifact_name=name,
+        upgrade_baseline=pin,
+    )
+
+
+def test_the_previous_bundle_is_pinned_once_in_the_release_workflow():
+    assert release_receipts.pinned_upgrade_baseline() == _PINNED
+
+
+def test_the_smoke_and_the_receipt_name_the_same_upgrade_checks():
+    from scripts import installed_runtime_smoke as smoke
+
+    assert smoke.UPGRADE_CHECKS == release_receipts.UPGRADE_READBACK_CHECKS
+    assert smoke.UPGRADE_SCENARIO_VERSION == (
+        release_receipts.UPGRADE_READBACK_SCENARIO_VERSION
+    )
+
+
+_PIN_NAME = '  OPENAI4S_UPGRADE_BASELINE_NAME: "OpenAI4S-1.0.1-linux-x86_64.tar.gz"\n'
+_PIN_VERSION = '  OPENAI4S_UPGRADE_BASELINE_VERSION: "1.0.1"\n'
+_PIN_SHA = "  OPENAI4S_UPGRADE_BASELINE_SHA256: " + "a" * 64 + "\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        pytest.param("jobs: {}\n", "0 time", id="no-pin"),
+        pytest.param(
+            "env:\n" + _PIN_NAME + _PIN_VERSION + "  # " + _PIN_SHA.lstrip(),
+            "SHA256 0 time",
+            id="commented-out",
+        ),
+        pytest.param(
+            "env:\n" + _PIN_NAME + _PIN_VERSION + _PIN_SHA + _PIN_SHA,
+            "2 time",
+            id="pinned-twice",
+        ),
+        pytest.param(
+            "env:\n" + _PIN_NAME.replace("1.0.1", "1.0.0") + _PIN_VERSION + _PIN_SHA,
+            "version 1.0.1 is",
+            id="name-disagrees-with-version",
+        ),
+        pytest.param(
+            "env:\n" + _PIN_NAME + _PIN_VERSION + _PIN_SHA.replace("a" * 64, "nope"),
+            "no SHA-256",
+            id="no-digest",
+        ),
+    ],
+)
+def test_an_unusable_pin_is_refused(tmp_path, text, message):
+    workflow = tmp_path / "release.yml"
+    workflow.write_text(text, encoding="utf-8")
+    with pytest.raises(ReceiptError, match=message):
+        release_receipts.pinned_upgrade_baseline(workflow)
+
+
+def test_a_passing_upgrade_readback_is_kept_with_both_digests_and_the_records():
+    document = _bind(_upgrade())["upgrade_readback"]
+    assert document["status"] == "passed"
+    assert document["baseline"] == {**_PINNED, "schema": 43}
+    assert document["candidate"] == {
+        "name": _CANDIDATE,
+        "version": "1.1.0",
+        "sha256": _TARBALL_SHA,
+        "schema": 44,
+    }
+    assert set(document["checks"]) == set(release_receipts.UPGRADE_READBACK_CHECKS)
+    records = document["records"]
+    assert [row["version_id"] for row in records["csv_versions"]] == [
+        "v-000000000001",
+        "v-000000000002",
+    ]
+    assert all(len(row["sha256"]) == 64 for row in records["csv_versions"])
+    assert records["history_entries"] == len(records["cell_ids"]) == 3
+    assert document["failure"] is None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        _CANDIDATE,
+        "OpenAI4S-1.0.2-linux-x86_64.tar.gz",
+        # An unreadable version cannot prove it predates the gate.
+        "OpenAI4S-1.1.0.dev0-linux-x86_64.tar.gz",
+    ],
+)
+def test_a_release_after_the_first_baseline_must_carry_the_upgrade_readback(name):
+    with pytest.raises(ReceiptError, match="carries no upgrade_readback"):
+        _bind(None, name=name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["OpenAI4S-1.0.1-linux-x86_64.tar.gz", "OpenAI4S-0.2.0-linux-x86_64.tar.gz"],
+)
+def test_receipts_for_older_releases_stay_verifiable_without_it(name):
+    assert "upgrade_readback" not in _bind(None, name=name)
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        pytest.param("baseline_unavailable", "was unavailable", id="baseline-missing"),
+        pytest.param(
+            "baseline_digest_mismatch", "is not the pinned one", id="wrong-digest"
+        ),
+        pytest.param("not_run", "was not run", id="not-run"),
+    ],
+)
+def test_each_refusal_before_the_scenario_is_named_for_its_cause(status, message):
+    from scripts import installed_runtime_smoke as smoke
+
+    upgrade = _upgrade()
+    declared = smoke.build_upgrade_report(
+        baseline=upgrade["baseline"],
+        candidate=upgrade["candidate"],
+        checks={},
+        records=None,
+        duration_s=1.0,
+        status=status,
+        failure={"check": "baseline_digest", "detail": "detail from the run"},
+    )
+    with pytest.raises(ReceiptError, match=message) as raised:
+        _bind(declared)
+    assert "detail from the run" in str(raised.value)
+
+
+def test_a_failed_upgrade_scenario_names_the_failed_check():
+    upgrade = _upgrade(
+        status="failed",
+        failure={"check": "csv_versions", "detail": "version 2 was lost"},
+    )
+    upgrade["checks"]["csv_versions"] = "failed"
+    with pytest.raises(ReceiptError, match="did not pass: csv_versions: version 2"):
+        _bind(upgrade)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        pytest.param(
+            {"candidate.sha256": "e" * 64}, "not the tarball", id="other-candidate"
+        ),
+        pytest.param(
+            {
+                "candidate.name": "OpenAI4S-1.1.1-linux-x86_64.tar.gz",
+                "candidate.version": "1.1.1",
+            },
+            "not OpenAI4S-1.1.0",
+            id="other-candidate-name",
+        ),
+        pytest.param(
+            {"baseline.sha256": "f" * 64}, "sha256 'f", id="baseline-not-the-pin"
+        ),
+        pytest.param(
+            {
+                "baseline.name": "OpenAI4S-1.0.0-linux-x86_64.tar.gz",
+                "baseline.version": "1.0.0",
+            },
+            "name 'OpenAI4S-1.0.0",
+            id="older-unpinned-baseline",
+        ),
+        pytest.param(
+            {"baseline.sha256": _TARBALL_SHA}, "candidate itself", id="self-upgrade"
+        ),
+        pytest.param(
+            {"baseline.version": "1.0.2"}, "for that version", id="name-version-split"
+        ),
+        pytest.param({"baseline.schema": None}, "no previous schema", id="no-schema"),
+        pytest.param(
+            {"baseline.schema": 45}, "cannot go backwards", id="schema-backwards"
+        ),
+        pytest.param(
+            {"checks.restore_backup": "not_run"},
+            "restore_backup",
+            id="restore-skipped",
+        ),
+        pytest.param(
+            {"checks.baseline_readback": "failed"},
+            "baseline_readback",
+            id="old-bundle-cannot-read-the-copy",
+        ),
+        pytest.param(
+            {"failure": {"check": "x", "detail": "y"}},
+            "reports a failure",
+            id="failed-while-passed",
+        ),
+        pytest.param(
+            {"records.csv_versions": []}, "0 CSV version", id="no-history-versions"
+        ),
+        pytest.param({"scenario_version": 0}, "scenario_version", id="old-scenario"),
+        pytest.param({"duration_s": None}, "no duration", id="no-duration"),
+        pytest.param(
+            {"records.backup_manifest_sha256": ""},
+            "pre-migration copy",
+            id="no-backup-digest",
+        ),
+        pytest.param(
+            {"records.cell_ids": ["c-000000000001"]},
+            "three Cells",
+            id="lost-cells",
+        ),
+    ],
+)
+def test_upgrade_evidence_that_proves_nothing_is_refused(changes, message):
+    with pytest.raises(ReceiptError, match=message):
+        _bind(_upgrade(**changes))
+
+
+def test_a_lost_history_version_yields_no_passing_receipt():
+    """Report section 03: a lost CSV version must not reach a passing receipt,
+    whether the record drops it or names the surviving one twice."""
+    upgrade = _upgrade()
+    survivor = upgrade["records"]["csv_versions"][1]
+    upgrade["records"]["csv_versions"] = [survivor]
+    with pytest.raises(ReceiptError, match="1 CSV version"):
+        _bind(upgrade)
+    upgrade["records"]["csv_versions"] = [survivor, dict(survivor)]
+    with pytest.raises(ReceiptError, match="same CSV version twice"):
+        _bind(upgrade)
+
+
+def test_a_previous_bundle_newer_than_the_candidate_is_not_an_upgrade():
+    pin = {**_PINNED, "name": "OpenAI4S-1.2.0-linux-x86_64.tar.gz", "version": "1.2.0"}
+    upgrade = _upgrade(**{f"baseline.{key}": value for key, value in pin.items()})
+    with pytest.raises(ReceiptError, match="not older than the candidate 1.1.0"):
+        _bind(upgrade, pin=pin)
+
+
+def test_a_same_version_rehearsal_is_kept_only_where_the_field_is_optional():
+    """Rehearsing 1.0.1 against a rebuild of 1.0.1 proves the driver, not an
+    upgrade: it may be recorded for 1.0.1 but cannot satisfy a later release."""
+    rebuilt = "OpenAI4S-1.0.1-linux-x86_64.tar.gz"
+    upgrade = _upgrade(**{"candidate.name": rebuilt, "candidate.version": "1.0.1"})
+    assert _bind(upgrade, name=rebuilt)["upgrade_readback"]["status"] == "passed"
+    later = "OpenAI4S-1.0.2-linux-x86_64.tar.gz"
+    pin = {**_PINNED, "name": later, "version": "1.0.2"}
+    same = _upgrade(
+        **{f"baseline.{key}": value for key, value in pin.items()},
+        **{"candidate.name": later, "candidate.version": "1.0.2"},
+    )
+    with pytest.raises(ReceiptError, match="not older than the candidate 1.0.2"):
+        _bind(same, name=later, pin=pin)
+
+
+def test_an_older_receipt_still_verifies_after_the_pin_moves_on():
+    """The pin applies to the release it exists for. Once it names 1.1.0, the
+    1.1.0 receipt (made against 1.0.1) still verifies; 1.1.1 must use 1.1.0."""
+    moved = {
+        "name": "OpenAI4S-1.1.0-linux-x86_64.tar.gz",
+        "version": "1.1.0",
+        "sha256": "9" * 64,
+    }
+    assert _bind(_upgrade(), pin=moved)["upgrade_readback"]["status"] == "passed"
+    later = "OpenAI4S-1.1.1-linux-x86_64.tar.gz"
+    upgrade = _upgrade(**{"candidate.name": later, "candidate.version": "1.1.1"})
+    with pytest.raises(ReceiptError, match="not the pinned"):
+        _bind(upgrade, name=later, pin=moved)

@@ -114,6 +114,10 @@ from openai4s.storage.governance import (
 from openai4s.storage.kernels import KernelGenerationRepository
 from openai4s.storage.leases import LeaseRepository, create_lease_schema
 from openai4s.storage.memories import MemoryRepository
+from openai4s.storage.message_admissions import (
+    MessageAdmissionRepository,
+    create_message_admissions_schema,
+)
 from openai4s.storage.metadata import (
     DERIVABLE_HOST_CALLS,
     SECRET_ARG_HOST_CALLS,
@@ -807,6 +811,10 @@ QUERY_DENYLIST = frozenset(
         # Background-cell stdout. The peek projection is the read path; agent
         # SQL must not select the receipt table.
         "background_exec_receipts",
+        # Plain-message submission receipts. Readable only by the identity
+        # that submitted, through its own route; a cell selecting them would
+        # read every member's correlation ids and request digests.
+        "message_admissions",
         # Local dataset verification authority is never agent working data.
         "dataset_verification_receipts",
         "skill_blobs",
@@ -1448,6 +1456,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._message_admissions = MessageAdmissionRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._shares = SharesRepository(
             self._conn,
             self._lock,
@@ -1759,6 +1772,7 @@ class Store:
                         "execution_log_inlined_script",
                         self._apply_execution_log_inlined_script,
                     ),
+                    45: ("message_admissions", self._apply_message_admissions),
                 },
             )
             if report["migrated"]:
@@ -1799,6 +1813,15 @@ class Store:
         from openai4s.storage.rl_runs import create_rl_run_schema
 
         create_rl_run_schema(conn)
+
+    def _apply_message_admissions(self, conn: sqlite3.Connection) -> None:
+        """Version 45: submission receipts for plain messages.
+
+        Additive: one new, empty table. A client that sends no
+        `client_request_id` never writes a row, and no existing row is read
+        or rewritten.
+        """
+        create_message_admissions_schema(conn)
 
     def _apply_execution_log_inlined_script(self, conn: sqlite3.Connection) -> None:
         """Version 44: the script a run-this-file Cell executed, kept with it.
@@ -2765,6 +2788,11 @@ class Store:
     def background_exec_receipts(self) -> BackgroundExecReceiptRepository:
         """Bounded Web background-cell receipts. CLI sessions do not write them."""
         return self._background_exec_receipts
+
+    @property
+    def message_admissions(self) -> MessageAdmissionRepository:
+        """Plain-message submission receipts, keyed by root + initiator + id."""
+        return self._message_admissions
 
     @property
     def rl(self) -> RLRepository:

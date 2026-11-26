@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // O1 / PLAN §8: the first-run readiness step re-reads `GET /api/v1/onboarding`
 // in place. Reusing `load()` is not allowed — it dispatches `hydrate`, which
@@ -60,6 +60,10 @@ const api = vi.hoisted(() => ({
   probeModelProfile: vi.fn(),
   completeOnboarding: vi.fn(),
   activateExistingModelProfile: vi.fn(),
+  // NV-04: the save-then-reload scenario below.
+  saveModelProfile: vi.fn(),
+  updateModelProfile: vi.fn(),
+  activateModelProfile: vi.fn(),
 }));
 
 vi.mock("preact/hooks", () => ({
@@ -74,12 +78,25 @@ vi.mock("./api", async (importOriginal) => {
   return { ...original, ...api };
 });
 
+const projectsApi = vi.hoisted(() => ({
+  createProject: vi.fn(async () => ({})),
+  openProject: vi.fn(async () => {}),
+}));
+
+vi.mock("../sessions/projects", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sessions/projects")>()),
+  ...projectsApi,
+}));
+
+import { useEffect } from "preact/hooks";
+import { t } from "../../i18n";
 import { ReadinessPanel } from "../../components/onboarding/ReadinessPanel";
 import { SearchSetupCard } from "../../components/onboarding/SearchSetupCard";
 import { WizardHost } from "../../components/onboarding/Wizard";
 import { ot } from "./copy";
 import {
   INITIAL_WIZARD,
+  RESUME_STORAGE_KEY,
   type PathChoice,
   type WizardReceipt,
   type WizardState,
@@ -510,5 +527,256 @@ describe("ONB-2 Continue applies the search card's pending choice", () => {
     const after = hooks.slots[REDUCER] as WizardState;
     expect(after.step).toBe("project");
     expect(after.decided).toContain("readiness");
+  });
+});
+
+// NV-04: the wizard saves and activates a profile before the connection test,
+// the environment and the project. A saved profile makes the install read
+// `complete`, so a page reload used to hide those steps as done. The same tab
+// now comes back to the test -- and only the user's clicks contact anyone.
+describe("NV-04 a reload part-way through the wizard", () => {
+  class TabStorage {
+    data = new Map<string, string>();
+    getItem(key: string) {
+      return this.data.get(key) ?? null;
+    }
+    setItem(key: string, value: string) {
+      this.data.set(key, String(value));
+    }
+    removeItem(key: string) {
+      this.data.delete(key);
+    }
+  }
+
+  const SAVED_ROW = {
+    id: "mp-new",
+    name: "Lab key",
+    provider: "chatgpt",
+    model: "gpt-test",
+    base_url: "https://api.example/v1",
+    has_api_key: true,
+  };
+  const CLOUD: PathChoice = {
+    kind: "cloud",
+    profileId: "",
+    provider: "chatgpt",
+    model: "gpt-test",
+    baseUrl: "https://api.example/v1",
+    name: "Lab key",
+  };
+  // `can_configure: true` is what `sanitizeOnboardingStatus` answers for the
+  // single-user install these cases are about (a team member never gets the
+  // wizard, marker or not).
+  const fresh = (overrides: Record<string, unknown> = {}) =>
+    status({
+      complete: false,
+      completed_explicitly: false,
+      can_configure: true,
+      profiles: [],
+      active_id: "",
+      ...overrides,
+    });
+  const afterSave = (overrides: Record<string, unknown> = {}) =>
+    status({
+      complete: true,
+      completed_explicitly: false,
+      can_configure: true,
+      profiles: [SAVED_ROW],
+      active_id: "mp-new",
+      ...overrides,
+    });
+
+  let storage: TabStorage;
+  let requests: string[];
+
+  /** A page load: fresh component state, then its mount effects. */
+  async function pageLoad(): Promise<void> {
+    hooks.reset();
+    vi.mocked(useEffect).mockClear();
+    render();
+    for (const [effect] of vi.mocked(useEffect).mock.calls) (effect as () => unknown)();
+    await vi.waitFor(() =>
+      expect(hooks.actions.some((type) => type === "hydrate" || type === "resume")).toBe(true),
+    );
+  }
+
+  function wizardState(): WizardState {
+    return hooks.slots[REDUCER] as WizardState;
+  }
+
+  async function saveCloudProfile(): Promise<void> {
+    const step = findVNode(render(), (node) => typeof node.props?.onSaveNew === "function");
+    expect(step, "the path step is not rendered").toBeTruthy();
+    await (step!.props!.onSaveNew as (path: PathChoice, key: string) => Promise<void>)(
+      CLOUD,
+      "fake-key-typed-in-the-wizard",
+    );
+  }
+
+  beforeEach(() => {
+    Object.values(api).forEach((spy) => spy.mockReset());
+    storage = new TabStorage();
+    vi.stubGlobal("sessionStorage", storage);
+    requests = [];
+    // Everything that is not a mocked wizard API (the composer's model list).
+    vi.stubGlobal("fetch", (url: string) => {
+      requests.push(String(url));
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+    api.saveModelProfile.mockResolvedValue({ id: "mp-new" });
+    api.activateModelProfile.mockResolvedValue({ ok: true, active_id: "mp-new" });
+    api.probeModelProfile.mockResolvedValue({ reachable: true, capability_receipt: null });
+    api.completeOnboarding.mockResolvedValue(status({ complete: true, completed_explicitly: true }));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a new user saves, reloads, and is back at the connection test with nothing sent", async () => {
+    api.fetchOnboarding.mockResolvedValueOnce(fresh()).mockResolvedValue(afterSave());
+    await pageLoad();
+    expect(wizardState()).toMatchObject({ surface: "wizard", step: "path" });
+
+    // The marker is written once the save answered, before activation is asked.
+    let markerAtActivation: string | null = "unread";
+    api.activateModelProfile.mockImplementationOnce(async () => {
+      markerAtActivation = storage.getItem(RESUME_STORAGE_KEY);
+      return { ok: true, active_id: "mp-new" };
+    });
+    await saveCloudProfile();
+    expect(JSON.parse(markerAtActivation!)).toEqual({ step: "test", profile_id: "mp-new" });
+    expect(wizardState().step).toBe("test");
+    // Only the step and the id: no key, model, endpoint or probe result.
+    const stored = storage.getItem(RESUME_STORAGE_KEY)!;
+    expect(JSON.parse(stored)).toEqual({ step: "test", profile_id: "mp-new" });
+    expect(stored).not.toContain("fake-key-typed-in-the-wizard");
+
+    await pageLoad();
+    const resumed = wizardState();
+    expect(resumed).toMatchObject({
+      surface: "wizard",
+      step: "test",
+      decided: ["path"],
+      providerRequests: 0,
+      testClicked: false,
+      receipt: null,
+    });
+    expect(resumed.path).toMatchObject({ profileId: "mp-new", model: "gpt-test", name: "Lab key" });
+    const tree = findVNode(render(), (node) => node.props?.id === "onboarding");
+    expect(tree?.props?.["data-onboarding-step"]).toBe("test");
+    expect(tree?.props?.["data-provider-requests"]).toBe("0");
+    // The reload re-read the local status (readiness included) and saved nothing.
+    expect((hooks.slots[STATUS] as OnboardingStatus).profiles.filter((p) => p.id === "mp-new")).toHaveLength(1);
+    expect(api.saveModelProfile).toHaveBeenCalledOnce();
+    expect(api.updateModelProfile).not.toHaveBeenCalled();
+    expect(api.activateModelProfile).toHaveBeenCalledOnce();
+    expect(api.activateExistingModelProfile).not.toHaveBeenCalled();
+    expect(api.completeOnboarding).not.toHaveBeenCalled();
+    // Zero probes before the click.
+    expect(api.probeModelProfile).not.toHaveBeenCalled();
+    expect(requests.some((url) => /probe|discover/.test(url))).toBe(false);
+
+    const test = buttons(render()).find((button) => button.text === t("cust.models.test"));
+    expect(test).toBeTruthy();
+    test!.onClick();
+    await vi.waitFor(() => expect(api.probeModelProfile).toHaveBeenCalledWith("mp-new"));
+    expect(wizardState().providerRequests).toBe(1);
+  });
+
+  it("offers the saved profile on the path step when its activation had not happened", async () => {
+    storage.setItem(RESUME_STORAGE_KEY, JSON.stringify({ step: "test", profile_id: "mp-new" }));
+    api.fetchOnboarding.mockResolvedValue(afterSave({ active_id: "" }));
+    api.activateExistingModelProfile.mockResolvedValue(afterSave());
+    await pageLoad();
+    expect(wizardState()).toMatchObject({ surface: "wizard", step: "path", decided: [], providerRequests: 0 });
+    expect(wizardState().path).toMatchObject({ kind: "existing", profileId: "mp-new" });
+    // Nothing is activated for the user.
+    expect(api.activateExistingModelProfile).not.toHaveBeenCalled();
+    expect(api.activateModelProfile).not.toHaveBeenCalled();
+
+    (findSolidButton(render())!.props!.onClick as () => void)();
+    await vi.waitFor(() => expect(wizardState().step).toBe("test"));
+    expect(api.activateExistingModelProfile).toHaveBeenCalledWith("mp-new");
+    expect(api.probeModelProfile).not.toHaveBeenCalled();
+  });
+
+  it("an explicit skip clears the marker, and the next load stays closed", async () => {
+    storage.setItem(RESUME_STORAGE_KEY, JSON.stringify({ step: "test", profile_id: "mp-new" }));
+    api.fetchOnboarding.mockResolvedValue(afterSave());
+    await pageLoad();
+    expect(wizardState().step).toBe("test");
+    const skip = buttons(render()).find((button) => button.text === ot("onboarding.skip"))!;
+    skip.onClick();
+    await vi.waitFor(() => expect(wizardState().surface).toBe("done"));
+    expect(storage.getItem(RESUME_STORAGE_KEY)).toBeNull();
+
+    api.fetchOnboarding.mockResolvedValue(afterSave({ completed_explicitly: true }));
+    await pageLoad();
+    expect(wizardState().surface).toBe("hidden");
+    expect(api.probeModelProfile).not.toHaveBeenCalled();
+  });
+
+  it("walking on keeps the marker; finishing on the project step clears it", async () => {
+    storage.setItem(RESUME_STORAGE_KEY, JSON.stringify({ step: "test", profile_id: "mp-new" }));
+    api.fetchOnboarding.mockResolvedValue(afterSave());
+    await pageLoad();
+    for (const step of ["readiness", "project"]) {
+      buttons(render()).find((button) => button.text === ot("onboarding.next"))!.onClick();
+      expect(wizardState().step).toBe(step);
+      expect(storage.getItem(RESUME_STORAGE_KEY)).not.toBeNull();
+    }
+    const project = findVNode(render(), (node) => typeof node.props?.onCreate === "function")!;
+    (project.props!.onCreate as (name: string) => void)("First project");
+    await vi.waitFor(() => expect(wizardState().surface).toBe("done"));
+    expect(projectsApi.createProject).toHaveBeenCalledWith("First project", "", "");
+    expect(api.completeOnboarding).toHaveBeenCalledWith({ skip: true });
+    expect(storage.getItem(RESUME_STORAGE_KEY)).toBeNull();
+    expect(api.probeModelProfile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an install configured before (no marker)", null, afterSave()],
+    ["a setup already completed", "mp-new", afterSave({ completed_explicitly: true })],
+    ["a profile the authenticated list no longer shows", "mp-new", afterSave({ profiles: [], active_id: "" })],
+    ["a daemon that predates completed_explicitly", "mp-new", afterSave({ completed_explicitly: null })],
+  ])("keeps the original flow for %s", async (_name, markerId, answer) => {
+    if (markerId) storage.setItem(RESUME_STORAGE_KEY, JSON.stringify({ step: "test", profile_id: markerId }));
+    api.fetchOnboarding.mockResolvedValue(answer);
+    await pageLoad();
+    expect(hooks.actions).toContain("hydrate");
+    expect(hooks.actions).not.toContain("resume");
+    expect(wizardState().surface).toBe("hidden");
+    expect(render()).toBeNull();
+    expect(storage.getItem(RESUME_STORAGE_KEY)).toBeNull();
+    expect(api.probeModelProfile).not.toHaveBeenCalled();
+  });
+
+  it("writes no marker for a daemon that predates the field, so a reload keeps the original flow", async () => {
+    api.fetchOnboarding
+      .mockResolvedValueOnce(fresh({ completed_explicitly: null }))
+      .mockResolvedValue(afterSave({ completed_explicitly: null }));
+    await pageLoad();
+    await saveCloudProfile();
+    expect(storage.data.size).toBe(0);
+    await pageLoad();
+    expect(wizardState().surface).toBe("hidden");
+  });
+
+  it("keeps the original flow when the browser refuses storage", async () => {
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      get() {
+        throw new Error("SecurityError: storage disabled");
+      },
+    });
+    api.fetchOnboarding.mockResolvedValueOnce(fresh()).mockResolvedValue(afterSave());
+    await pageLoad();
+    await saveCloudProfile();
+    // The save itself still works and moves on to the test.
+    expect(api.activateModelProfile).toHaveBeenCalledWith("mp-new");
+    expect(wizardState().step).toBe("test");
+    await pageLoad();
+    expect(wizardState().surface).toBe("hidden");
+    expect(api.probeModelProfile).not.toHaveBeenCalled();
   });
 });

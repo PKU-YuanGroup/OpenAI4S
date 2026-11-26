@@ -1305,6 +1305,111 @@ def test_an_unknown_recovery_action_is_rejected(tmp_path):
         runner.close()
 
 
+# -- NV-02: promoting a Cell embeds the figure version that Cell recorded ----
+
+
+def _figure_cell(runner, frame_id, workspace, *, index, data):
+    """One scientific Cell that drew `fig.png`, captured as a real version."""
+    target = gateway_mod.PromotionTarget(
+        root_frame_id=frame_id, project_id="project-domain", workspace=workspace
+    )
+    cell_id = runner.store.log_cell(
+        frame_id=frame_id,
+        code=f"plot({index})",
+        result={"stdout": f"drew {index}", "stderr": "", "error": None},
+        root_frame_id=frame_id,
+        project_id="project-domain",
+        cell_index=index,
+        visibility="scientific",
+        figures=["fig.png"],
+    )
+    (workspace / "fig.png").write_bytes(data)
+    version = runner.artifacts.register_file(
+        target, workspace / "fig.png", cell_id, lambda event: None
+    )
+    return cell_id, version
+
+
+def _promote(handler, frame_id, cell_id, workspace):
+    code, meta = _call(
+        handler,
+        "POST",
+        f"/frames/{frame_id}/artifacts/promote",
+        body={"cell_id": cell_id},
+    )
+    assert code == 200
+    return (workspace / meta["filename"]).read_text("utf-8")
+
+
+def _embedded_digests(text):
+    import base64
+    import re
+
+    return [
+        hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+        for encoded in re.findall(
+            r"\]\(data:image/png;base64,([A-Za-z0-9+/=]+)\)", text
+        )
+    ]
+
+
+def test_promote_route_embeds_the_figure_version_the_cell_produced(tmp_path):
+    """Same-name V1 then V2: the workspace holds V2, and the route used to embed
+    it into the Markdown of the Cell that drew V1."""
+    runner, handler, frame_id = _setup(tmp_path)
+    try:
+        workspace = runner.active_workspace_for(frame_id)
+        png = b"\x89PNG\r\n\x1a\n"
+        cell_1, v1 = _figure_cell(
+            runner, frame_id, workspace, index=1, data=png + b"first draw"
+        )
+        cell_2, v2 = _figure_cell(
+            runner, frame_id, workspace, index=2, data=png + b"second draw"
+        )
+        assert v1["artifact_id"] == v2["artifact_id"]
+        assert (workspace / "fig.png").read_bytes() == png + b"second draw"
+
+        first = _promote(handler, frame_id, cell_1, workspace)
+        assert _embedded_digests(first) == [v1["checksum"]]
+        assert "plot(1)" in first and "drew 1" in first
+        second = _promote(handler, frame_id, cell_2, workspace)
+        assert _embedded_digests(second) == [v2["checksum"]]
+        # Promoting another Cell did not change what the first one embeds.
+        again = _promote(handler, frame_id, cell_1, workspace)
+        assert _embedded_digests(again) == [v1["checksum"]]
+    finally:
+        runner.close()
+
+
+def test_promote_route_keeps_a_pointer_for_an_unrecorded_figure(tmp_path):
+    runner, handler, frame_id = _setup(tmp_path)
+    try:
+        workspace = runner.active_workspace_for(frame_id)
+        cell_id = runner.store.log_cell(
+            frame_id=frame_id,
+            code="plot()",
+            result={"stdout": "drew", "stderr": "", "error": None},
+            root_frame_id=frame_id,
+            project_id="project-domain",
+            cell_index=1,
+            visibility="scientific",
+            figures=["fig.png"],
+        )
+        # Bytes on disk under that name, but no version bound to the Cell.
+        (workspace / "fig.png").write_bytes(b"\x89PNG\r\n\x1a\nlive")
+
+        text = _promote(handler, frame_id, cell_id, workspace)
+
+        assert _embedded_digests(text) == []
+        assert (
+            "- Figure artifact: `fig.png` (not embedded: no version of it is "
+            "recorded for this Cell)" in text
+        )
+        assert "plot()" in text and "drew" in text
+    finally:
+        runner.close()
+
+
 def _turns_that_save_a_file(runner, frame_id):
     """Each turn writes the next of A.txt, B.txt, C.txt with one step."""
 

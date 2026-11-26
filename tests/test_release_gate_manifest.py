@@ -915,6 +915,53 @@ def test_the_linux_job_runs_the_installed_runtime_smoke_before_the_receipt():
     ), "the report travels with the bundle so staging failures can be diagnosed"
 
 
+def test_the_linux_job_upgrades_the_pinned_previous_bundle_outside_dist():
+    """NV-03: the previous stable bundle is pinned once (the job's env), fetched
+    into the runner's temp directory rather than the candidate's dist/, checked
+    by the smoke against the pin before anything is unpacked, and the receipt
+    that follows verifies the result against the same pin."""
+    from scripts import release_receipts
+
+    smoke = _workflow("release.yml")["jobs"]["linux-runtime-smoke"]
+    env = smoke.get("env") or {}
+    pin = release_receipts.pinned_upgrade_baseline()
+    for field, key in release_receipts.UPGRADE_BASELINE_PIN_KEYS.items():
+        assert env.get(key) == pin[field], key
+
+    names = [str(step.get("name") or "") for step in smoke["steps"]]
+    download_index = names.index("Download the previous stable Linux bundle")
+    smoke_index = names.index("Run the installed-runtime smoke")
+    receipt_index = next(
+        index for index, name in enumerate(names) if name.startswith("Receipt")
+    )
+    assert download_index < smoke_index < receipt_index
+
+    download = smoke["steps"][download_index]
+    fetch = str(download.get("run") or "")
+    assert "${{" not in fetch, "no expression is interpolated into the shell"
+    assert '"$RUNNER_TEMP/upgrade-baseline"' in fetch
+    assert "dist/" not in fetch
+    assert (
+        "releases/download/v${OPENAI4S_UPGRADE_BASELINE_VERSION}/"
+        "${OPENAI4S_UPGRADE_BASELINE_NAME}" in fetch
+    )
+    assert "--fail" in fetch and "--proto '=https'" in fetch
+    # A failed download leaves no file, which the smoke records as
+    # `baseline_unavailable`; a partial one would read as a digest mismatch.
+    assert 'rm -f "$BASELINE_DIR/$OPENAI4S_UPGRADE_BASELINE_NAME"' in fetch
+    assert download.get("timeout-minutes")
+
+    run = str(smoke["steps"][smoke_index].get("run") or "")
+    assert (
+        '--baseline-bundle "$RUNNER_TEMP/upgrade-baseline/'
+        '$OPENAI4S_UPGRADE_BASELINE_NAME"' in run
+    )
+    assert '--baseline-sha256 "$OPENAI4S_UPGRADE_BASELINE_SHA256"' in run
+    for step in smoke["steps"]:
+        if "actions/upload-artifact@" in str(step.get("uses") or ""):
+            assert "upgrade-baseline" not in str((step.get("with") or {}).get("path"))
+
+
 def test_the_nightly_bundle_job_runs_the_same_installed_runtime_smoke():
     """Nightly is where a packaging regression shows up before release day."""
     job = _workflow("ci.yml")["jobs"]["linux-bundle-smoke"]

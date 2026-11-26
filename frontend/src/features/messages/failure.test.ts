@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setLang } from "../../i18n/runtime";
+import { setLang, t } from "../../i18n/runtime";
 
 const openCustomize = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 vi.mock("../customize", () => ({ openCustomize }));
@@ -90,5 +90,76 @@ describe("a failure fixed in Settings", () => {
       expect(box.textContent).toContain("logs/support.log");
     }
     expect(openCustomize).not.toHaveBeenCalled();
+  });
+});
+
+describe("NV-05 the five codes that say which model failure it was", () => {
+  const NEW_CODES = [
+    "llm_authentication_failed",
+    "llm_access_denied",
+    "llm_model_unavailable",
+    "llm_request_target_not_found",
+    "llm_endpoint_unreachable",
+  ];
+
+  it("each names its cause and the fix in both languages", async () => {
+    const english: string[] = [];
+    for (const code of NEW_CODES) {
+      expect(needsModelSettings(code)).toBe(true);
+      await setLang("en");
+      const en = failureCodeHint(code);
+      await setLang("zh");
+      const zh = failureCodeHint(code);
+      expect(en).toContain("Settings → Models");
+      expect(zh).toContain("设置 → 模型");
+      expect(en).not.toBe(zh);
+      english.push(en);
+    }
+    // Five different sentences: a 401 does not read like a 403 or a 404.
+    expect(new Set(english).size).toBe(NEW_CODES.length);
+    await setLang("en");
+    expect(failureCodeHint("llm_authentication_failed")).toContain("401");
+    expect(failureCodeHint("llm_access_denied")).toContain("403");
+    expect(failureCodeHint("llm_request_target_not_found")).toContain("endpoint and the model id");
+    expect(failureCodeHint("llm_endpoint_unreachable")).toContain("no request was sent");
+  });
+
+  it("offers the same 打开模型设置 / Open model settings button, and only that", async () => {
+    for (const [lang, label] of [["zh", "打开模型设置"], ["en", "Open model settings"]] as const) {
+      await setLang(lang);
+      for (const code of NEW_CODES) {
+        openCustomize.mockClear();
+        const box = failureMeta({ code, request_id: "web-nv05" }) as unknown as FakeNode;
+        expect(box.dataset.failureCode).toBe(code);
+        expect(box.children).toHaveLength(1);
+        const [button] = box.children;
+        expect(button?.className).toContain("turn-open-models");
+        expect(button?.textContent).toBe(label);
+        button?.onclick?.();
+        expect(openCustomize).toHaveBeenCalledWith("models");
+        expect(openCustomize).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
+  it("keeps the first version's codes and their own sentences for older rows", async () => {
+    await setLang("en");
+    expect(failureCodeHint("llm_auth_rejected")).toBe(
+      "The model provider rejected the API key. Check it in Settings → Models.",
+    );
+    expect(failureCodeHint("llm_model_not_found")).toContain("no such model or route");
+    expect(failureCodeHint("llm_network")).toContain("could not be reached");
+  });
+
+  it("says a committed failure was not retried, next to the button", async () => {
+    await setLang("en");
+    const box = failureMeta({
+      code: "llm_authentication_failed",
+      request_id: "web-nv05",
+      output_committed: true,
+    }) as unknown as FakeNode;
+    expect(box.dataset.committed).toBe("1");
+    expect(box.textContent).toContain(t("turn.failedCommitted"));
+    expect(box.children.map((child) => child.className)).toEqual(["outline-btn small turn-open-models"]);
   });
 });

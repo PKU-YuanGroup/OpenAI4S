@@ -180,6 +180,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # NB-1: a run-this-file Cell keeps the script it ran. One nullable
         # column; historical rows stay NULL.
         "execution_log_inlined_script",
+        # Plain-message submission receipts. Additive: one empty table, keyed
+        # on session root + initiating identity + client request id.
+        "message_admissions",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

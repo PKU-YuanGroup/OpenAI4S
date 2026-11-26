@@ -44,6 +44,13 @@ export type OnboardingStatus = {
   base_url: string;
   has_api_key: boolean;
   complete: boolean;
+  /**
+   * Whether the user finished or skipped setup (the stored flag alone), as
+   * opposed to `complete`, which also reads "already configured". `null`
+   * when the daemon predates the field: the wizard then keeps its original
+   * flow and never resumes after a reload.
+   */
+  completed_explicitly: boolean | null;
   platform: string;
   native_runtime_supported: boolean;
   outbound: number;
@@ -89,6 +96,8 @@ export function sanitizeOnboardingStatus(raw: unknown): OnboardingStatus {
     base_url: publicText(row.base_url, 600),
     has_api_key: row.has_api_key === true,
     complete: row.complete === true,
+    completed_explicitly:
+      typeof row.completed_explicitly === "boolean" ? row.completed_explicitly : null,
     platform: publicText(row.platform, 80),
     native_runtime_supported: row.native_runtime_supported === true,
     outbound: Math.max(0, Number(row.outbound) || 0),
