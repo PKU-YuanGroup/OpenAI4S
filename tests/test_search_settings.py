@@ -543,6 +543,32 @@ def test_route_reports_the_list_and_keeps_the_tavily_fields(route):
     assert body["doubao_configured"] is False
 
 
+def test_route_saves_a_specstream_key_and_the_engine_becomes_usable(route):
+    status, body = route("POST", {"engine": "specstream", "api_key": "ss-route-secret"})
+    assert status == 200
+    engine = next(e for e in body["engines"] if e["id"] == "specstream")
+    assert engine["api_key_configured"] is True
+    assert engine["needs_key"] is True
+    assert engine["usable"] is False  # saved, but still switched off
+    assert "ss-route-secret" not in json.dumps(body)
+    status, body = route(
+        "PUT",
+        {
+            "order": ["specstream", "tavily", "you", "builtin", "parallel"],
+            "enabled": {
+                "tavily": True,
+                "you": True,
+                "builtin": True,
+                "parallel": False,
+                "specstream": True,
+            },
+        },
+    )
+    assert status == 200 and body["order"][0] == "specstream"
+    engine = next(e for e in body["engines"] if e["id"] == "specstream")
+    assert engine["usable"] is True
+
+
 def test_route_saves_order_switches_and_a_you_key(route):
     status, body = route(
         "PUT",
