@@ -39,6 +39,62 @@ def passing_report(*, artifact_sha256: str) -> dict:
     }
 
 
+def passing_upgrade_readback(
+    *,
+    candidate_name: str,
+    candidate_sha256: str,
+    baseline: dict | None = None,
+) -> dict:
+    """A passed `upgrade_readback`, written by the smoke script's own builder.
+
+    The previous bundle defaults to the pin in `release.yml`, so the document is
+    the one a real release run would bind; schemas and ids are synthetic.
+    """
+    from scripts import installed_runtime_smoke as smoke
+
+    pin = dict(baseline or release_receipts.pinned_upgrade_baseline())
+    return smoke.build_upgrade_report(
+        baseline={**pin, "expected_sha256": pin["sha256"], "schema": 43},
+        candidate={
+            "name": candidate_name,
+            "version": smoke.tarball_version(candidate_name),
+            "sha256": candidate_sha256,
+            "schema": 44,
+        },
+        checks={name: smoke.PASSED for name in smoke.UPGRADE_CHECKS},
+        records={
+            "project_id": "p-0123456789ab",
+            "frame_id": "f-0123456789ab",
+            "artifact_id": "a-0123456789ab",
+            "cell_ids": ["c-000000000001", "c-000000000002", "c-000000000003"],
+            "history_entries": 3,
+            "csv_versions": [
+                {
+                    "version_id": "v-000000000001",
+                    "sha256": smoke.sha256_bytes(smoke.CSV_FIRST),
+                    "size_bytes": len(smoke.CSV_FIRST),
+                },
+                {
+                    "version_id": "v-000000000002",
+                    "sha256": smoke.sha256_bytes(smoke.CSV_SECOND),
+                    "size_bytes": len(smoke.CSV_SECOND),
+                },
+            ],
+            "backup_manifest_sha256": "d" * 64,
+        },
+        duration_s=57.25,
+    )
+
+
+def upgraded_report(*, artifact_name: str, artifact_sha256: str) -> dict:
+    """A passing runtime-smoke report that also carries a passed upgrade readback."""
+    document = passing_report(artifact_sha256=artifact_sha256)
+    document["upgrade_readback"] = passing_upgrade_readback(
+        candidate_name=artifact_name, candidate_sha256=artifact_sha256
+    )
+    return document
+
+
 def mutated_report(**mutations) -> dict:
     """A passing report with dotted paths replaced, for the refusal tests.
 

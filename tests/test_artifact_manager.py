@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +20,7 @@ from openai4s.server.artifacts import (
     ArtifactOperationError,
     artifact_receipt_map,
 )
+from openai4s.server.execution_sources import output_artifact_bindings
 from openai4s.storage.artifact_observations import (
     CAPTURE_KIND_HEAD_CHECKSUM_REUSED,
 )
@@ -1922,23 +1925,214 @@ def test_promote_cell_rejects_symlinked_output_file(tmp_path):
     assert outside.read_text(encoding="utf-8") == "keep"
 
 
-def test_promote_cell_embeds_workspace_figures_as_safe_data_urls(tmp_path):
-    harness = ArtifactHarness(tmp_path)
-    figure = harness.workspace / "figure_cell5_1.png"
-    figure.write_bytes(b"\x89PNG\r\n\x1a\nfigure-bytes")
-    cell = {
-        "producing_cell_id": "cell-figure",
-        "cell_index": 5,
+def _recorded_figure_cell(harness, cell_id, figures, *, cell_index=5):
+    """A Notebook cell as the execution log projects it: its figures and the
+    exact versions the session recorded for them (NV-02)."""
+    bindings = output_artifact_bindings(
+        harness.store,
+        harness.frame_id,
+        cell_ids={cell_id},
+        producer_frame_id=harness.frame_id,
+        newest_only=True,
+    )
+    return {
+        "producing_cell_id": cell_id,
+        "cell_index": cell_index,
         "source": "plot()",
-        "figures": [figure.name],
+        "stdout": "plotted",
+        "figures": list(figures),
+        "output_artifacts": bindings.get(cell_id, []),
     }
 
-    result = harness.manager.promote_cell(harness.session, cell, lambda event: None)
 
-    assert result is not None
-    text = next((harness.workspace / "promoted").glob("*.md")).read_text("utf-8")
-    assert f"![{figure.name}](data:image/png;base64," in text
-    assert f"]({figure.name})" not in text
+def _record_figure(harness, name, data, cell_id):
+    path = harness.workspace / name
+    path.write_bytes(data)
+    return harness.manager.register_file(harness.session, path, cell_id, lambda e: None)
+
+
+def _promoted_text(harness, cell):
+    meta = harness.manager.promote_cell(harness.session, cell, lambda e: None)
+    assert meta is not None
+    return (harness.workspace / meta["filename"]).read_text("utf-8")
+
+
+def _embedded_images(text):
+    return [
+        base64.b64decode(encoded)
+        for encoded in re.findall(
+            r"\]\(data:image/png;base64,([A-Za-z0-9+/=]+)\)", text
+        )
+    ]
+
+
+_PNG = b"\x89PNG\r\n\x1a\n"
+
+
+def test_promote_cell_embeds_recorded_figure_versions_as_safe_data_urls(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    _record_figure(harness, "figure_cell5_1.png", _PNG + b"figure-bytes", "cell-figure")
+    cell = _recorded_figure_cell(harness, "cell-figure", ["figure_cell5_1.png"])
+
+    text = _promoted_text(harness, cell)
+
+    assert "![figure_cell5_1.png](data:image/png;base64," in text
+    assert "](figure_cell5_1.png)" not in text
+    assert _embedded_images(text) == [_PNG + b"figure-bytes"]
+
+
+@pytest.mark.parametrize("trusted_delivery", [False, True])
+def test_promote_cell_embeds_the_version_its_cell_made_not_the_workspace_file(
+    tmp_path, trusted_delivery
+):
+    """NV-02: a later Cell overwrote the figure; promoting the earlier Cell
+    used to read that newer file from the workspace and freeze it beside the
+    earlier Cell's code and output. Both capture paths keep a readable
+    snapshot: the copied one and the trusted frozen one."""
+    harness = ArtifactHarness(tmp_path, trusted_delivery=trusted_delivery)
+    v1 = _record_figure(harness, "fig.png", _PNG + b"version one", "cell-1")
+    v2 = _record_figure(harness, "fig.png", _PNG + b"version two", "cell-2")
+    assert v1["artifact_id"] == v2["artifact_id"]
+    assert v1["version_id"] != v2["version_id"]
+    assert (harness.workspace / "fig.png").read_bytes() == _PNG + b"version two"
+
+    first = _embedded_images(
+        _promoted_text(harness, _recorded_figure_cell(harness, "cell-1", ["fig.png"]))
+    )
+    assert [hashlib.sha256(data).hexdigest() for data in first] == [v1["checksum"]]
+    second = _embedded_images(
+        _promoted_text(
+            harness,
+            _recorded_figure_cell(harness, "cell-2", ["fig.png"], cell_index=6),
+        )
+    )
+    assert [hashlib.sha256(data).hexdigest() for data in second] == [v2["checksum"]]
+
+
+def _assert_pointer_only(text, figure, reason):
+    assert _embedded_images(text) == []
+    assert f"- Figure artifact: `{figure}` (not embedded: {reason})" in text
+    # The rest of the document is still written.
+    assert "plot()" in text and "## Output" in text and "plotted" in text
+
+
+def test_promote_cell_without_a_recorded_version_keeps_a_pointer(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    # The workspace has a file of that name, but no version is bound to the
+    # Cell: it is not evidence of what the Cell drew.
+    (harness.workspace / "fig.png").write_bytes(_PNG + b"live bytes")
+    cell = _recorded_figure_cell(harness, "cell-1", ["fig.png"])
+    assert cell["output_artifacts"] == []
+
+    _assert_pointer_only(
+        _promoted_text(harness, cell),
+        "fig.png",
+        "no version of it is recorded for this Cell",
+    )
+
+
+def test_promote_cell_refuses_a_binding_outside_the_session_or_its_artifact(
+    tmp_path,
+):
+    harness = ArtifactHarness(tmp_path)
+    own = _record_figure(harness, "fig.png", _PNG + b"own", "cell-1")
+    other_name = _record_figure(harness, "other.png", _PNG + b"other", "cell-1")
+    # A second session's figure: its version exists, but not for this session.
+    foreign_frame = harness.store.new_frame(
+        kind="turn", project_id="default", status="ready"
+    )
+    foreign_workspace = harness.cfg.data_dir / "agent-workspaces" / foreign_frame
+    foreign_workspace.mkdir(parents=True)
+    (foreign_workspace / "fig.png").write_bytes(_PNG + b"foreign")
+    foreign = harness.manager.register_file(
+        SimpleNamespace(
+            root_frame_id=foreign_frame,
+            project_id="default",
+            workspace=foreign_workspace,
+        ),
+        foreign_workspace / "fig.png",
+        "cell-foreign",
+        lambda e: None,
+    )
+    reason = "its recorded version is not available here"
+    for row in (
+        # Another session's Artifact and version.
+        {"artifact_id": foreign["artifact_id"], "version_id": foreign["version_id"]},
+        # This session's version, claimed for a different Artifact.
+        {"artifact_id": other_name["artifact_id"], "version_id": own["version_id"]},
+        # A version that does not exist.
+        {"artifact_id": own["artifact_id"], "version_id": "v-missing"},
+    ):
+        cell = _recorded_figure_cell(harness, "cell-1", ["fig.png"])
+        cell["output_artifacts"] = [{"filename": "fig.png", **row}]
+        _assert_pointer_only(_promoted_text(harness, cell), "fig.png", reason)
+
+
+def test_promote_cell_refuses_two_versions_for_one_figure(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    first = _record_figure(harness, "fig.png", _PNG + b"one", "cell-1")
+    second = _record_figure(harness, "fig.png", _PNG + b"two", "cell-1")
+    cell = _recorded_figure_cell(harness, "cell-1", ["fig.png"])
+    cell["output_artifacts"] = [
+        {
+            "filename": "fig.png",
+            "artifact_id": row["artifact_id"],
+            "version_id": row["version_id"],
+        }
+        for row in (first, second)
+    ]
+
+    _assert_pointer_only(
+        _promoted_text(harness, cell),
+        "fig.png",
+        "more than one version of it is recorded for this Cell",
+    )
+
+
+def test_promote_cell_refuses_a_missing_or_tampered_snapshot(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    recorded = _record_figure(harness, "fig.png", _PNG + b"recorded", "cell-1")
+    cell = _recorded_figure_cell(harness, "cell-1", ["fig.png"])
+    snapshot = Path(harness.store.version_meta(recorded["version_id"])["snapshot_path"])
+    reason = "its recorded snapshot is missing or failed verification"
+
+    # Same length, different bytes: only the checksum can tell.
+    snapshot.write_bytes(_PNG + b"tampered")
+    _assert_pointer_only(_promoted_text(harness, cell), "fig.png", reason)
+
+    snapshot.unlink()
+    _assert_pointer_only(_promoted_text(harness, cell), "fig.png", reason)
+
+
+def test_promote_cell_caps_one_figure_and_the_whole_document(tmp_path):
+    """8 MiB per image and 8 MiB of raw image bytes per Markdown document."""
+    harness = ArtifactHarness(tmp_path)
+    mib = 1024 * 1024
+    big = _PNG + b"\0" * (8 * mib + 1 - len(_PNG))
+    half = _PNG + b"\1" * (5 * mib - len(_PNG))
+    small = _PNG + b"small"
+    _record_figure(harness, "big.png", big, "cell-1")
+    _record_figure(harness, "a.png", half, "cell-1")
+    _record_figure(harness, "b.png", half[:-1] + b"\2", "cell-1")
+    _record_figure(harness, "c.png", small, "cell-1")
+    cell = _recorded_figure_cell(
+        harness, "cell-1", ["big.png", "a.png", "b.png", "c.png"]
+    )
+
+    text = _promoted_text(harness, cell)
+
+    # Over the per-image cap: pointer. a.png fits; b.png would take the
+    # document past its budget: pointer; c.png still fits in what is left.
+    assert _embedded_images(text) == [half, small]
+    assert (
+        "- Figure artifact: `big.png` (not embedded: it is larger than the "
+        "8 MiB limit for one image)" in text
+    )
+    assert (
+        "- Figure artifact: `b.png` (not embedded: it would exceed this "
+        "document's 8 MiB image budget)" in text
+    )
+    assert "plot()" in text and "plotted" in text
 
 
 def test_imported_session_snapshots_are_inside_trusted_storage(tmp_path):
@@ -1997,6 +2191,83 @@ def test_imported_session_snapshots_are_inside_trusted_storage(tmp_path):
     outside.write_bytes(payload)
     with pytest.raises(PermissionError, match="outside trusted storage"):
         service.verified_snapshot_bytes(dict(version, snapshot_path=str(outside)))
+
+
+def test_verified_snapshot_bytes_reads_at_most_its_cap(tmp_path, monkeypatch):
+    """NV-02: the optional cap refuses a larger snapshot without loading it
+    and leaves every other check in force for one that fits."""
+    import openai4s.artifact_restore as restore_module
+    from openai4s.artifact_restore import (
+        ArtifactRestoreService,
+        ArtifactSnapshotTooLarge,
+        trusted_snapshot_roots,
+    )
+
+    data_dir = tmp_path / "data"
+    snapshot = data_dir / "artifact-versions" / "v-1__fig.png"
+    snapshot.parent.mkdir(parents=True)
+    payload = b"x" * 4096
+    snapshot.write_bytes(payload)
+    version = {
+        "version_id": "v-1",
+        "snapshot_path": str(snapshot),
+        "checksum": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+    }
+    service = ArtifactRestoreService(
+        store=None,
+        primary_snapshot_dir=data_dir / "artifact-versions",
+        trusted_snapshot_dirs=trusted_snapshot_roots(data_dir),
+        resolve_live_path=lambda artifact, current: tmp_path / "live",
+    )
+    read = []
+    real_read = os.read
+
+    def counting_read(fd, size):
+        chunk = real_read(fd, size)
+        read.append(len(chunk))
+        return chunk
+
+    monkeypatch.setattr(restore_module.os, "read", counting_read)
+
+    with pytest.raises(ArtifactSnapshotTooLarge):
+        service.verified_snapshot_bytes(version, max_bytes=len(payload) - 1)
+    assert read == []  # refused on the descriptor's size, before any read
+
+    # The descriptor's size passes, but the file grows before it is read: at
+    # most cap + 1 bytes come in, and the extra one refuses it.
+    read.clear()
+    real_fstat = os.fstat
+    monkeypatch.setattr(
+        restore_module.os,
+        "fstat",
+        lambda fd: SimpleNamespace(
+            **{
+                name: getattr(real_fstat(fd), name)
+                for name in ("st_mode", "st_nlink", "st_dev", "st_ino")
+            },
+            st_size=16,
+            st_mtime_ns=0,
+            st_ctime_ns=0,
+        ),
+    )
+    with pytest.raises(ArtifactSnapshotTooLarge):
+        service.verified_snapshot_bytes(version, max_bytes=16)
+    assert sum(read) == 17
+    monkeypatch.setattr(restore_module.os, "fstat", real_fstat)
+
+    path, data = service.verified_snapshot_bytes(version, max_bytes=len(payload))
+    assert data == payload and path == snapshot.resolve()
+    with pytest.raises(RuntimeError, match="checksum verification failed"):
+        service.verified_snapshot_bytes(
+            dict(version, checksum="0" * 64), max_bytes=len(payload)
+        )
+    outside = tmp_path / "elsewhere.bin"
+    outside.write_bytes(payload)
+    with pytest.raises(PermissionError, match="outside trusted storage"):
+        service.verified_snapshot_bytes(
+            dict(version, snapshot_path=str(outside)), max_bytes=len(payload)
+        )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="mkfifo and mode bits are POSIX")

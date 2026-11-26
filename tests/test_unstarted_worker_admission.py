@@ -431,3 +431,74 @@ def test_a_hub_emit_fault_does_not_leak_the_coordinator_maps(runner, frame_id):
         ticket.execution_id not in runner.executions._tickets
     ), "a failing event sink leaked the ticket map"
     assert ticket.execution_id not in runner.executions._positions
+
+
+# --------------------------------------------------------------------------
+# NV-01: a plain message's submission receipt when its worker never starts
+# --------------------------------------------------------------------------
+
+
+def _claimed_receipt(runner, frame_id, client_request_id):
+    created, _row = runner.claim_message_receipt(
+        frame_id, "", client_request_id, "0" * 64
+    )
+    assert created
+    return (frame_id, "", client_request_id)
+
+
+def test_a_receipted_message_whose_worker_never_started_is_refused(
+    runner, frame_id, break_worker_start
+):
+    """The receipt is correlated before `Thread.start` (that is what lets a
+    later reader trust an uncorrelated row as never started), so the abort has
+    to take the correlation back with it -- a refused receipt naming a ticket
+    would send the client looking for an execution that never existed."""
+    key = _claimed_receipt(runner, frame_id, "c" * 32)
+    with pytest.raises(_StartFailed) as caught:
+        runner.submit_message(
+            frame_id,
+            "proj",
+            "do the thing",
+            on_admitted=lambda job: runner.correlate_message_receipt(key, job),
+        )
+    row = runner.store.message_admissions.get(
+        root_frame_id=frame_id, initiator="", client_request_id="c" * 32
+    )
+    assert row["job_id"], "the correlation was not durable before Thread.start"
+
+    runner.refuse_message_receipt(key, caught.value, correlated=True)
+
+    assert_session_is_idle(runner, frame_id, where="receipted submit_message")
+    receipt = runner.message_receipt(frame_id, "", "c" * 32)
+    assert receipt["admission_state"] == "refused"
+    assert receipt["refusal"] == {"code": "worker_not_started", "status": 500}
+    assert receipt["job_id"] is None and receipt["execution_id"] is None
+    assert runner.message_receipts_local.get(key) is None, "nothing left to remember"
+
+
+def test_a_refusal_whose_write_fails_is_still_reported_as_a_refusal(
+    runner, frame_id, break_worker_start, monkeypatch
+):
+    """The durable write that records the refusal can fail too. This daemon
+    then answers from what it saw, rather than leaving a row that reads as
+    "still in flight" for as long as the process lives."""
+    key = _claimed_receipt(runner, frame_id, "d" * 32)
+    with pytest.raises(_StartFailed) as caught:
+        runner.submit_message(
+            frame_id,
+            "proj",
+            "do the thing",
+            on_admitted=lambda job: runner.correlate_message_receipt(key, job),
+        )
+
+    def _locked(**kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(runner.store.message_admissions, "refuse", _locked)
+    runner.refuse_message_receipt(key, caught.value, correlated=True)
+
+    assert_session_is_idle(runner, frame_id, where="refusal write failed")
+    receipt = runner.message_receipt(frame_id, "", "d" * 32)
+    assert receipt["admission_state"] == "refused", receipt
+    assert receipt["refusal"]["code"] == "worker_not_started"
+    assert receipt["execution_id"] is None

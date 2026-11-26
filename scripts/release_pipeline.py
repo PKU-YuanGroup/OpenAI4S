@@ -1914,6 +1914,11 @@ class Pipeline:
                         ),
                         "duration_s": document["runtime_smoke"].get("duration_s"),
                         "checks": document["runtime_smoke"].get("checks"),
+                        # Present when the receipt carries it -- required, and
+                        # already verified above, for any release after 1.0.1.
+                        **_upgrade_readback_summary(
+                            document["runtime_smoke"].get("upgrade_readback")
+                        ),
                     }
                     for kind, document in build_receipts.items()
                     if isinstance(document.get("runtime_smoke"), Mapping)
@@ -2584,6 +2589,46 @@ class Pipeline:
                 )
             document["sandbox"] = _sandbox_posture(linux_boundary=linux_boundary)
         return document
+
+
+def _upgrade_readback_summary(upgrade: Any) -> dict[str, Any]:
+    """The sealed-evidence view of a receipt's upgrade readback.
+
+    Which previous bundle and which candidate, by name, version, SHA-256 and
+    schema; every check; and the ids and raw CSV digests the run recorded. No
+    failure text: a receipt that reached here passed verification.
+    """
+    if not isinstance(upgrade, Mapping):
+        return {}
+
+    def side(raw: Any) -> dict[str, Any]:
+        raw = raw if isinstance(raw, Mapping) else {}
+        return {key: raw.get(key) for key in ("name", "version", "sha256", "schema")}
+
+    records = upgrade.get("records")
+    records = records if isinstance(records, Mapping) else {}
+    return {
+        "upgrade_readback": {
+            "status": upgrade.get("status"),
+            "scenario_version": upgrade.get("scenario_version"),
+            "baseline": side(upgrade.get("baseline")),
+            "candidate": side(upgrade.get("candidate")),
+            "checks": upgrade.get("checks"),
+            "records": {
+                key: records.get(key)
+                for key in (
+                    "project_id",
+                    "frame_id",
+                    "artifact_id",
+                    "cell_ids",
+                    "history_entries",
+                    "csv_versions",
+                    "backup_manifest_sha256",
+                )
+            },
+            "duration_s": upgrade.get("duration_s"),
+        }
+    }
 
 
 def seal_evidence_bundle(

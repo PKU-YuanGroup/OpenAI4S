@@ -520,3 +520,110 @@ def test_a_web_page_is_not_mistaken_for_a_model_api(api, no_backoff):
     assert body["reachable"] is False
     assert "not like a model API" in body["detail"]
     assert "internal error" not in body["detail"]
+
+
+# --------------------------------------------------------------------------
+# NV-05: the probe the fix entry leads to names the same failure as the turn
+# --------------------------------------------------------------------------
+#
+# "Open model settings" on a failed turn lands here, where the user may press
+# Test. A probe that blamed the model name for a wrong base URL path would
+# contradict the turn that sent them. Real transport, loopback answers; the
+# marker below is deliberately not credential-shaped.
+
+_NV05_SECRET = "nv05-probe-private-marker-41c9"
+
+
+def _answering_with_headers(status, body):
+    import threading
+    from http.server import BaseHTTPRequestHandler
+
+    from tests._ports import bound_gateway_server
+
+    hits: list[str] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server naming
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            hits.append(self.path)
+            data = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("WWW-Authenticate", f"Bearer error={_NV05_SECRET}")
+            self.send_header("X-Request-Id", _NV05_SECRET)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *_args):
+            return None
+
+    server, port = bound_gateway_server()
+    server.RequestHandlerClass = _Handler
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, port, hits
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "needle"),
+    [
+        (401, {"code": "invalid_api_key"}, "rejected the credential"),
+        (403, {}, "not permitted to use this model"),
+        (404, {"code": "model_not_found"}, "does not have a model by that name"),
+        (404, {"code": "not_found_error"}, "nothing at the requested address"),
+        (404, {}, "nothing at the requested address"),
+    ],
+    ids=["401", "403", "404-model", "404-other-code", "404-bare"],
+)
+def test_the_probe_names_the_same_failure_as_the_turn(
+    api, no_backoff, status, error, needle
+):
+    runner, call = api
+    server, port, hits = _answering_with_headers(
+        status, json.dumps({"error": {**error, "message": _NV05_SECRET}})
+    )
+    try:
+        profile_id = _profile_at(call, f"http://127.0.0.1:{port}/v1")
+        body = call("POST", f"/model-profiles/{profile_id}/probe")["body"]
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert hits, "the probe never reached the loopback endpoint"
+    assert body["reachable"] is False
+    assert needle in body["detail"]
+    # The probe keeps its own stable code; the provider's body, headers and
+    # raw code stay out of the answer.
+    assert body["code"] == "probe_failed"
+    assert _NV05_SECRET not in json.dumps(body)
+    assert "invalid_api_key" not in body["detail"]
+
+
+@pytest.mark.parametrize(
+    ("reason", "needle"),
+    [
+        (ConnectionRefusedError(61, "Connection refused"), "no request was sent"),
+        (socket.gaierror(8, "nodename nor servname provided"), "no request was sent"),
+        (TimeoutError(60, "Operation timed out"), "or the connection dropped"),
+    ],
+    ids=["refused", "unknown-host", "connect-timeout"],
+)
+def test_only_a_pre_send_refusal_is_named_as_no_request_sent(
+    api, no_backoff, monkeypatch, reason, needle
+):
+    import urllib.error
+
+    from openai4s.llm import transport
+
+    monkeypatch.setattr(
+        transport,
+        "_urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(urllib.error.URLError(reason)),
+    )
+    runner, call = api
+    profile_id = _profile_at(call, "http://127.0.0.1:9/v1")
+    body = call("POST", f"/model-profiles/{profile_id}/probe")["body"]
+    assert body["reachable"] is False
+    assert "could not be reached" in body["detail"]
+    assert needle in body["detail"]
+    # Still exactly one probe request (with the transport's own retries).
+    assert body["outbound"] == 1

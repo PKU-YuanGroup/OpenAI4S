@@ -236,51 +236,44 @@ def test_a_schema_43_database_gains_the_column_on_upgrade(tmp_path):
     store.log_cell(frame_id=frame, root_frame_id=frame, code="x = 1", result={})
     store.close()
     with sqlite3.connect(str(db)) as connection:
-        # Rebuild instead of relying on ALTER TABLE DROP COLUMN, as the other
-        # pre-upgrade fixtures do. To drop the last column, an older SQLite
-        # (reproduced on 3.38.5; CI's py3.14 is Ubuntu's /usr/bin/python3.14,
-        # linked to the system libsqlite3) walks back to the previous comma --
-        # and finds one inside the v44 comment in the CREATE TABLE text, so it
-        # refuses: "incomplete input".
-        connection.execute("ALTER TABLE execution_log RENAME TO _v44_execution_log")
-        connection.execute("DROP INDEX ix_exec_frame")
-        connection.execute("DROP INDEX ix_exec_root")
-        connection.execute(
-            "CREATE TABLE execution_log ("
-            "producing_cell_id TEXT PRIMARY KEY,frame_id TEXT,root_frame_id TEXT,"
-            "project_id TEXT NOT NULL DEFAULT 'default',cell_seq INTEGER,"
-            "cell_index INTEGER,state_revision INTEGER,kernel_id TEXT,"
-            "language TEXT,status TEXT,origin TEXT,code TEXT NOT NULL,"
-            "code_hash TEXT NOT NULL,visibility TEXT NOT NULL DEFAULT 'scientific' "
-            "CHECK (visibility IN ('scientific','scratch','recovery','system')),"
-            "pin INTEGER NOT NULL DEFAULT 0 CHECK (pin IN (0,1)),"
-            "replay_policy TEXT NOT NULL DEFAULT 'conditional' "
-            "CHECK (replay_policy IN ('safe','conditional','never')),"
-            "variable_reads TEXT NOT NULL DEFAULT '[]',"
-            "variable_writes TEXT NOT NULL DEFAULT '[]',"
-            "variable_deletes TEXT NOT NULL DEFAULT '[]',"
-            "mutation_uncertain INTEGER NOT NULL DEFAULT 0 "
-            "CHECK (mutation_uncertain IN (0,1)),stdout TEXT,stderr TEXT,"
-            "error TEXT,figures TEXT,files_read TEXT,files_written TEXT,"
-            "interrupted INTEGER NOT NULL DEFAULT 0,wall_s REAL,cpu_s REAL,"
-            "peak_rss_kb INTEGER,created_at INTEGER NOT NULL,generation_id TEXT)"
-        )
+        # Rebuild instead of ALTER TABLE DROP COLUMN: dropping the last column
+        # makes an older SQLite walk back to the nearest comma, which here
+        # sits inside the v44 comment, so the rewritten table no longer
+        # parses (3.40.1 on Debian 12, and the CI runner's system Python 3.14).
+        (ddl,) = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='execution_log'"
+        ).fetchone()
+        indexes = [
+            sql
+            for (sql,) in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='execution_log' AND sql IS NOT NULL"
+            )
+        ]
         columns = ",".join(
-            row[1] for row in connection.execute("PRAGMA table_info(execution_log)")
+            row[1]
+            for row in connection.execute("PRAGMA table_info(execution_log)")
+            if row[1] != "inlined_script"
         )
+        v43 = ddl[: ddl.index(",\n    -- v44:")] + "\n)"
+        connection.execute(v43.replace("execution_log", "_v43_execution_log", 1))
         connection.execute(
-            f"INSERT INTO execution_log({columns}) "
-            f"SELECT {columns} FROM _v44_execution_log"
+            f"INSERT INTO _v43_execution_log({columns}) "
+            f"SELECT {columns} FROM execution_log"
         )
-        connection.execute("DROP TABLE _v44_execution_log")
-        connection.execute("CREATE INDEX ix_exec_frame ON execution_log(frame_id)")
-        connection.execute("CREATE INDEX ix_exec_root ON execution_log(root_frame_id)")
+        connection.execute("DROP TABLE execution_log")
+        connection.execute("ALTER TABLE _v43_execution_log RENAME TO execution_log")
+        for sql in indexes:
+            connection.execute(sql)
         connection.execute("DELETE FROM schema_migrations WHERE version=44")
         connection.execute("PRAGMA user_version = 43")
 
     upgraded = get_store(db)
     try:
-        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 44
+        # Migration 44 adds the column; later migrations (45: message
+        # receipts) run in the same open, so the version is this tree's.
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION >= 44
         # A Cell recorded before the upgrade has no script: what its file
         # held then is not known now.
         [old] = upgraded.list_cells(frame)

@@ -1,12 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../customize/api";
 import {
   INITIAL_WIZARD,
   REQUIRED_STEPS,
+  RESUME_STORAGE_KEY,
+  clearResumeMarker,
   formatWizardError,
+  readResumeMarker,
   reduceWizard,
   requiredStepCount,
+  resolveResume,
   wizardErrorFromUnknown,
+  writeResumeMarker,
   type PathChoice,
   type WizardState,
 } from "./machine";
@@ -252,5 +257,171 @@ describe("M-01 onboarding status sanitizer", () => {
     expect(status.contacted).toBe(false);
     expect(JSON.stringify(status)).not.toContain(secret);
     expect(status.profiles[0] && "api_key" in status.profiles[0]).toBe(false);
+  });
+});
+
+/** sessionStorage as one tab holds it. */
+class TabStorage {
+  data = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.data.has(key) ? this.data.get(key)! : null;
+  }
+  setItem(key: string, value: string): void {
+    this.data.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.data.delete(key);
+  }
+}
+
+/** Storage the browser refuses (blocked site data, some private modes). */
+const REFUSING = {
+  getItem: () => {
+    throw new Error("SecurityError");
+  },
+  setItem: () => {
+    throw new Error("QuotaExceededError");
+  },
+  removeItem: () => {
+    throw new Error("SecurityError");
+  },
+};
+
+const SAVED = { id: "mp-saved", name: "Saved", provider: "chatgpt", model: "gpt-test", base_url: "" };
+
+describe("NV-04 resume marker", () => {
+  it("holds only the step and the profile id", () => {
+    const storage = new TabStorage();
+    expect(writeResumeMarker("mp-saved", storage)).toBe(true);
+    expect(JSON.parse(storage.getItem(RESUME_STORAGE_KEY)!)).toEqual({ step: "test", profile_id: "mp-saved" });
+    expect(readResumeMarker(storage)).toEqual({ step: "test", profile_id: "mp-saved" });
+    clearResumeMarker(storage);
+    expect(readResumeMarker(storage)).toBeNull();
+  });
+
+  it("drops a marker of any other shape instead of trusting it", () => {
+    for (const raw of [
+      "not json",
+      "[]",
+      JSON.stringify({ step: "project", profile_id: "mp-saved" }),
+      JSON.stringify({ step: "test", profile_id: "" }),
+      JSON.stringify({ step: "test", profile_id: 7 }),
+      JSON.stringify({ step: "test", profile_id: "mp-saved", model: "gpt-test" }),
+    ]) {
+      const storage = new TabStorage();
+      storage.setItem(RESUME_STORAGE_KEY, raw);
+      expect(readResumeMarker(storage), raw).toBeNull();
+      expect(storage.getItem(RESUME_STORAGE_KEY), raw).toBeNull();
+    }
+  });
+
+  it("is a no-op where storage is disabled or refuses every call", () => {
+    expect(writeResumeMarker("mp-saved", null)).toBe(false);
+    expect(readResumeMarker(null)).toBeNull();
+    expect(() => clearResumeMarker(null)).not.toThrow();
+    expect(writeResumeMarker("mp-saved", REFUSING)).toBe(false);
+    expect(readResumeMarker(REFUSING)).toBeNull();
+    expect(() => clearResumeMarker(REFUSING)).not.toThrow();
+    // No id, no marker.
+    const storage = new TabStorage();
+    expect(writeResumeMarker("  ", storage)).toBe(false);
+    expect(storage.data.size).toBe(0);
+  });
+
+  it("reads the global sessionStorage, and survives one that throws on access", () => {
+    const storage = new TabStorage();
+    vi.stubGlobal("sessionStorage", storage);
+    try {
+      expect(writeResumeMarker("mp-saved")).toBe(true);
+      expect(readResumeMarker()).toEqual({ step: "test", profile_id: "mp-saved" });
+      clearResumeMarker();
+      expect(storage.data.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      get() {
+        throw new Error("SecurityError: access denied");
+      },
+    });
+    try {
+      expect(writeResumeMarker("mp-saved")).toBe(false);
+      expect(readResumeMarker()).toBeNull();
+      expect(() => clearResumeMarker()).not.toThrow();
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, "sessionStorage", descriptor);
+      else delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+    }
+  });
+});
+
+describe("NV-04 what a reload does with the marker", () => {
+  const marker = { step: "test" as const, profile_id: "mp-saved" };
+  const status = (overrides: Record<string, unknown> = {}) => ({
+    completed_explicitly: false as boolean | null,
+    profiles: [SAVED] as Record<string, unknown>[],
+    active_id: "mp-saved",
+    ...overrides,
+  });
+
+  it("returns to the connection test when the saved profile is the active one", () => {
+    expect(resolveResume(marker, status())).toEqual({ kind: "test", profile: SAVED });
+  });
+
+  it("offers the existing-profile choice when the saved profile still needs activating", () => {
+    expect(resolveResume(marker, status({ active_id: "" }))).toEqual({ kind: "choose", profile: SAVED });
+    expect(resolveResume(marker, status({ active_id: "mp-other" }))).toEqual({ kind: "choose", profile: SAVED });
+  });
+
+  it("leaves an install with no marker -- configured, upgraded or fresh -- to the original flow", () => {
+    expect(resolveResume(null, status())).toEqual({ kind: "none" });
+    expect(resolveResume(null, status({ completed_explicitly: true }))).toEqual({ kind: "none" });
+  });
+
+  it("clears the marker once setup was finished or skipped, here or in another tab", () => {
+    expect(resolveResume(marker, status({ completed_explicitly: true }))).toEqual({ kind: "clear" });
+  });
+
+  it("clears the marker when the profile is not in the authenticated list", () => {
+    expect(resolveResume(marker, status({ profiles: [] }))).toEqual({ kind: "clear" });
+    expect(resolveResume(marker, status({ profiles: [{ ...SAVED, id: "mp-other" }] }))).toEqual({ kind: "clear" });
+    // A status without a list (an older or partial answer) proves nothing.
+    expect(resolveResume(marker, status({ profiles: undefined }))).toEqual({ kind: "clear" });
+  });
+
+  it("clears the marker against a daemon that predates `completed_explicitly`", () => {
+    expect(resolveResume(marker, status({ completed_explicitly: null }))).toEqual({ kind: "clear" });
+    expect(resolveResume(marker, null)).toEqual({ kind: "clear" });
+    const old = sanitizeOnboardingStatus({ complete: true, profiles: [SAVED], active_id: "mp-saved" });
+    expect(old.completed_explicitly).toBeNull();
+    expect(resolveResume(marker, old)).toEqual({ kind: "clear" });
+  });
+
+  it("reads the new field only as a boolean", () => {
+    expect(sanitizeOnboardingStatus({ completed_explicitly: false }).completed_explicitly).toBe(false);
+    expect(sanitizeOnboardingStatus({ completed_explicitly: true }).completed_explicitly).toBe(true);
+    expect(sanitizeOnboardingStatus({ completed_explicitly: "false" }).completed_explicitly).toBeNull();
+  });
+
+  it("resumes as a fresh wizard: no receipt, no request counted, only the path decided", () => {
+    const path: PathChoice = { kind: "existing", profileId: "mp-saved", provider: "chatgpt", model: "gpt-test", baseUrl: "", name: "Saved" };
+    const dirty: WizardState = {
+      ...INITIAL_WIZARD,
+      providerRequests: 3,
+      testClicked: true,
+      receipt: { native_tool_call: "true", streaming: "true", stale: false, native_completion: true, reachable: true },
+      error: { message: "old", requestId: "" },
+    };
+    const atTest = reduceWizard(dirty, { type: "resume", step: "test", path });
+    expect(atTest).toMatchObject({ surface: "wizard", step: "test", path, decided: ["path"], complete: false });
+    expect(atTest.providerRequests).toBe(0);
+    expect(atTest.testClicked).toBe(false);
+    expect(atTest.receipt).toBeNull();
+    expect(atTest.error).toBeNull();
+    const choosing = reduceWizard(dirty, { type: "resume", step: "path", path });
+    expect(choosing).toMatchObject({ surface: "wizard", step: "path", path, decided: [] });
+    expect(choosing.providerRequests).toBe(0);
   });
 });

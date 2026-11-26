@@ -10,8 +10,8 @@ import { t } from "../../i18n/runtime";
 import { stepEls, stream as liveStream } from "../../stores/stream";
 import { bytes, looksBinary } from "../artifacts/api";
 import { artUrl } from "../artifacts/cache";
-import { dockOpen, openViewer } from "../artifacts/ui";
-import type { ArtifactRow } from "../artifacts/types";
+import { filesT } from "../artifacts/copy";
+import { applyArtifactDeepLink, dockOpen } from "../artifacts/ui";
 import { mdHighlight } from "../md/highlight";
 import { renderMd } from "../md/render";
 import { declinedMeta, declinedReason, declinedStep } from "../messages/declined";
@@ -95,29 +95,27 @@ function rec(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function openArt(meta: {
-  artifact_id?: unknown;
-  version_id?: unknown;
-  filename?: unknown;
-  content_type?: unknown;
-  size_bytes?: unknown;
-}): void {
+/** The version a step recorded for a file; "" when the row predates recording it. */
+function recordedVersion(meta: { version_id?: unknown }): string {
+  return typeof meta.version_id === "string" && meta.version_id ? meta.version_id : "";
+}
+
+function openArt(meta: { artifact_id?: unknown; version_id?: unknown }): void {
   if (!meta || !meta.artifact_id) return;
-  dockOpen();
   // ART-4: a step card shows the version that step produced; opening it must
   // show that version too, not whatever a later cell overwrote it with.
-  const version = typeof meta.version_id === "string" && meta.version_id ? meta.version_id : "";
-  // openViewer may resolve a version first; a failure there belongs to this
-  // click, not to an unhandled rejection.
+  // NV-02: resolved by its own ids, so a missing or unreadable version says
+  // so instead of opening a viewer on bytes that are not there, and a card
+  // that recorded no version says that rather than opening the head.
+  const version = recordedVersion(meta);
+  if (!version) {
+    hint(filesT("files.version.unrecorded"));
+    return;
+  }
+  dockOpen();
+  // A failure there belongs to this click, not to an unhandled rejection.
   void Promise.resolve(
-    openViewer({
-      id: String(meta.artifact_id),
-      artifact_id: String(meta.artifact_id),
-      filename: meta.filename != null ? String(meta.filename) : undefined,
-      content_type: meta.content_type != null ? String(meta.content_type) : undefined,
-      size_bytes: typeof meta.size_bytes === "number" ? meta.size_bytes : undefined,
-      ...(version ? { version_id: version, _exactVersion: true } : {}),
-    } as ArtifactRow),
+    applyArtifactDeepLink({ artifactId: String(meta.artifact_id), versionId: version }),
   ).catch((error: unknown) => hint(t("toast.failed", apiErrorText(error)), true));
 }
 
@@ -691,17 +689,22 @@ function savedFigures(step: Step): Record<string, unknown>[] {
 function figureThumb(a: Record<string, unknown>): HTMLElement {
   const fig = el("figure", "s-fig");
   fig.title = t("step.artifact.openArtifact");
-  const im = el("img") as HTMLImageElement;
-  // ART-4: the head URL plus a cache-buster served the LATEST bytes, so an
-  // old card silently changed once the figure was redrawn.
-  im.src = artUrl(
-    (typeof a.version_id === "string" && a.version_id
-      ? { id: String(a.artifact_id), version_id: a.version_id, _exactVersion: true }
-      : { id: String(a.artifact_id) }) as ArtifactRow,
-  );
-  im.alt = String(a.filename || t("step.fig.altFallback"));
-  im.loading = "lazy";
-  fig.appendChild(im);
+  const version = recordedVersion(a);
+  if (version) {
+    const im = el("img") as HTMLImageElement;
+    // ART-4: the head URL plus a cache-buster served the LATEST bytes, so an
+    // old card silently changed once the figure was redrawn.
+    im.src = artUrl({ id: String(a.artifact_id), version_id: version, _exactVersion: true });
+    im.alt = String(a.filename || t("step.fig.altFallback"));
+    im.loading = "lazy";
+    // NV-02: a version that is gone, not this reader's, or whose bytes
+    // failed verification answers with an error, not an image.
+    im.onerror = () => im.replaceWith(el("div", "s-note s-fig-note", filesT("files.version.imageUnavailable")));
+    fig.appendChild(im);
+  } else {
+    // NV-02: the latest bytes are not this card's figure.
+    fig.appendChild(el("div", "s-note s-fig-note", filesT("files.version.unrecorded")));
+  }
   if (a.filename) fig.appendChild(el("figcaption", "s-fig-cap", String(a.filename)));
   if (typeof a.size_bytes === "number") fig.title += " · " + bytes(a.size_bytes);
   fig.onclick = (event?: Event) => {

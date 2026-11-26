@@ -565,6 +565,15 @@ jobs:
     env:
       # Use Playwright's hermetic cache for install and launch despite isolated HOME.
       PLAYWRIGHT_BROWSERS_PATH: "0"
+      # The previous stable Linux bundle the upgrade scenario starts from. This
+      # is the only place it is pinned: the smoke step checks the download
+      # against this digest before unpacking anything, and
+      # scripts/release_receipts.py reads these three lines to verify the
+      # receipt's upgrade_readback. Move all three together, to a published
+      # release whose SHA256SUMS lists this digest.
+      OPENAI4S_UPGRADE_BASELINE_NAME: "OpenAI4S-1.0.1-linux-x86_64.tar.gz"
+      OPENAI4S_UPGRADE_BASELINE_VERSION: "1.0.1"
+      OPENAI4S_UPGRADE_BASELINE_SHA256: "026c753daf705a186dfc694e7c79f428e0395e27d9607c56d739746b4df4503b"
     steps:
       - name: Checkout the release tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -595,6 +604,25 @@ jobs:
         run: |
           npm ci --ignore-scripts
           ./node_modules/.bin/playwright install --with-deps chromium
+      - name: Download the previous stable Linux bundle
+        # Into the runner's temp directory, never dist/: dist/ holds only what
+        # this release publishes, and the upload steps below glob it. Nothing is
+        # checked or unpacked here. A failed download leaves no file, which the
+        # smoke records as `baseline_unavailable`; a wrong file is recorded as
+        # `baseline_digest_mismatch`. Both fail the smoke step, so neither can
+        # reach a receipt.
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          BASELINE_DIR="$RUNNER_TEMP/upgrade-baseline"
+          mkdir -p "$BASELINE_DIR"
+          URL="https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v${OPENAI4S_UPGRADE_BASELINE_VERSION}/${OPENAI4S_UPGRADE_BASELINE_NAME}"
+          if ! curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+              --retry 3 --retry-delay 5 --max-time 480 \
+              --output "$BASELINE_DIR/$OPENAI4S_UPGRADE_BASELINE_NAME" "$URL"; then
+            rm -f "$BASELINE_DIR/$OPENAI4S_UPGRADE_BASELINE_NAME"
+            echo "::warning::the previous stable bundle could not be downloaded from $URL"
+          fi
       - name: Run the installed-runtime smoke
         # Verification proves the bytes are well-formed; this proves they
         # execute and that a browser can read the captured versions. The
@@ -604,11 +632,21 @@ jobs:
         # history come back, the exact CSV/PNG versions open in a real browser,
         # and no process is left behind. The report is what the receipt step
         # binds to this tarball's digest.
+        #
+        # Then the upgrade scenario (`upgrade_readback`): the pinned previous
+        # bundle and this tarball, each unpacked into its own directory, share
+        # one isolated data directory path. The previous bundle writes a
+        # project, a session, three Cells and two CSV versions and stops; the
+        # whole directory is copied; this tarball migrates it and must read
+        # every id, Cell and CSV byte back, again after a restart; then the
+        # copy is restored and the previous bundle must read it.
         run: |
           python3 scripts/installed_runtime_smoke.py \
             --bundle dist/OpenAI4S-*-linux-x86_64.tar.gz \
             --report dist/runtime-smoke-linux.json \
-            --browser
+            --browser \
+            --baseline-bundle "$RUNNER_TEMP/upgrade-baseline/$OPENAI4S_UPGRADE_BASELINE_NAME" \
+            --baseline-sha256 "$OPENAI4S_UPGRADE_BASELINE_SHA256"
       # Same binding the wheel and the DMG get. Without it the tarball was
       # staged with no document tying its bytes to the frozen commit -- covered
       # only by the in-run `incoming` digests, which say "these are the bytes

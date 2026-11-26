@@ -14,28 +14,53 @@ schema 32 and "Upgrading to 0.3.1" for 33 through 35. Any jump across releases
 works the same way: the first open runs every migration in between, so read
 each section from the release after yours up to the one you install. A 0.3.0
 install that goes straight to 1.0.1 also crosses schema 33, which rewrites
-stored judge rows (see "Upgrading to 0.3.1").
+stored judge rows (see "Upgrading to 0.3.1"). Each release after 1.0.1 is
+tested on one upgrade path before it is published; "How a release tests the
+upgrade" at the end of this page says which data and which channel that covers
+and how to roll back.
 
-## Upgrading to the release after 1.0.1 (schema 43 → 44)
+## Upgrading to the release after 1.0.1 (schema 43 → 45)
 
 Stop the daemon (`openai4s stop`, then check `openai4s status`) and copy the
 whole data directory while nothing is running, including any
 `openai4s.db-wal` or `openai4s.db-journal` file, exactly as for 1.0.1 below.
 
-The first command that opens the database migrates it from schema 43 to 44.
-Migration 44 adds one nullable column and records itself in
-`schema_migrations`; no row that 1.0.1 stored is rewritten or removed:
+The first command that opens the database migrates it from schema 43 to 45.
+Migration 44 adds one nullable column and migration 45 creates one table,
+which starts empty; each records itself in `schema_migrations`, and no row
+that 1.0.1 stored is rewritten or removed:
 
 | Version | Adds |
 | --- | --- |
 | 44 | `execution_log_inlined_script`: the `inlined_script` column of `execution_log`. A Cell whose code only runs a workspace script (`exec(open("x.py").read())`, `runpy.run_path`, `%run`, R `source("x.R")`) keeps that script as it was when it ran, up to 256 KB, so the Notebook and both `.ipynb` exports still show and re-run it after the file is edited or deleted. Cells recorded before the upgrade keep NULL |
+| 45 | `message_admissions`: submission receipts for plain messages, so a browser whose `POST /frames/{fid}/message` answer was lost asks what happened instead of sending the turn again |
 
-To go back to 1.0.1, stop the daemon and restore the copy you made: 1.0.1
-refuses a schema 44 database with `future_schema` before it writes anything.
+This upgrade path — data written by the 1.0.1 Linux x86_64 bundle, migrated
+and read back by the new bundle, then the pre-migration copy restored and read
+by 1.0.1 again — is the one the release runs before it is published; see
+"How a release tests the upgrade" at the end of this page. To go back to
+1.0.1, stop the daemon and restore the copy you made: 1.0.1 refuses a schema
+45 database with `future_schema` before it writes anything.
 
-What an API client sees change: each entry of
-`GET /frames/{fid}/execution-log` and each `notebook_cell_finished` event
-carry `inlined_script`, which is null for every other Cell.
+What an API client sees change:
+
+- Each entry of `GET /frames/{fid}/execution-log` and each
+  `notebook_cell_finished` event carry `inlined_script`, which is null for
+  every other Cell.
+- `POST /frames/{fid}/message` accepts an optional `client_request_id`
+  (32 lowercase hex characters, `wait:false`, no `annotation_ids`), and its
+  202 then carries `admission_state`. `GET /frames/{fid}/message-admissions/{client_request_id}`
+  answers what became of it. A request without the field gets the 1.0.1
+  response unchanged.
+- The public failure `code` of a model call that the provider refused is now
+  named by what was proven: `llm_authentication_failed` (HTTP 401),
+  `llm_access_denied` (403), `llm_model_unavailable` (404 with the provider
+  code `model_not_found`), `llm_request_target_not_found` (any other 404) and
+  `llm_endpoint_unreachable` (connection refused or host not resolved before
+  a request was sent). In 1.0.1 a 401 or 403 read `llm_auth_rejected` and a
+  404 read `llm_model_not_found`; those two codes remain only for the same
+  provider codes on another status. Failures stored by 1.0.1 keep their codes.
+- `GET /onboarding` adds `completed_explicitly`; `complete` keeps its meaning.
 
 ## Upgrading to 1.0.1 (schema 36 → 43)
 
@@ -653,3 +678,62 @@ and every daemon requires its access token, including one bound to
 * **Skills installer.** The npm package `@pku-yuangroup/openai4s-skills@0.2.0`
   stays installable and contains 603 Skills. The repository and the 0.3.0 wheel
   carry 604.
+
+## How a release tests the upgrade
+
+Before a release after 1.0.1 is published, the release workflow opens data
+written by the previous stable release with the new one. This runs in the
+workflow's Linux x86_64 job, `linux-runtime-smoke`:
+
+1. The previous stable Linux x86_64 bundle is pinned by file name, version and
+   SHA-256 in `.github/workflows/release.yml`. The job downloads it into the
+   runner's temporary directory, not into the directory that holds the
+   release's own files. The smoke copies it into its own directory and checks
+   the SHA-256 against the pin before it unpacks anything. The previous bundle
+   and the new one are unpacked into separate directories.
+2. The previous bundle starts on an empty data directory, with the same
+   isolated `HOME`, environment and loopback port as the fresh-install check.
+   It creates a project and a session, runs three Cells and writes two versions
+   of one CSV file. It then stops through `openai4s stop`, and the check waits
+   until none of its processes is left.
+3. The whole data directory is copied. Nothing opens the copy.
+4. The new bundle starts on the same data directory path and migrates it.
+   `preflight_schema` reads the schema before and after. The project and
+   session ids, the Cell records and both CSV versions must come back
+   unchanged, byte for byte. The new bundle is restarted and must report the
+   same execution history and the same bytes.
+5. After the new bundle stops, the copy replaces the migrated directory at the
+   same path, and the previous bundle must read the same project, session,
+   Cells and both CSV versions from it.
+
+The result is stored as `upgrade_readback` in the Linux bundle's build receipt:
+both bundles' names, versions and SHA-256s, both schemas, every check, and the
+project, session, Cell, Artifact and CSV version ids with each version's raw
+SHA-256. A Linux bundle whose receipt lacks it is not released. Neither is one
+whose previous bundle could not be downloaded, did not match the pinned
+SHA-256, or failed a check, and each of these stops the release with its own
+error.
+
+The tested data is what the pinned previous release (1.0.1, schema 43) wrote,
+opened by the release being published. The tested channel is the Linux x86_64
+bundle. This check does not cover the PyPI wheel, the container image, the
+Windows/WSL2 package or the macOS app, data written by a release older than the
+pinned one, or a data directory moved to another path. An upgrade across
+several releases runs every migration in between; `tests/test_schema_migrations.py`
+tests those steps on their own.
+
+To roll back a Linux bundle install the way the check does, stop the new
+release, then put the copy you made before upgrading back at the same path:
+
+```bash
+openai4s stop                                       # then check `openai4s status`
+mv ~/.openai4s ~/.openai4s-after-upgrade
+cp -a ~/.openai4s-before-<new-version> ~/.openai4s
+```
+
+Use the path the data directory had (`~/.openai4s` unless `OPENAI4S_DATA_DIR`
+names another one): the check restores to the original path only. Then start
+the previous release with its own launcher, `bin/openai4s` in the directory you
+unpacked it into, or run its `install.sh` again so that `openai4s` on your
+`PATH` points back to it. Anything created after the upgrade is not in the
+copy, and a newer release that opens the copy migrates it again.

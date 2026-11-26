@@ -1005,3 +1005,296 @@ describe("stored rows, first page and older page alike", () => {
     expect(note.textContent).toContain(historyT("history.importedEmpty.sub"));
   });
 });
+
+describe("NV-02 a message's @-ref chip opens the version it recorded", () => {
+  type Versions = Record<string, { status?: number; body: unknown }>;
+  const HISTORY: Versions = {
+    "a-growth": {
+      body: {
+        versions: [
+          { version_id: "v-2", filename: "growth.csv", is_latest: true, ordinal: 2 },
+          { version_id: "v-1", filename: "growth.csv", is_latest: false, ordinal: 1 },
+        ],
+      },
+    },
+    "a-other": { body: { versions: [{ version_id: "x-1", filename: "other.csv", is_latest: true }] } },
+    "a-local": { body: { versions: [{ version_id: "v-local", filename: "shared.csv", is_latest: true }] } },
+    "a-private": { status: 403, body: { error: "artifact belongs to another session" } },
+  };
+  let doc: RowDoc;
+  let requested: string[];
+  // Loaded here so this block stays self-contained at the end of the file.
+  let stores: typeof import("../../stores/artifacts");
+  let artifactsApi: typeof import("../artifacts/api");
+  let jsonResponse: typeof import("../artifacts/http-stub").jsonResponse;
+  let viewerVersionState: typeof import("../artifacts/state").viewerVersionState;
+
+  /** The server's `/artifacts/{id}/versions`, with optional held answers. */
+  function serveVersions(held: Record<string, Promise<void>> = {}): void {
+    artifactsApi.setArtifactsFetch(async (url: string) => {
+      requested.push(url);
+      const id = decodeURIComponent((/\/artifacts\/([^/]+)\/versions$/.exec(url) || [])[1] || "");
+      if (held[id]) await held[id];
+      const row = HISTORY[id];
+      return jsonResponse(row ? row.body : { versions: [] }, row?.status ?? 200);
+    });
+  }
+
+  async function drain(): Promise<void> {
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function docked(): Record<string, unknown> | null {
+    return stores.dockArtifact.value as Record<string, unknown> | null;
+  }
+
+  function chipsFor(refs: unknown[]): RowEl[] {
+    const host = new RowEl("div");
+    renderMessageRefChips(host as unknown as HTMLElement, refs);
+    return host.querySelectorAll(".msg-ref-chip");
+  }
+
+  beforeEach(async () => {
+    stores = await import("../../stores/artifacts");
+    artifactsApi = await import("../artifacts/api");
+    ({ jsonResponse } = await import("../artifacts/http-stub"));
+    ({ viewerVersionState } = await import("../artifacts/state"));
+    await setLang("en");
+    resetStoreFields();
+    doc = new RowDoc();
+    vi.stubGlobal("document", doc);
+    viewerVersionState.value = null;
+    requested = [];
+    serveVersions();
+  });
+
+  afterEach(() => {
+    artifactsApi.setArtifactsFetch(null);
+  });
+
+  it.each(ROW_RENDERERS)("%s: a reopened chip opens V1 while this session lists the file at V2", async (_name, render) => {
+    // The session's file list, as the Files panel has it: the head, V2.
+    stores.artifacts.value = [{ id: "a-growth", artifact_id: "a-growth", version_id: "v-2", filename: "growth.csv" }];
+    const row = render({
+      role: "user",
+      content: "Plot @growth.csv",
+      artifact_refs: [{ display_name: "growth.csv", artifact_id: "a-growth", version_id: "v-1", sha256: "abcdef0123456789" }],
+    }) as unknown as RowEl;
+    const chip = row.querySelector(".msg-ref-chip")!;
+    expect(chip.classList.contains("clickable")).toBe(true);
+    expect(chip.title).toBe("v-1 · sha256:abcdef012345");
+    chip.onclick!();
+    await drain();
+    expect(docked()).toMatchObject({ id: "a-growth", version_id: "v-1", filename: "growth.csv", _exactVersion: true });
+    expect(viewerVersionState.value?.status).toBe("exact");
+  });
+
+  it("the live bubble's chip opens a pinned file from another session it has never listed", async () => {
+    stores.artifacts.value = [];
+    // send.ts draws these from the mentions it sent.
+    const [chip] = chipsFor([{ display_name: "other.csv", version_id: "x-1", artifact_id: "a-other" }]);
+    expect(chip!.classList.contains("clickable")).toBe(true);
+    chip!.onclick!();
+    await drain();
+    expect(requested).toEqual(["/api/v1/artifacts/a-other/versions"]);
+    expect(docked()).toMatchObject({ id: "a-other", version_id: "x-1", _exactVersion: true });
+  });
+
+  it("a copied-in file opens the local copy it recorded; its source session is provenance only", async () => {
+    const [chip] = chipsFor([
+      {
+        display_name: "shared.csv",
+        artifact_id: "a-local",
+        version_id: "v-local",
+        source_session: "f-sibling-session",
+        materialized_target: "v-local",
+      },
+    ]);
+    expect(chip!.title).toBe("v-local · ↗ f-sibling-se");
+    chip!.onclick!();
+    await drain();
+    expect(requested).toEqual(["/api/v1/artifacts/a-local/versions"]);
+    expect(docked()).toMatchObject({ id: "a-local", version_id: "v-local", _exactVersion: true });
+  });
+
+  it("a ref with no recorded version says so and opens nothing", async () => {
+    stores.artifacts.value = [{ id: "a-growth", artifact_id: "a-growth", version_id: "v-2", filename: "growth.csv" }];
+    const [chip] = chipsFor([{ display_name: "growth.csv", artifact_id: "a-growth" }]);
+    expect(chip!.title).toBe("Historical version not recorded");
+    chip!.onclick!();
+    await drain();
+    expect(doc.hint.textContent).toBe("Historical version not recorded");
+    expect(requested).toEqual([]);
+    expect(docked()).toBeNull();
+
+    await setLang("zh");
+    const [zh] = chipsFor([{ display_name: "growth.csv", artifact_id: "a-growth" }]);
+    zh!.onclick!();
+    expect(doc.hint.textContent).toBe("历史版本未记录");
+  });
+
+  it("a gone version, or one this reader may not see, gets one missing-version answer", async () => {
+    for (const artifactId of ["a-gone", "a-private"]) {
+      const [chip] = chipsFor([{ display_name: "x.csv", artifact_id: artifactId, version_id: "v-x" }]);
+      chip!.onclick!();
+      await drain();
+      expect(viewerVersionState.value).toMatchObject({ status: "not-found", artifactId, versionId: "v-x" });
+      expect(docked()).toEqual({ id: artifactId, artifact_id: artifactId });
+    }
+  });
+
+  it("a late answer for an earlier chip does not replace the newer view", async () => {
+    let release!: () => void;
+    serveVersions({ "a-growth": new Promise<void>((resolve) => (release = resolve)) });
+    const [first, second] = chipsFor([
+      { display_name: "growth.csv", artifact_id: "a-growth", version_id: "v-1" },
+      { display_name: "other.csv", artifact_id: "a-other", version_id: "x-1" },
+    ]);
+    first!.onclick!();
+    await drain();
+    second!.onclick!();
+    await drain();
+    expect(docked()).toMatchObject({ id: "a-other", version_id: "x-1" });
+    release();
+    await drain();
+    expect(docked()).toMatchObject({ id: "a-other", version_id: "x-1" });
+    expect(viewerVersionState.value).toMatchObject({ status: "exact", versionId: "x-1" });
+  });
+});
+
+// --- NV-05: a model failure's fix entry, live and on reopen -----------------
+//
+// The gateway names five fixable model failures by what it can prove (401,
+// 403, a listed 404 code, any other 404, a refusal before sending). The
+// failure row offers 「打开模型设置」/"Open model settings" for each, the same
+// way whether the turn just failed in front of the user or the session was
+// reopened later. Settings is mocked: what it reads on open is covered by the
+// gateway tests and the Models tab's own.
+
+import { turnDone } from "../send/turn";
+import { feed } from "./stream";
+
+const nv05 = vi.hoisted(() => ({ openCustomize: vi.fn(() => Promise.resolve()) }));
+vi.mock("../customize", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../customize")>()),
+  openCustomize: nv05.openCustomize,
+}));
+
+describe("NV-05 a model failure's fix entry, live and on reopen", () => {
+  // What `_friendly_error` streams and stores for each code (English).
+  const SENTENCES: Record<string, string> = {
+    llm_authentication_failed: "**The model service did not accept the credentials (HTTP 401).** Check the API key in Settings → Models.",
+    llm_access_denied: "**The model service refused access (HTTP 403).** Check the account in Settings → Models.",
+    llm_model_unavailable: "**The model service reports that this model is not available (HTTP 404).** Check the model id in Settings → Models.",
+    llm_request_target_not_found: "**The model service found nothing at the requested address (HTTP 404).** Check the endpoint and the model id in Settings → Models.",
+    llm_endpoint_unreachable: "**The model endpoint could not be reached: the connection was refused or the host name did not resolve, so no request was sent.** Check the base URL in Settings → Models.",
+  };
+  let doc: RowDoc;
+  let requests: string[];
+
+  beforeEach(async () => {
+    await setLang("en");
+    resetStoreFields();
+    doc = new RowDoc();
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    requests = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      requests.push(String(url));
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+    nv05.openCustomize.mockClear();
+  });
+
+  function entry(row: RowEl): { meta: RowEl; button: RowEl } {
+    const meta = row.querySelector(".msg-failure-meta");
+    expect(meta, "no failure row").not.toBeNull();
+    const button = meta!.querySelector(".turn-open-models");
+    expect(button, "no Open model settings button").not.toBeNull();
+    return { meta: meta!, button: button! };
+  }
+
+  function clickOpensModels(button: RowEl): void {
+    const before = requests.length;
+    nv05.openCustomize.mockClear();
+    button.onclick!();
+    expect(nv05.openCustomize).toHaveBeenCalledTimes(1);
+    expect(nv05.openCustomize).toHaveBeenCalledWith("models");
+    // Opening the settings sends nothing by itself: no model request, no turn.
+    expect(requests.length).toBe(before);
+  }
+
+  it.each(ROW_RENDERERS)("%s: each code reopens with its sentence and the button", (_name, render) => {
+    for (const [code, sentence] of Object.entries(SENTENCES)) {
+      const row = render({
+        role: "assistant",
+        content: sentence,
+        failure: { code, request_id: "web-nv05" },
+      }) as unknown as RowEl;
+      expect(row.querySelector(".md")!.textContent).toContain(sentence.replace(/\*\*/g, "").slice(0, 40));
+      const { meta, button } = entry(row);
+      expect(meta.dataset.failureCode).toBe(code);
+      expect(meta.dataset.requestId).toBe("web-nv05");
+      expect(button.textContent).toBe("Open model settings");
+      clickOpensModels(button);
+    }
+    expect(requests.filter((url) => /probe|discover|message|chat/.test(url))).toEqual([]);
+  });
+
+  it.each(ROW_RENDERERS)("%s: a row stored with a first-version code keeps its own sentence", (_name, render) => {
+    const old = "**The model provider rejected the API key (401/403).** In Settings → Models, check that the key is correct.";
+    const row = render({
+      role: "assistant",
+      content: old,
+      failure: { code: "llm_auth_rejected", request_id: "web-old" },
+    }) as unknown as RowEl;
+    expect(row.querySelector(".md")!.textContent).toContain("rejected the API key (401/403)");
+    const { meta, button } = entry(row);
+    expect(meta.dataset.failureCode).toBe("llm_auth_rejected");
+    clickOpensModels(button);
+  });
+
+  it("an unknown upstream failure gets no settings button, live or on reopen", () => {
+    const row = renderFirstPage({
+      role: "assistant",
+      content: "**The LLM call failed.** Check the model and API key in Settings → Models, then try again.",
+      failure: { code: "internal_error", request_id: "web-unknown" },
+    }) as unknown as RowEl;
+    expect(row.querySelector(".msg-failure-meta")!.querySelector(".turn-open-models")).toBeNull();
+  });
+
+  it.each([
+    ["before the first output", ""],
+    ["after streamed output", "Here is the first half of the answer.\n"],
+  ])("a live failure %s ends with the same entry a reopen shows", async (_when, streamed) => {
+    await setLang("zh");
+    const code = "llm_authentication_failed";
+    const sentence = SENTENCES[code]!;
+    const failure = { code, request_id: "web-live-nv05" };
+    if (streamed) feed("text", streamed, { type: "text_chunk", block_type: "text" });
+    // The gateway streams its sentence as the turn's last text, then the
+    // terminal frame event carries the code and the local id.
+    feed("text", "\n\n" + sentence + "\n", { type: "text_chunk", block_type: "text" });
+    turnDone("failed", { type: "frame_update", status: "failed", ...failure });
+
+    const live = doc.messages.children.at(-1)!;
+    const { meta: liveMeta, button: liveButton } = entry(live);
+    expect(liveMeta.dataset.failureCode).toBe(code);
+    expect(liveMeta.dataset.requestId).toBe("web-live-nv05");
+    expect(liveButton.textContent).toBe("打开模型设置");
+    expect(live.querySelectorAll(".msg-failure-meta")).toHaveLength(1);
+
+    const reopened = renderFirstPage({
+      role: "assistant",
+      content: (streamed ? streamed + "\n\n" : "") + sentence,
+      failure,
+    }) as unknown as RowEl;
+    const { meta: storedMeta, button: storedButton } = entry(reopened);
+    expect(storedMeta.textContent).toBe(liveMeta.textContent);
+    expect(storedMeta.dataset.failureCode).toBe(liveMeta.dataset.failureCode);
+    expect(storedButton.textContent).toBe(liveButton.textContent);
+    clickOpensModels(liveButton);
+    clickOpensModels(storedButton);
+  });
+});

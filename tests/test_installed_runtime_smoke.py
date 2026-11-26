@@ -634,3 +634,599 @@ def test_a_bundle_runtime_launches_and_stops_through_the_bundled_cli(
     assert runtime.stop_argv[0] == runtime.serve_argv[0]
     assert runtime.stop_argv[-1] == "stop"
     assert str(runtime.origin_root).endswith("OpenAI4S-0.3.1-linux-x86_64")
+
+
+# --------------------------------------------------------------------------- #
+# Upgrade readback: previous stable bundle → candidate
+# --------------------------------------------------------------------------- #
+PREVIOUS = "OpenAI4S-1.0.1-linux-x86_64.tar.gz"
+CANDIDATE = "OpenAI4S-1.1.0-linux-x86_64.tar.gz"
+
+
+def _write_named_bundle(directory: Path, name: str) -> Path:
+    """A fake bundle whose top directory matches its file name."""
+    tarball = directory / name
+    top = name[: -len(".tar.gz")]
+    with tarfile.open(tarball, "w:gz") as archive:
+        for relative, payload in (
+            ("bin/openai4s", b"#!/bin/sh\nexit 0\n"),
+            ("runtime/bin/python3", b"#!/bin/sh\nexit 0\n"),
+            ("src/openai4s/__init__.py", top.encode()),
+        ):
+            info = tarfile.TarInfo(f"{top}/{relative}")
+            info.size = len(payload)
+            info.mode = 0o755
+            archive.addfile(info, io.BytesIO(payload))
+    return tarball
+
+
+def test_the_self_test_fails_when_an_upgrade_check_is_disabled(monkeypatch, capsys):
+    """INV-13 for the upgrade scenario: undo a refusal and the self-test says so."""
+    monkeypatch.setattr(smoke, "check_csv_versions", lambda *args, **kwargs: None)
+    assert smoke.run_self_test(sys.stdout) != 0
+    captured = capsys.readouterr().out
+    assert "csv_versions refuses a lost history version" in captured
+
+
+def test_the_previous_bundle_is_checked_before_anything_is_unpacked(tmp_path):
+    previous = tmp_path / PREVIOUS
+    previous.write_bytes(b"previous")
+    private = tmp_path / "private" / PREVIOUS
+    with pytest.raises(smoke.BaselineRefusal) as raised:
+        smoke.take_baseline(tmp_path / "absent.tar.gz", private, "a" * 64)
+    assert raised.value.status == smoke.BASELINE_UNAVAILABLE
+    with pytest.raises(smoke.BaselineRefusal) as raised:
+        smoke.take_baseline(previous, private, "a" * 64)
+    assert raised.value.status == smoke.BASELINE_DIGEST_MISMATCH
+    assert raised.value.actual_sha256 == smoke.sha256_bytes(b"previous")
+    assert not private.exists(), "a refused copy must not stay behind to be unpacked"
+    digest = smoke.sha256_bytes(b"previous")
+    assert smoke.take_baseline(previous, private, digest.upper()) == digest
+    assert private.read_bytes() == b"previous"
+
+
+def test_the_schema_probe_reads_the_shipped_migrations_without_writing(tmp_path):
+    """SCHEMA_PROBE runs inside each bundle's interpreter; run it here against
+    this tree's migrations.py, exactly as the bundle would."""
+    import sqlite3
+
+    from openai4s.storage import migrations
+
+    module = Path(migrations.__file__)
+    db = tmp_path / "openai4s.db"
+
+    def probe() -> dict:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", smoke.SCHEMA_PROBE, str(module), str(db)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
+        return json.loads(completed.stdout)
+
+    assert probe() == {"supported": migrations.SCHEMA_VERSION, "schema": None}
+    conn = sqlite3.connect(db)
+    conn.execute(f"PRAGMA user_version = {migrations.SCHEMA_VERSION}")
+    conn.commit()
+    conn.close()
+    before = db.read_bytes()
+    answer = probe()
+    assert answer == {
+        "supported": migrations.SCHEMA_VERSION,
+        "schema": migrations.SCHEMA_VERSION,
+    }
+    assert db.read_bytes() == before
+    smoke.check_schema_probe(answer, check="schema_after", label="candidate")
+    conn = sqlite3.connect(db)
+    conn.execute(f"PRAGMA user_version = {migrations.SCHEMA_VERSION + 1}")
+    conn.commit()
+    conn.close()
+    future = probe()
+    assert future["error"] == "future_schema"
+    assert future["actual"] == migrations.SCHEMA_VERSION + 1
+    with pytest.raises(SmokeFailure, match="future schema"):
+        smoke.check_schema_probe(future, check="restore_backup", label="previous")
+
+
+def test_the_upgrade_report_has_a_frozen_shape():
+    report = smoke.build_upgrade_report(
+        baseline={"name": PREVIOUS, "version": "1.0.1", "sha256": "a" * 64},
+        candidate={"name": CANDIDATE, "version": "1.1.0", "sha256": "c" * 64},
+        checks={},
+        records=None,
+        duration_s=0.0,
+        status=smoke.NOT_RUN,
+        failure={"check": "baseline_seed", "detail": "x"},
+    )
+    assert set(report) == {
+        "scenario_version",
+        "status",
+        "baseline",
+        "candidate",
+        "checks",
+        "records",
+        "duration_s",
+        "failure",
+    }
+    assert list(report["checks"]) == list(smoke.UPGRADE_CHECKS)
+    assert set(report["baseline"]) == {
+        "name",
+        "version",
+        "sha256",
+        "expected_sha256",
+        "schema",
+    }
+    assert set(report["candidate"]) == {"name", "version", "sha256", "schema"}
+    with pytest.raises(ValueError):
+        smoke.build_upgrade_report(
+            baseline={},
+            candidate={},
+            checks={"backup": "maybe"},
+            records=None,
+            duration_s=0.0,
+        )
+
+
+def test_cell_records_keep_stored_facts_not_projection_details():
+    entry = {
+        "producing_cell_id": "c1",
+        "code_hash": "h",
+        "source": "print(1)",
+        "status": "ok",
+        "output_artifacts": [
+            {"filename": "upgrade.csv", "artifact_id": "a", "version_id": "v1"}
+        ],
+        "stale": False,
+        "cell_index": 0,
+        "attempt_count": 1,
+    }
+    changed_projection = {**entry, "stale": True, "cell_index": 7, "attempt_count": 2}
+    assert smoke.cell_records([entry]) == smoke.cell_records([changed_projection])
+    assert smoke.cell_records([entry]) != smoke.cell_records(
+        [{**entry, "source": "print(2)"}]
+    )
+
+
+def test_the_manifest_records_a_link_and_does_not_follow_it(tmp_path):
+    root = tmp_path / "data"
+    (root / "inner").mkdir(parents=True)
+    (root / "inner" / "file").write_bytes(b"x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "big").write_bytes(b"y" * 100)
+    (root / "link").symlink_to(outside, target_is_directory=True)
+    manifest = smoke.tree_manifest(root)
+    assert manifest["files"] == 1 and manifest["bytes"] == 1
+    copy = tmp_path / "copy"
+    smoke.copy_data_dir(root, copy, check="backup")
+    assert (copy / "link").is_symlink()
+    assert smoke.tree_manifest(copy) == manifest
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--baseline-bundle", "x.tar.gz"],
+        ["--baseline-sha256", "a" * 64],
+        ["--baseline-bundle", "x.tar.gz", "--baseline-sha256", "not-hex"],
+    ],
+)
+def test_baseline_flags_are_usage_errors_unless_complete(tmp_path, argv):
+    bundle = ["--bundle", str(tmp_path / "b.tar.gz"), "--report", str(tmp_path / "r")]
+    assert smoke.main([*bundle, *argv]) == 2
+    wheel = ["--python", "py", "--report", str(tmp_path / "r")]
+    assert (
+        smoke.main([*wheel, "--baseline-bundle", "x", "--baseline-sha256", "a" * 64])
+        == 2
+    )
+
+
+@pytest.mark.parametrize(
+    ("make_baseline", "status"),
+    [
+        pytest.param(lambda path: None, smoke.BASELINE_UNAVAILABLE, id="missing"),
+        pytest.param(
+            lambda path: path.write_bytes(b"other bytes"),
+            smoke.BASELINE_DIGEST_MISMATCH,
+            id="wrong-digest",
+        ),
+    ],
+)
+def test_an_unusable_previous_bundle_is_recorded_as_such(
+    monkeypatch, tmp_path, make_baseline, status
+):
+    """Recorded even though the fresh scenario also failed on this host."""
+    candidate = _write_named_bundle(tmp_path, CANDIDATE)
+    baseline = tmp_path / "previous" / PREVIOUS
+    baseline.parent.mkdir()
+    make_baseline(baseline)
+    monkeypatch.setattr("platform.system", lambda: "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    report_path = tmp_path / "report.json"
+    code = smoke.main(
+        [
+            "--bundle",
+            str(candidate),
+            "--report",
+            str(report_path),
+            "--baseline-bundle",
+            str(baseline),
+            "--baseline-sha256",
+            "a" * 64,
+        ]
+    )
+    assert code == 1
+    upgrade = json.loads(report_path.read_text("utf-8"))["upgrade_readback"]
+    assert upgrade["status"] == status
+    assert upgrade["checks"]["baseline_digest"] == smoke.FAILED
+    assert upgrade["failure"]["check"] == "baseline_digest"
+    assert upgrade["baseline"]["expected_sha256"] == "a" * 64
+    assert upgrade["baseline"]["name"] == PREVIOUS
+    assert all(
+        upgrade["checks"][name] == smoke.NOT_RUN for name in smoke.UPGRADE_CHECKS[1:]
+    )
+
+
+def test_a_failed_fresh_scenario_leaves_the_upgrade_not_run(monkeypatch, tmp_path):
+    candidate = _write_named_bundle(tmp_path, CANDIDATE)
+    (tmp_path / "previous").mkdir()
+    baseline = _write_named_bundle(tmp_path / "previous", PREVIOUS)
+    monkeypatch.setattr("platform.system", lambda: "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    report_path = tmp_path / "report.json"
+    code = smoke.main(
+        [
+            "--bundle",
+            str(candidate),
+            "--report",
+            str(report_path),
+            "--baseline-bundle",
+            str(baseline),
+            "--baseline-sha256",
+            smoke.sha256_file(baseline),
+        ]
+    )
+    assert code == 1
+    report = json.loads(report_path.read_text("utf-8"))
+    assert report["status"] == smoke.FAILED
+    upgrade = report["upgrade_readback"]
+    assert upgrade["status"] == smoke.NOT_RUN
+    assert upgrade["checks"]["baseline_digest"] == smoke.PASSED
+    assert "fresh-install scenario did not pass" in upgrade["failure"]["detail"]
+
+
+def test_each_bundle_is_unpacked_into_its_own_directory(monkeypatch, tmp_path):
+    candidate = _write_named_bundle(tmp_path, CANDIDATE)
+    (tmp_path / "previous").mkdir()
+    baseline = _write_named_bundle(tmp_path / "previous", PREVIOUS)
+    monkeypatch.setattr("platform.system", lambda: "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    work_root = tmp_path / "upgrade work"
+    monkeypatch.setattr(
+        smoke.tempfile, "mkdtemp", lambda prefix="": str(work_root.mkdir() or work_root)
+    )
+    seen = {}
+
+    def run(scenario):
+        seen["baseline"] = scenario.baseline.origin_root
+        seen["candidate"] = scenario.candidate.origin_root
+        seen["identities"] = (scenario.baseline_identity, scenario.candidate_identity)
+        return {"status": "sentinel"}
+
+    monkeypatch.setattr(smoke.UpgradeScenario, "run", run)
+    result = smoke.run_upgrade_readback(
+        baseline_tarball=baseline,
+        baseline_sha256=smoke.sha256_file(baseline),
+        candidate_tarball=candidate,
+        fresh_passed=True,
+    )
+    assert result == {"status": "sentinel"}
+    assert seen["baseline"] == work_root / "baseline" / PREVIOUS[: -len(".tar.gz")]
+    assert seen["candidate"] == work_root / "candidate" / CANDIDATE[: -len(".tar.gz")]
+    baseline_identity, candidate_identity = seen["identities"]
+    assert baseline_identity["version"] == "1.0.1"
+    assert baseline_identity["sha256"] == smoke.sha256_file(baseline)
+    assert candidate_identity["version"] == "1.1.0"
+    assert candidate_identity["sha256"] == smoke.sha256_file(candidate)
+    assert not work_root.exists(), "the upgrade work root must be removed"
+
+
+# -- the scenario's own steps, against an in-memory runtime ------------------
+class _FakeRuntimeState:
+    """What a daemon would persist, kept *in the data directory* as JSON.
+
+    So the backup, the restore and the "previous bundle reads the copy" steps
+    exercise real file copies: a copy taken before the candidate migrated holds
+    the pre-migration state, and restoring it brings that state back.
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        self.path = data_dir / smoke.DATABASE_FILENAME
+
+    def load(self) -> dict:
+        if not self.path.exists():
+            return {"schema": 43, "projects": {}, "frames": {}, "cells": [], "v": {}}
+        return json.loads(self.path.read_text("utf-8"))
+
+    def save(self, state: dict) -> None:
+        self.path.write_text(json.dumps(state), "utf-8")
+
+
+class _FakeApi:
+    def __init__(self, store: _FakeRuntimeState) -> None:
+        self.store = store
+
+    def json(self, method, path, body=None, *, timeout=0.0, check="serve"):
+        state = self.store.load()
+        parts = path.split("?")[0].strip("/").split("/")[2:]
+        if method == "POST" and parts == ["projects"]:
+            state["projects"]["p-1"] = {"project_id": "p-1", "name": body["name"]}
+            self.store.save(state)
+            return state["projects"]["p-1"]
+        if method == "POST" and parts == ["frames"]:
+            state["frames"]["f-1"] = {"id": "f-1", "project_id": body["project_id"]}
+            self.store.save(state)
+            return state["frames"]["f-1"]
+        if method == "POST" and parts[-2:] == ["kernel", "execute"]:
+            code = body["code"]
+            outputs = []
+            if "write_text" in code:
+                content = smoke.CSV_FIRST if "{x + 1}" in code else smoke.CSV_SECOND
+                version_id = f"v-{len(state['v']) + 1}"
+                state["v"][version_id] = content.decode()
+                outputs = [
+                    {
+                        "filename": smoke.UPGRADE_CSV,
+                        "artifact_id": "a-1",
+                        "version_id": version_id,
+                        "url": f"/api/v1/artifacts/versions/{version_id}",
+                    }
+                ]
+            state["cells"].append(
+                {
+                    "producing_cell_id": f"c-{len(state['cells']) + 1}",
+                    "code_hash": smoke.sha256_bytes(code.encode()),
+                    "source": code,
+                    "status": "ok",
+                    "output_artifacts": outputs,
+                }
+            )
+            self.store.save(state)
+            return {"status": "completed", "cell": {"status": "ok", "error": None}}
+        if parts[-1:] == ["execution-log"]:
+            return {"entries": state["cells"]}
+        if parts[:1] == ["artifacts"] and parts[-1:] == ["versions"]:
+            return {
+                "versions": [
+                    {
+                        "version_id": version_id,
+                        "checksum": smoke.sha256_bytes(content.encode()),
+                        "size_bytes": len(content.encode()),
+                    }
+                    for version_id, content in state["v"].items()
+                ]
+            }
+        if parts[:1] == ["projects"]:
+            return state["projects"].get(parts[1], {})
+        if parts[:1] == ["frames"]:
+            return state["frames"].get(parts[1], {})
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    def download(self, path, *, check="artifact_capture"):
+        version_id = path.rsplit("/", 1)[-1]
+        content = self.store.load()["v"].get(version_id)
+        if content is None:
+            raise SmokeFailure(check, f"GET {path} answered HTTP 404")
+        return content.encode()
+
+
+class _FakeDaemon:
+    def __init__(self, runtime) -> None:
+        self.runtime = runtime
+        self.running = True
+        self.token = ""
+        self.port = 0
+        self.proc = None
+        self.pgid = 0
+
+    def alive(self) -> bool:
+        return self.running
+
+    def stop(self, timeout) -> None:
+        self.running = False
+
+
+def _fake_upgrade(monkeypatch, tmp_path, *, migrate):
+    """An UpgradeScenario whose daemons, HTTP and schema probe are in memory.
+
+    ``migrate(state)`` is what the candidate does to the data on its first
+    start; everything else is the real step code.
+    """
+    runtimes = {
+        role: smoke.Runtime(
+            target="bundle",
+            artifact_sha256="",
+            platform_name="linux",
+            arch="x86_64",
+            python_version="3.13.0",
+            origin_root=tmp_path / role,
+            serve_argv=[role, "serve"],
+            stop_argv=[role, "stop"],
+            cwd=tmp_path,
+        )
+        for role in ("baseline", "candidate")
+    }
+    supported = {"baseline": 43, "candidate": 44}
+    scenario = smoke.UpgradeScenario(
+        baseline=runtimes["baseline"],
+        candidate=runtimes["candidate"],
+        work_root=tmp_path / "work",
+        baseline_identity={
+            "name": PREVIOUS,
+            "version": "1.0.1",
+            "sha256": "a" * 64,
+            "expected_sha256": "a" * 64,
+        },
+        candidate_identity={"name": CANDIDATE, "version": "1.1.0", "sha256": "c" * 64},
+        env_base={},
+    )
+    store = _FakeRuntimeState(scenario.data_dir)
+    started = []
+
+    def start(runtime=None):
+        role = "baseline" if runtime is runtimes["baseline"] else "candidate"
+        state = store.load()
+        if state["schema"] > supported[role]:
+            raise SmokeFailure("serve", "future_schema")
+        if role == "candidate" and state["schema"] < supported["candidate"]:
+            migrate(state)
+            state["schema"] = supported["candidate"]
+        store.save(state)
+        daemon = _FakeDaemon(runtime)
+        scenario.daemons.append(daemon)
+        started.append(role)
+        return daemon
+
+    def probe(runtime):
+        role = "baseline" if runtime is runtimes["baseline"] else "candidate"
+        schema = store.load()["schema"]
+        if schema > supported[role]:
+            return {
+                "supported": supported[role],
+                "schema": None,
+                "error": "future_schema",
+                "actual": schema,
+            }
+        return {"supported": supported[role], "schema": schema}
+
+    monkeypatch.setattr(scenario, "_start_daemon", start)
+    monkeypatch.setattr(scenario, "_probe", probe)
+    monkeypatch.setattr(scenario, "_api", lambda: _FakeApi(store))
+    return scenario, started
+
+
+def test_the_upgrade_scenario_passes_when_the_candidate_keeps_everything(
+    monkeypatch, tmp_path
+):
+    scenario, started = _fake_upgrade(monkeypatch, tmp_path, migrate=lambda s: None)
+    report = scenario.run()
+    assert report["status"] == smoke.PASSED, report["failure"]
+    assert all(report["checks"][name] == smoke.PASSED for name in smoke.UPGRADE_CHECKS)
+    # previous → candidate → candidate restart → previous on the restored copy
+    assert started == ["baseline", "candidate", "candidate", "baseline"]
+    assert report["baseline"]["schema"] == 43
+    assert report["candidate"]["schema"] == 44
+    records = report["records"]
+    assert records["project_id"] == "p-1" and records["frame_id"] == "f-1"
+    assert records["cell_ids"] == ["c-1", "c-2", "c-3"]
+    assert [row["sha256"] for row in records["csv_versions"]] == [
+        smoke.sha256_bytes(smoke.CSV_FIRST),
+        smoke.sha256_bytes(smoke.CSV_SECOND),
+    ]
+    assert len(records["backup_manifest_sha256"]) == 64
+    assert not scenario.work_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("migrate", "check"),
+    [
+        pytest.param(
+            lambda state: state["v"].pop("v-1"), "csv_versions", id="lost-version"
+        ),
+        pytest.param(
+            lambda state: state["v"].update({"v-2": "a,b\n9,99\n"}),
+            "csv_versions",
+            id="changed-bytes",
+        ),
+        pytest.param(
+            lambda state: state["cells"].pop(), "cell_records", id="lost-cell"
+        ),
+        pytest.param(
+            # Same number of Cells, but the last one now names the first CSV
+            # version: only the record comparison can see that.
+            lambda state: state["cells"][2]["output_artifacts"][0].update(
+                version_id="v-1"
+            ),
+            "cell_records",
+            id="cell-rebound-to-another-version",
+        ),
+        pytest.param(
+            lambda state: state["frames"].clear(), "project_session", id="lost-session"
+        ),
+    ],
+)
+def test_a_lossy_candidate_fails_the_check_that_saw_the_loss(
+    monkeypatch, tmp_path, migrate, check
+):
+    scenario, _started = _fake_upgrade(monkeypatch, tmp_path, migrate=migrate)
+    report = scenario.run()
+    assert report["status"] == smoke.FAILED
+    assert report["failure"]["check"] == check
+    assert report["checks"][check] == smoke.FAILED
+    assert report["checks"]["restore_backup"] == smoke.NOT_RUN
+    assert not scenario.work_root.exists()
+
+
+def test_a_loss_that_appears_only_after_the_candidate_restarts_is_refused(
+    monkeypatch, tmp_path
+):
+    scenario, _started = _fake_upgrade(monkeypatch, tmp_path, migrate=lambda s: None)
+    store = _FakeRuntimeState(scenario.data_dir)
+    first_start = scenario._start_daemon
+    candidate_starts = []
+
+    def start(runtime=None):
+        daemon = first_start(runtime)
+        if runtime is scenario.candidate:
+            candidate_starts.append(runtime)
+            if len(candidate_starts) == 2:
+                state = store.load()
+                state["cells"].pop()
+                store.save(state)
+        return daemon
+
+    monkeypatch.setattr(scenario, "_start_daemon", start)
+    report = scenario.run()
+    assert report["failure"]["check"] == "candidate_restart"
+    assert "2 entries" in report["failure"]["detail"]
+
+
+def test_a_kept_copy_that_was_written_to_is_refused(monkeypatch, tmp_path):
+    """The pre-migration copy is evidence only while nothing opened it."""
+    scenario, _started = _fake_upgrade(monkeypatch, tmp_path, migrate=lambda s: None)
+    real_restore = scenario.step_restore_backup
+
+    def restore_then_touch_the_copy():
+        real_restore()
+        (scenario.backup_dir / "stray.log").write_text("written later", "utf-8")
+
+    monkeypatch.setattr(scenario, "step_restore_backup", restore_then_touch_the_copy)
+    report = scenario.run()
+    assert report["failure"]["check"] == "baseline_readback"
+    assert "kept pre-migration copy" in report["failure"]["detail"]
+
+
+def test_a_restore_that_brought_back_the_migrated_data_is_refused(
+    monkeypatch, tmp_path
+):
+    """If the copy were taken after the migration, the previous bundle could
+    not read it back -- which is the case the restore check exists for."""
+    scenario, _started = _fake_upgrade(monkeypatch, tmp_path, migrate=lambda s: None)
+    real_takeover = scenario.step_candidate_takeover
+
+    def takeover_then_overwrite_the_copy():
+        real_takeover()
+        # A copy refreshed after the migration, manifest and all: only the
+        # previous bundle's own schema read can tell it is not pre-migration.
+        shutil.rmtree(scenario.backup_dir)
+        shutil.copytree(scenario.data_dir, scenario.backup_dir)
+        scenario.backup_manifest = smoke.tree_manifest(scenario.backup_dir)
+
+    monkeypatch.setattr(
+        scenario, "step_candidate_takeover", takeover_then_overwrite_the_copy
+    )
+    report = scenario.run()
+    assert report["status"] == smoke.FAILED
+    assert report["failure"]["check"] == "restore_backup"
+    assert "future schema" in report["failure"]["detail"]

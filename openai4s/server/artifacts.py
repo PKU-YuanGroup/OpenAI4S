@@ -27,6 +27,7 @@ from openai4s.artifact_restore import (
     ArtifactRestoreDenied,
     ArtifactRestoreRefused,
     ArtifactRestoreService,
+    ArtifactSnapshotTooLarge,
     trusted_snapshot_roots,
 )
 from openai4s.execution import CaptureResult
@@ -41,6 +42,8 @@ _EMBEDDED_IMAGE_TYPES = frozenset(
     {"image/gif", "image/jpeg", "image/png", "image/webp"}
 )
 _MAX_EMBEDDED_FIGURE_BYTES = 8 * 1024 * 1024
+#: NV-02: raw image bytes one promoted Markdown document embeds in total.
+_MAX_EMBEDDED_FIGURES_TOTAL_BYTES = 8 * 1024 * 1024
 _MAX_ARTIFACT_RECEIPTS = 512
 # WSL's ext4/VHD metadata can report the same ctime tick immediately after a
 # same-length rewrite whose mtime was restored. Where that happens, hash bounded
@@ -225,6 +228,10 @@ class PromotionTarget:
     root_frame_id: str
     project_id: str
     workspace: Path
+
+
+class _FigureNotEmbedded(Exception):
+    """Why a promoted Cell's figure stays a pointer; the text says so."""
 
 
 @dataclass(frozen=True)
@@ -3853,7 +3860,7 @@ class ArtifactManager:
             _write_confined_text(
                 session.workspace,
                 relative,
-                self._render_cell_markdown(cell, session.workspace),
+                self._render_cell_markdown(cell, session),
             )
         except (OSError, ValueError):
             return None
@@ -3863,7 +3870,7 @@ class ArtifactManager:
         # the workspace prefix contains a symlink (e.g. /tmp -> /private/tmp).
         return self.register_file(session, session.workspace / relative, cell_id, emit)
 
-    def _render_cell_markdown(self, cell: dict, workspace: Path) -> str:
+    def _render_cell_markdown(self, cell: dict, session: ArtifactSession) -> str:
         """Render a cell (code + output + produced files) as Markdown."""
         index = cell.get("cell_index")
         language = str(cell.get("language") or cell.get("kernel_id") or "python")
@@ -3882,7 +3889,13 @@ class ArtifactManager:
         figures = [str(fig) for fig in (cell.get("figures") or []) if fig]
         if figures:
             lines += ["", "## Figures", ""]
-            lines += [self._render_promoted_figure(workspace, fig) for fig in figures]
+            remaining = _MAX_EMBEDDED_FIGURES_TOTAL_BYTES
+            for figure in figures:
+                line, spent = self._render_promoted_figure(
+                    session, cell, figure, remaining
+                )
+                remaining -= spent
+                lines.append(line)
         files = [str(name) for name in (cell.get("files_written") or []) if name]
         if files:
             lines += ["", "## Produced files", ""]
@@ -3890,26 +3903,98 @@ class ArtifactManager:
         lines.append("")
         return "\n".join(lines)
 
-    @staticmethod
-    def _render_promoted_figure(workspace: Path, figure: str) -> str:
-        """Embed a confined raster figure so the Markdown stays shareable."""
+    def _render_promoted_figure(
+        self,
+        session: ArtifactSession,
+        cell: dict,
+        figure: str,
+        remaining: int,
+    ) -> tuple[str, int]:
+        """Embed the version this Cell recorded for ``figure``; return the line
+        and the raw bytes it spent from the document's ``remaining`` budget.
+
+        NV-02: the bytes come from that version's verified immutable snapshot,
+        never from the workspace. The live file of the same name is whatever a
+        later Cell last wrote, so an old Cell's code and output were frozen
+        beside a newer figure. A figure that cannot be proven to be this Cell's
+        stays a pointer that says why; the rest of the document is unaffected.
+        """
         label = Path(figure).name or "figure"
         try:
-            root = workspace.expanduser().resolve()
-            candidate = (root / figure).resolve(strict=True)
-            candidate.relative_to(root)
-            media_type = mimetypes.guess_type(candidate.name)[0] or ""
-            size = candidate.stat().st_size
-            if media_type not in _EMBEDDED_IMAGE_TYPES or not (
-                0 < size <= _MAX_EMBEDDED_FIGURE_BYTES
-            ):
-                raise ValueError("figure is not an embeddable raster image")
-            encoded = base64.b64encode(candidate.read_bytes()).decode("ascii")
-            return f"![{label}](data:{media_type};base64,{encoded})"
-        except (OSError, ValueError):
-            # Preserve a useful, non-broken pointer when a historical figure is
-            # missing, too large, unsupported, or outside the workspace.
-            return f"- Figure artifact: `{figure}`"
+            media_type = mimetypes.guess_type(label)[0] or ""
+            if media_type not in _EMBEDDED_IMAGE_TYPES:
+                raise _FigureNotEmbedded("it is not an embeddable raster image")
+            version = self._promoted_figure_version(session, cell, figure)
+            limit = min(_MAX_EMBEDDED_FIGURE_BYTES, remaining)
+            per_image = _FigureNotEmbedded(
+                "it is larger than the "
+                f"{_MAX_EMBEDDED_FIGURE_BYTES / 1048576:g} MiB limit for one image"
+            )
+            budget = _FigureNotEmbedded(
+                "it would exceed this document's "
+                f"{_MAX_EMBEDDED_FIGURES_TOTAL_BYTES / 1048576:g} MiB image budget"
+            )
+            # The recorded size refuses before the snapshot is even opened; the
+            # read limit below holds even if the row understates it.
+            recorded = version.get("size_bytes")
+            if isinstance(recorded, int) and recorded > _MAX_EMBEDDED_FIGURE_BYTES:
+                raise per_image
+            if isinstance(recorded, int) and recorded > limit:
+                raise budget
+            try:
+                _snapshot, data = ArtifactRestoreService(
+                    store=self.store,
+                    primary_snapshot_dir=self.versions_dir(),
+                    trusted_snapshot_dirs=trusted_snapshot_roots(self.data_dir),
+                    resolve_live_path=self.restore_live_path,
+                ).verified_snapshot_bytes(version, max_bytes=limit)
+            except ArtifactSnapshotTooLarge as error:
+                raise (
+                    per_image if limit == _MAX_EMBEDDED_FIGURE_BYTES else budget
+                ) from error
+            except ArtifactRestoreRefused as error:
+                raise _FigureNotEmbedded(
+                    "its recorded snapshot is missing or failed verification"
+                ) from error
+            if not data:
+                raise _FigureNotEmbedded("its recorded snapshot is empty")
+        except _FigureNotEmbedded as reason:
+            return f"- Figure artifact: `{figure}` (not embedded: {reason})", 0
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"![{label}](data:{media_type};base64,{encoded})", len(data)
+
+    def _promoted_figure_version(
+        self, session: ArtifactSession, cell: dict, figure: str
+    ) -> dict:
+        """The one version the session's execution log binds to this Cell and
+        filename (``output_artifacts``), checked against the store: it exists,
+        it is a version of the Artifact the binding names, and that Artifact
+        belongs to the promoting session."""
+        rows = [
+            row
+            for row in (cell.get("output_artifacts") or [])
+            if isinstance(row, Mapping) and row.get("filename") == figure
+        ]
+        if not rows:
+            raise _FigureNotEmbedded("no version of it is recorded for this Cell")
+        if len(rows) != 1:
+            raise _FigureNotEmbedded(
+                "more than one version of it is recorded for this Cell"
+            )
+        artifact_id = str(rows[0].get("artifact_id") or "")
+        version_id = str(rows[0].get("version_id") or "")
+        version = self.store.version_meta(version_id) if version_id else None
+        artifact = self.store.get_artifact(artifact_id) if artifact_id else None
+        # Absent, another Artifact's, or another session's: one answer, which
+        # does not say whether a version the session cannot see exists.
+        if (
+            version is None
+            or artifact is None
+            or version.get("artifact_id") != artifact_id
+            or artifact.get("root_frame_id") != session.root_frame_id
+        ):
+            raise _FigureNotEmbedded("its recorded version is not available here")
+        return version
 
     def capture(
         self,

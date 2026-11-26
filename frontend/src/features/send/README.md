@@ -8,8 +8,8 @@ F-11 send chain and live cards. Composer `send()`, turn tickets, step / plan / p
 
 | File | Responsibility |
 | --- | --- |
-| [`admission.ts`](admission.ts) | Admission tracker. Independent `openai4s.admission.{fid}.{id}` keys; legacy key migration; 60s grace. |
-| [`admission.test.ts`](admission.test.ts) | Prefix, legacy migration, grace window, settled states. |
+| [`admission.ts`](admission.ts) | Admission tracker. Independent `openai4s.admission.{fid}.{id}` keys; legacy key migration; 60s grace. Plain-message submission receipts (NV-01): a CSPRNG `client_request_id` stored under `openai4s.message-receipt.{fid}.{id}` before dispatch, read-only `message-admissions` queries with the same 3s de-duplicated backoff, and the "Submission pending confirmation" / "Check again" notice. |
+| [`admission.test.ts`](admission.test.ts) | Prefix, legacy migration, grace window, settled states. Receipt minting, storage, every outcome, reopen reconciliation. |
 | [`background.ts`](background.ts) | `#bg-strip` above the composer: the session's background cells still running (`GET /frames/{fid}/background`), each with its first statement, elapsed time, last printed line and its own Stop (`POST …/background/{exec_id}/stop`); read on a session switch and run start/end, polled while anything runs. `backgroundStoppedHint` words a turn's Stop that also stopped that turn's background cells (`background_stopped`). Feature-local copy. |
 | [`background.test.ts`](background.test.ts) | Running cells are listed with preview, elapsed time and last line (finished ones are not); a row's Stop posts for that cell; nothing running hides the strip; the Stop hint counts the stopped cells. |
 | [`bind.test.ts`](bind.test.ts) | `bindComposer` binds once; `installSend` stays DOM-free; Enter and the `#send-btn` click dispatch the text; one dispatch in flight at a time across both. |
