@@ -21897,16 +21897,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "invalid_search_engine",
                         )
                     try:
-                        if b.get("clear_api_key"):
-                            search_settings.set_key(store, engine, "")
-                        elif (b.get("api_key") or "").strip():
-                            search_settings.set_key(store, engine, b["api_key"])
-                        if b.get("primary") is not None:
-                            search_settings.choose_primary(store, str(b["primary"]))
-                        if "order" in b or "enabled" in b:
-                            search_settings.save(
-                                store, order=b.get("order"), enabled=b.get("enabled")
-                            )
+                        # All or nothing: checked against what the write would
+                        # leave, so a 400 stores neither key nor order.
+                        search_settings.update(
+                            store,
+                            engine=engine,
+                            api_key=b.get("api_key"),
+                            clear_api_key=bool(b.get("clear_api_key")),
+                            primary=b.get("primary"),
+                            reorder="order" in b or "enabled" in b,
+                            order=b.get("order"),
+                            enabled=b.get("enabled"),
+                        )
                     except search_settings.SearchSettingsError as exc:
                         raise GatewayError(
                             400, str(exc), "invalid_search_engines"

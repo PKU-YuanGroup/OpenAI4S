@@ -145,6 +145,17 @@ def test_you_key_switches_the_reported_endpoint(tmp_path):
     assert you()["api_key_configured"] is True
 
 
+def test_a_blank_key_variable_does_not_hide_a_stored_key(tmp_path, monkeypatch):
+    # `has_key` strips the variable and falls back to the broker; the mirror
+    # took " " for a key already set, so Tavily counted as usable while
+    # `webtools` saw no key and skipped it.
+    st = _store(tmp_path)
+    st.set_secret_setting("tavily_api_key", "tvly-stored", scope="search")
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", " ")
+    search_settings.load_keys_into_env(st)
+    assert webtools._tavily_key() == "tvly-stored"
+
+
 # --------------------------------------------------------------------------- #
 #  the fallback confirmation
 # --------------------------------------------------------------------------- #
@@ -392,6 +403,70 @@ def test_the_backups_follow_the_stored_order(tmp_path, monkeypatch):
     assert calls == [("builtin", "tavily")]
 
 
+_ONLY_TAVILY = {"tavily": True, "you": False, "builtin": False, "parallel": False}
+
+
+def _answer_from_tavily(monkeypatch):
+    """Stub Tavily's request; record the key it would have sent."""
+    import os
+
+    keys = []
+
+    def tavily(query, num_results, timeout):
+        keys.append(os.environ.get("OPENAI4S_TAVILY_API_KEY"))
+        return [{"title": "T", "url": "https://hit.example/t", "snippet": ""}]
+
+    monkeypatch.setattr(webtools, "_tavily_search", tavily)
+    return keys
+
+
+def test_a_stored_key_reaches_a_process_that_never_mirrored_it(tmp_path, monkeypatch):
+    # `openai4s run` builds its dispatcher in-process, and only the daemon's
+    # start-up mirrored stored keys: Tavily was reported usable -- and accepted
+    # as the only engine on -- while every search here skipped it.
+    keys = _answer_from_tavily(monkeypatch)
+    dispatcher = _dispatcher(tmp_path)
+    try:
+        st = dispatcher.store
+        st.set_secret_setting("tavily_api_key", "tvly-stored", scope="search")
+        order = list(webtools.AVAILABLE_SEARCH_ENGINES)
+        search_settings.save(st, order=order, enabled=_ONLY_TAVILY)
+        dispatcher._doubao_search_service = _NoDoubao()
+        result = dispatcher._search_web("q")
+    finally:
+        dispatcher.store.close()
+    assert keys == ["tvly-stored"]
+    assert result["source"] == "tavily"
+
+
+def test_an_injected_key_a_clear_cannot_unset_keeps_running(tmp_path, monkeypatch):
+    # A clear cannot unset an operator-injected credential (see
+    # `Store.set_secret_setting`), so `has_key` keeps finding it; the next
+    # search must send it too rather than skip an engine reported usable.
+    from openai4s.security.secret_broker import EnvInjectionBackend, SecretBroker
+
+    keys = _answer_from_tavily(monkeypatch)
+    monkeypatch.setenv("OPENAI4S_SECRET_ENV", "1")
+    monkeypatch.setenv("OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY", "tvly-injected")
+    dispatcher = _dispatcher(tmp_path)
+    try:
+        st = dispatcher.store
+        st._secret_broker = SecretBroker(
+            st, mode="env", backends=[EnvInjectionBackend()]
+        )
+        search_settings.load_keys_into_env(st)  # the daemon's start-up
+        search_settings.update(st, engine="tavily", clear_api_key=True)
+        assert search_settings.has_key(st, "tavily")
+        order = list(webtools.AVAILABLE_SEARCH_ENGINES)
+        search_settings.save(st, order=order, enabled=_ONLY_TAVILY)
+        dispatcher._doubao_search_service = _NoDoubao()
+        result = dispatcher._search_web("q")
+    finally:
+        dispatcher.store.close()
+    assert keys == ["tvly-injected"]
+    assert result["source"] == "tavily"
+
+
 def test_an_approved_fallback_starts_at_the_picked_engine(tmp_path, monkeypatch):
     from openai4s.host import search as host_search
 
@@ -512,6 +587,57 @@ def test_route_primary_is_the_setup_choice(route):
     status, body = route("POST", {"primary": "builtin"})
     assert status == 200
     assert [e["id"] for e in body["engines"] if e["enabled"]] == ["builtin"]
+
+
+_ORDER = ["tavily", "you", "builtin", "parallel"]
+
+
+def test_route_refuses_removing_the_key_the_last_usable_engine_needs(route):
+    route("POST", {"engine": "tavily", "api_key": "tvly-route"})
+    status, _ = route("PUT", {"order": _ORDER, "enabled": _ONLY_TAVILY})
+    assert status == 200
+    # Held to the rule that keeps Tavily's switch on: the user switches
+    # another engine on first, rather than every search coming back empty.
+    status, body = route("POST", {"engine": "tavily", "clear_api_key": True})
+    assert status == 400 and "switch another engine on first" in body["error"]
+    _, body = route("GET")
+    assert body["api_key_configured"] is True
+    status, _ = route(
+        "PUT", {"order": _ORDER, "enabled": {**_ONLY_TAVILY, "builtin": True}}
+    )
+    assert status == 200
+    status, body = route("POST", {"engine": "tavily", "clear_api_key": True})
+    assert status == 200 and body["api_key_configured"] is False
+
+
+def test_route_a_refused_write_changes_nothing(route):
+    import os
+
+    route("POST", {"engine": "tavily", "api_key": "tvly-route"})
+    _, before = route("GET")
+    bad_order = {"order": ["tavily"], "enabled": {"tavily": True}}
+    # The key used to be cleared, or stored, before the order was refused.
+    status, _ = route("POST", {"engine": "tavily", "clear_api_key": True, **bad_order})
+    assert status == 400
+    status, _ = route("POST", {"engine": "you", "api_key": "ydc-new", **bad_order})
+    assert status == 400
+    _, after = route("GET")
+    assert after == before
+    assert "YDC_API_KEY" not in os.environ
+
+
+def test_route_refuses_a_key_that_is_not_one_line_of_text(route):
+    import os
+
+    # The broker's refusal of a line break, and `.strip()` on a number, used to
+    # escape the route as unhandled errors instead of a 400.
+    for bad in ("tvly-A\nB", "tvly-A\rB", "tvly-A\x00B", 12345):
+        status, body = route("POST", {"engine": "tavily", "api_key": bad})
+        assert status == 400, bad
+        assert "tvly-A" not in body["error"]
+    _, body = route("GET")
+    assert body["api_key_configured"] is False
+    assert "OPENAI4S_TAVILY_API_KEY" not in os.environ
 
 
 # --------------------------------------------------------------------------- #

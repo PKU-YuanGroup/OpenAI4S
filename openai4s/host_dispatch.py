@@ -2550,6 +2550,9 @@ class HostDispatcher:
             return self._ollama_web_service.search(
                 query, num_results=num_results, timeout=timeout
             )
+        # `webtools` sends only keys in the environment, while the settings
+        # count a stored one: mirror here so they agree in every process.
+        search_settings.load_keys_into_env(self.store)
         engines = search_settings.engine_chain(self.store)
         try:
             return self._doubao_search_service.search_primary(
