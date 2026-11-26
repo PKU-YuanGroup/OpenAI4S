@@ -3,12 +3,12 @@
 Doubao (the Agent Plan key) is not in this list: when it is configured it always
 answers first, and `host/search.py` decides what happens when its quota runs
 out. Behind it sit the engines `webtools.web_search` knows by id — ``tavily``,
-``you`` (You.com), opt-in ``parallel`` and ``builtin`` (the keyless DuckDuckGo/Bing/Mojeek chain) —
+``you`` (You.com), opt-in ``parallel`` and ``specstream``, and ``builtin`` (the keyless DuckDuckGo/Bing/Mojeek chain) —
 which the user can reorder and switch on or off.
 
 One rule is enforced here and in the UI alike: at least one engine must stay
-*usable*, meaning on and able to answer. Tavily counts only with a key; the
-other engines need none. Without the rule a user could switch every engine off and
+*usable*, meaning on and able to answer. Tavily and SpecStream count only with
+a key; the other engines need none. Without the rule a user could switch every engine off and
 every search would come back empty with no hint why.
 
 The stored setting is a JSON object under ``search_engines``. An install that
@@ -31,12 +31,16 @@ SECRET_SCOPE = "search"
 ENGINE_KEYS: dict[str, tuple[str, str]] = {
     "tavily": ("tavily_api_key", "OPENAI4S_TAVILY_API_KEY"),
     "you": ("you_api_key", "YDC_API_KEY"),
+    "specstream": ("specstream_api_key", "SPECSTREAM_API_KEY"),
 }
+#: Engines that cannot answer without their key (You.com has a keyless tier).
+KEY_REQUIRED = ("tavily", "specstream")
 ENGINE_ENDPOINTS = {
     "tavily": "https://api.tavily.com/search",
     "you": "https://api.you.com/v1/agents/search",
     "builtin": "",
     "parallel": "https://mcp.parallel.ai/mcp",
+    "specstream": "https://api.specstream.ai/v1/web-search",
 }
 #: You.com answers keyed requests from a different host.
 _YOU_KEYED_ENDPOINT = "https://ydc-index.io/v1/search"
@@ -61,7 +65,8 @@ def load(store) -> dict[str, Any]:
 
     A row written by another version may name an engine this one dropped or
     miss one it added; unknown ids are discarded and missing ones appended in
-    default order. Parallel is opt-in; missing legacy engines stay switched on.
+    default order. Parallel and SpecStream are opt-in; missing legacy engines
+    stay switched on.
     """
 
     raw = store.get_setting(SETTING_KEY)
@@ -105,26 +110,35 @@ def has_key(store, engine: str) -> bool:
 def usable(store, engine: str, enabled: dict[str, bool]) -> bool:
     if not enabled.get(engine):
         return False
-    return has_key(store, engine) if engine == "tavily" else True
+    return has_key(store, engine) if engine in KEY_REQUIRED else True
 
 
 def save(store, *, order: Any, enabled: Any) -> dict[str, Any]:
     """Validate and persist a new configuration; returns what was stored."""
 
+    missing = (
+        [e for e in AVAILABLE_SEARCH_ENGINES if e not in order]
+        if isinstance(order, list)
+        else []
+    )
     if (
-        isinstance(order, list)
-        and sorted(str(e) for e in order) == sorted(DEFAULT_SEARCH_ENGINES)
+        missing
+        and not set(missing) & set(DEFAULT_SEARCH_ENGINES)
+        and sorted(str(e) for e in order)
+        == sorted(e for e in AVAILABLE_SEARCH_ENGINES if e not in missing)
         and isinstance(enabled, dict)
     ):
+        # A client that predates an opt-in engine sends the list without it.
         current = load(store)
         order = list(order)
-        # Keep Parallel behind every engine that outranked it, not at its old
-        # index, so a legacy reorder cannot lift it past one of them.
+        # Keep each missing engine behind every engine that outranked it, not
+        # at its old index, so a legacy reorder cannot lift it past one of them.
         stored = current["order"]
-        above = set(stored[: stored.index("parallel")])
-        at = max((i + 1 for i, e in enumerate(order) if e in above), default=0)
-        order.insert(at, "parallel")
-        enabled = {**enabled, "parallel": current["enabled"]["parallel"]}
+        for engine in missing:
+            above = set(stored[: stored.index(engine)])
+            at = max((i + 1 for i, e in enumerate(order) if e in above), default=0)
+            order.insert(at, engine)
+        enabled = {**enabled, **{e: current["enabled"][e] for e in missing}}
     if (
         not isinstance(order, list)
         or not all(isinstance(e, str) for e in order)
@@ -144,7 +158,7 @@ def save(store, *, order: Any, enabled: Any) -> dict[str, Any]:
     if not any(usable(store, e, config["enabled"]) for e in AVAILABLE_SEARCH_ENGINES):
         raise SearchSettingsError(
             "at least one search engine must stay on and usable "
-            "(Tavily counts only with an API key)"
+            "(Tavily and SpecStream count only with an API key)"
         )
     store.set_setting(SETTING_KEY, json.dumps(config))
     return config
@@ -202,8 +216,10 @@ def apply_setup_choice(store, choice: str, key: str = "") -> dict[str, Any]:
         )
     if key and choice in ENGINE_KEYS:
         set_key(store, choice, key)
-    if choice == "tavily" and not has_key(store, "tavily"):
-        raise SearchSettingsError("Tavily needs an API key")
+    if choice in KEY_REQUIRED and not has_key(store, choice):
+        raise SearchSettingsError(
+            f"{'Tavily' if choice == 'tavily' else 'SpecStream'} needs an API key"
+        )
     choose_primary(store, choice)
     return project(store)
 
@@ -253,7 +269,7 @@ def project(store) -> dict[str, Any]:
             {
                 "id": engine,
                 "enabled": config["enabled"][engine],
-                "needs_key": engine == "tavily",
+                "needs_key": engine in KEY_REQUIRED,
                 "accepts_key": engine in ENGINE_KEYS,
                 "api_key_configured": has_key(store, engine),
                 "usable": usable(store, engine, config["enabled"]),

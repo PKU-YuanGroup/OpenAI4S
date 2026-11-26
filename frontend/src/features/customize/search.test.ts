@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canSwitchOff,
   engineConfigBody,
+  engineDescription,
   moved,
   readSearchConfig,
 } from "./search";
@@ -63,4 +64,24 @@ it("retains the optional Parallel engine in configuration edits", () => {
   });
   expect(config.engines.map((engine) => engine.id)).toEqual(["parallel", "builtin"]);
   expect(engineConfigBody(config, { toggle: "parallel" }).enabled.parallel).toBe(false);
+});
+
+it("keeps a keyed SpecStream engine and describes its key state", () => {
+  const config = readSearchConfig({
+    engines: [
+      { id: "builtin", enabled: true, usable: true },
+      { id: "specstream", enabled: true, needs_key: true, accepts_key: true, api_key_configured: false, usable: false },
+    ],
+  });
+  expect(config.engines.map((e) => e.id)).toEqual(["builtin", "specstream"]);
+  expect(canSwitchOff(config, "builtin")).toBe(false);
+  const specstream = config.engines[1]!;
+  expect(engineDescription(specstream)).toMatch(/SpecStream/);
+  expect(engineDescription({ ...specstream, keyConfigured: true })).not.toEqual(
+    engineDescription(specstream),
+  );
+  expect(engineConfigBody(config, { toggle: "specstream" }).enabled).toEqual({
+    builtin: true,
+    specstream: false,
+  });
 });

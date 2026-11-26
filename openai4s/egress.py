@@ -121,6 +121,7 @@ EGRESS_GROUPS: list[dict] = [
             "ydc-index.io",
             "mcp.parallel.ai",
             "api.tavily.com",
+            "api.specstream.ai",
         ],
         "domains": [
             # Exact authenticated Doubao Search upstream.  Keep this narrower
@@ -134,6 +135,8 @@ EGRESS_GROUPS: list[dict] = [
             "mcp.parallel.ai",
             # Tavily's fixed endpoint; it receives the Tavily key.
             "api.tavily.com",
+            # SpecStream's fixed endpoint; it receives SPECSTREAM_API_KEY.
+            "api.specstream.ai",
             "bing.com",
             "duckduckgo.com",
             "html.duckduckgo.com",

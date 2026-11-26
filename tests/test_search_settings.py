@@ -21,7 +21,7 @@ from openai4s.permissions import PermissionBroker
 from openai4s.server.errors import GatewayError
 from openai4s.store import get_store
 
-_KEY_ENVS = ("OPENAI4S_TAVILY_API_KEY", "YDC_API_KEY")
+_KEY_ENVS = ("OPENAI4S_TAVILY_API_KEY", "YDC_API_KEY", "SPECSTREAM_API_KEY")
 
 
 @pytest.fixture(autouse=True)
@@ -46,8 +46,14 @@ def _store(tmp_path):
 def test_a_fresh_install_keeps_the_pre_setting_chain(tmp_path):
     st = _store(tmp_path)
     assert search_settings.load(st) == {
-        "order": ["tavily", "you", "builtin", "parallel"],
-        "enabled": {"tavily": True, "you": True, "builtin": True, "parallel": False},
+        "order": ["tavily", "you", "builtin", "parallel", "specstream"],
+        "enabled": {
+            "tavily": True,
+            "you": True,
+            "builtin": True,
+            "parallel": False,
+            "specstream": False,
+        },
     }
     assert search_settings.engine_chain(st) == webtools.SEARCH_ENGINES
 
@@ -69,8 +75,14 @@ def test_a_row_from_another_version_is_repaired(tmp_path):
         json.dumps({"order": ["gone", "you", "you"], "enabled": {"you": False}}),
     )
     assert search_settings.load(st) == {
-        "order": ["you", "tavily", "builtin", "parallel"],
-        "enabled": {"tavily": True, "you": False, "builtin": True, "parallel": False},
+        "order": ["you", "tavily", "builtin", "parallel", "specstream"],
+        "enabled": {
+            "tavily": True,
+            "you": False,
+            "builtin": True,
+            "parallel": False,
+            "specstream": False,
+        },
     }
 
 
@@ -120,6 +132,57 @@ def test_setup_choice_for_tavily_needs_a_key_and_mirrors_it(tmp_path):
     assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-secret-value"
     assert view["order"][0] == "tavily"
     assert "tvly-secret-value" not in json.dumps(view)
+
+
+def test_specstream_counts_only_with_a_key_and_mirrors_it(tmp_path):
+    import os
+
+    st = _store(tmp_path)
+    only_specstream = {
+        "tavily": False,
+        "you": False,
+        "builtin": False,
+        "parallel": False,
+        "specstream": True,
+    }
+    order = list(webtools.AVAILABLE_SEARCH_ENGINES)
+    with pytest.raises(search_settings.SearchSettingsError, match="SpecStream"):
+        search_settings.save(st, order=order, enabled=only_specstream)
+    with pytest.raises(search_settings.SearchSettingsError, match="SpecStream"):
+        search_settings.apply_setup_choice(st, "specstream")
+    view = search_settings.apply_setup_choice(st, "specstream", "ss-secret-value")
+    assert os.environ["SPECSTREAM_API_KEY"] == "ss-secret-value"
+    assert view["order"][0] == "specstream"
+    assert "ss-secret-value" not in json.dumps(view)
+    engine = next(e for e in view["engines"] if e["id"] == "specstream")
+    assert engine["needs_key"] is True
+    assert engine["usable"] is True
+    assert engine["endpoint"] == "https://api.specstream.ai/v1/web-search"
+    search_settings.save(st, order=order, enabled=only_specstream)
+    assert search_settings.engine_chain(st) == ("specstream",)
+
+
+def test_a_client_without_specstream_keeps_it_where_it_was(tmp_path):
+    st = _store(tmp_path)
+    search_settings.set_key(st, "specstream", "ss-test")
+    search_settings.save(
+        st,
+        order=["specstream", "you", "tavily", "builtin", "parallel"],
+        enabled={
+            "tavily": True,
+            "you": True,
+            "builtin": True,
+            "parallel": False,
+            "specstream": True,
+        },
+    )
+    stored = search_settings.save(
+        st,
+        order=["builtin", "you", "tavily", "parallel"],
+        enabled={"tavily": True, "you": True, "builtin": True, "parallel": False},
+    )
+    assert stored["order"] == ["specstream", "builtin", "you", "tavily", "parallel"]
+    assert stored["enabled"]["specstream"] is True
 
 
 def test_setup_choice_for_doubao_needs_the_agent_plan_key(tmp_path):
@@ -469,12 +532,13 @@ def test_route_reports_the_list_and_keeps_the_tavily_fields(route):
     assert status == 200
     assert body["endpoint"] == "https://api.tavily.com/search"
     assert body["api_key_configured"] is False
-    assert body["order"] == ["tavily", "you", "builtin", "parallel"]
+    assert body["order"] == ["tavily", "you", "builtin", "parallel", "specstream"]
     assert [e["id"] for e in body["engines"]] == [
         "tavily",
         "you",
         "builtin",
         "parallel",
+        "specstream",
     ]
     assert body["doubao_configured"] is False
 
@@ -487,7 +551,13 @@ def test_route_saves_order_switches_and_a_you_key(route):
             "enabled": {"tavily": False, "you": True, "builtin": True},
         },
     )
-    assert status == 200 and body["order"] == ["you", "builtin", "tavily", "parallel"]
+    assert status == 200 and body["order"] == [
+        "you",
+        "builtin",
+        "tavily",
+        "parallel",
+        "specstream",
+    ]
     status, body = route("POST", {"engine": "you", "api_key": "ydc-route-secret"})
     assert status == 200
     you = next(e for e in body["engines"] if e["id"] == "you")
