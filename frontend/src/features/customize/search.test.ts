@@ -121,7 +121,7 @@ describe("removing a saved key", () => {
         { id: "builtin", enabled: false, usable: false },
       ],
     });
-    expect(fromEnv.engines[0].keyFromEnv).toBe(true);
+    expect(fromEnv.engines[0]!.keyFromEnv).toBe(true);
     expect(canRemoveKey(fromEnv, "tavily")).toBe(true);
   });
 
