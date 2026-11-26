@@ -148,10 +148,16 @@ def test_specstream_counts_only_with_a_key_and_mirrors_it(tmp_path):
     order = list(webtools.AVAILABLE_SEARCH_ENGINES)
     with pytest.raises(search_settings.SearchSettingsError, match="SpecStream"):
         search_settings.save(st, order=order, enabled=only_specstream)
-    with pytest.raises(search_settings.SearchSettingsError, match="SpecStream"):
-        search_settings.apply_setup_choice(st, "specstream")
-    view = search_settings.apply_setup_choice(st, "specstream", "ss-secret-value")
+    # Not a first-run choice, as in the wizard and `openai4s init --search`:
+    # it is set up from Settings → Network, and nothing is stored here.
+    assert "specstream" not in search_settings.SETUP_CHOICES
+    with pytest.raises(search_settings.SearchSettingsError, match="must be one of"):
+        search_settings.apply_setup_choice(st, "specstream", "ss-secret-value")
+    assert not search_settings.has_key(st, "specstream")
+    search_settings.set_key(st, "specstream", "ss-secret-value")
     assert os.environ["SPECSTREAM_API_KEY"] == "ss-secret-value"
+    search_settings.choose_primary(st, "specstream")
+    view = search_settings.project(st)
     assert view["order"][0] == "specstream"
     assert "ss-secret-value" not in json.dumps(view)
     engine = next(e for e in view["engines"] if e["id"] == "specstream")
@@ -162,27 +168,48 @@ def test_specstream_counts_only_with_a_key_and_mirrors_it(tmp_path):
     assert search_settings.engine_chain(st) == ("specstream",)
 
 
-def test_a_client_without_specstream_keeps_it_where_it_was(tmp_path):
+def test_a_client_without_specstream_keeps_it_behind_the_engines_above_it(tmp_path):
     st = _store(tmp_path)
     search_settings.set_key(st, "specstream", "ss-test")
+    every_on = {
+        "tavily": True,
+        "you": True,
+        "builtin": True,
+        "parallel": False,
+        "specstream": True,
+    }
+    legacy_on = {"tavily": True, "you": True, "builtin": True, "parallel": False}
     search_settings.save(
         st,
         order=["specstream", "you", "tavily", "builtin", "parallel"],
-        enabled={
-            "tavily": True,
-            "you": True,
-            "builtin": True,
-            "parallel": False,
-            "specstream": True,
-        },
+        enabled=every_on,
     )
     stored = search_settings.save(
-        st,
-        order=["builtin", "you", "tavily", "parallel"],
-        enabled={"tavily": True, "you": True, "builtin": True, "parallel": False},
+        st, order=["builtin", "you", "tavily", "parallel"], enabled=legacy_on
     )
     assert stored["order"] == ["specstream", "builtin", "you", "tavily", "parallel"]
     assert stored["enabled"]["specstream"] is True
+    # Not its old index: behind every engine that outranked it, and no further.
+    search_settings.save(
+        st,
+        order=["tavily", "specstream", "you", "builtin", "parallel"],
+        enabled=every_on,
+    )
+    stored = search_settings.save(
+        st, order=["you", "builtin", "tavily", "parallel"], enabled=legacy_on
+    )
+    assert stored["order"] == ["you", "builtin", "tavily", "specstream", "parallel"]
+
+
+def test_a_search_key_with_a_line_break_is_refused_before_it_is_stored(tmp_path):
+    import os
+
+    st = _store(tmp_path)
+    for bad in ("ss-A\nB", "ss-A\rB", "ss-A\x00B"):
+        with pytest.raises(search_settings.SearchSettingsError, match="line break"):
+            search_settings.set_key(st, "specstream", bad)
+    assert not search_settings.has_key(st, "specstream")
+    assert "SPECSTREAM_API_KEY" not in os.environ
 
 
 def test_setup_choice_for_doubao_needs_the_agent_plan_key(tmp_path):
@@ -258,6 +285,17 @@ def test_the_user_picks_from_the_usable_switched_on_engines(tmp_path):
     assert gate["approvals_reviewer"] == "user"
     # Tavily has no key, so it cannot answer and is not offered.
     assert [c["id"] for c in gate["choices"]] == ["you", "builtin"]
+
+
+def test_a_keyless_specstream_is_not_offered_on_the_quota_card(tmp_path):
+    st = _store(tmp_path)
+    broker = _Broker()
+    assert _confirm(st, broker, engines=("specstream", "builtin")) is None
+    assert [c["id"] for c in broker.gates[0]["choices"]] == ["builtin"]
+    search_settings.set_key(st, "specstream", "ss-test")
+    broker = _Broker()
+    _confirm(st, broker, engines=("specstream", "builtin"))
+    assert [c["id"] for c in broker.gates[0]["choices"]] == ["specstream", "builtin"]
 
 
 def test_a_denied_prompt_means_no_fallback(tmp_path):
@@ -567,6 +605,14 @@ def test_route_saves_a_specstream_key_and_the_engine_becomes_usable(route):
     assert status == 200 and body["order"][0] == "specstream"
     engine = next(e for e in body["engines"] if e["id"] == "specstream")
     assert engine["usable"] is True
+
+
+def test_route_refuses_a_search_key_with_a_line_break(route):
+    # The broker's own refusal used to escape the route as an unhandled error.
+    status, body = route("POST", {"engine": "specstream", "api_key": "ss-A\nB"})
+    assert status == 400
+    assert "line break" in body["error"]
+    assert "ss-A" not in body["error"]
 
 
 def test_route_saves_order_switches_and_a_you_key(route):

@@ -8,6 +8,7 @@ import pytest
 
 from openai4s import webtools
 
+_URL = "https://api.specstream.ai/v1/web-search"
 _SPECSTREAM_JSON = json.dumps(
     {
         "data": {
@@ -92,6 +93,8 @@ def test_specstream_without_a_key_sends_nothing(monkeypatch, opener):
     out = webtools.web_search("q", engines=("specstream",))
     assert out["count"] == 0
     assert opener["requests"] == []
+    # Skipped, not tried: no engine is named as reached.
+    assert "(none reached)" in out["note"]
 
 
 def test_web_search_answers_from_specstream_when_it_is_first(monkeypatch, opener):
@@ -130,11 +133,89 @@ def test_a_refused_key_is_named_in_the_note_and_the_next_engine_runs(
     assert "ss-wrong" not in out["note"]
 
 
+def _refusal(code, body):
+    return urllib.error.HTTPError(_URL, code, "refused", {}, body)
+
+
+def _builtin_finds_nothing(monkeypatch):
+    monkeypatch.setattr(webtools, "_builtin_search", lambda *_args: ([], "", None))
+
+
+def test_a_key_the_api_quotes_back_is_scrubbed_from_the_note(monkeypatch, opener):
+    monkeypatch.setenv("SPECSTREAM_API_KEY", "ss-live-secret")
+    body = json.dumps({"error": {"message": "Invalid API key ss-live-secret"}})
+    opener["answers"].append(_refusal(401, io.BytesIO(body.encode())))
+    _builtin_finds_nothing(monkeypatch)
+    out = webtools.web_search("q", engines=("specstream", "builtin"))
+    assert "SpecStream: HTTP 401: Invalid API key [REDACTED]" in out["note"]
+    assert "ss-live-secret" not in out["note"]
+
+
+def test_a_key_with_a_line_break_is_refused_before_any_request(monkeypatch, opener):
+    # http.client would refuse the header and quote all of it, key included.
+    monkeypatch.setenv("SPECSTREAM_API_KEY", "ss-live-0123\nABCDEF")
+    _builtin_finds_nothing(monkeypatch)
+    out = webtools.web_search("q", engines=("specstream", "builtin"))
+    assert opener["requests"] == []
+    assert "SpecStream: SPECSTREAM_API_KEY contains a line break" in out["note"]
+    assert "ss-live-0123" not in out["note"] and "ABCDEF" not in out["note"]
+
+
+class _Body(io.BytesIO):
+    """An error body that counts how much of it was read."""
+
+    consumed = 0
+
+    def read(self, size=-1):
+        chunk = super().read(size)
+        self.consumed += len(chunk)
+        return chunk
+
+
+def test_an_error_body_is_read_only_up_to_a_cap(monkeypatch, opener):
+    monkeypatch.setenv("SPECSTREAM_API_KEY", "ss-test")
+    body = _Body(json.dumps({"error": {"message": "A" * 2_000_000}}).encode())
+    opener["answers"].append(_refusal(401, body))
+    _builtin_finds_nothing(monkeypatch)
+    out = webtools.web_search("q", engines=("specstream", "builtin"))
+    assert body.consumed <= webtools._SPECSTREAM_ERROR_BODY_MAX
+    assert "Failed: SpecStream: HTTP 401." in out["note"]
+    # A long message that does fit is still cut to a short reason.
+    long = json.dumps({"error": {"message": "B" * 5000}}).encode()
+    reason = webtools._specstream_reason(_refusal(402, io.BytesIO(long)), "ss-test")
+    assert reason.startswith("HTTP 402: BBB")
+    assert len(reason) <= webtools._SPECSTREAM_REASON_MAX
+
+
 def test_a_reply_without_sources_is_a_failure(monkeypatch, opener):
     monkeypatch.setenv("SPECSTREAM_API_KEY", "ss-test")
     opener["answers"].append(b'{"data": {}}')
     with pytest.raises(ValueError, match="no sources"):
         webtools._specstream_search("q", 5, 5.0)
+
+
+def test_a_row_off_the_schema_is_skipped_not_fatal(monkeypatch, opener):
+    monkeypatch.setenv("SPECSTREAM_API_KEY", "ss-test")
+    sources = [
+        {"url": "https://ok.example/a", "title": "A", "snippet": "a"},
+        {"url": 12345, "title": "a number for a url"},
+        {"url": "https://ok.example/b", "title": 7, "snippet": ["not", "text"]},
+        {"url": "javascript:alert(1)", "title": "not http"},
+    ]
+    opener["answers"].append(json.dumps({"data": {"sources": sources}}).encode())
+    assert webtools._specstream_search("q", 5, 5.0) == [
+        {"title": "A", "url": "https://ok.example/a", "snippet": "a"},
+        {"title": "https://ok.example/b", "url": "https://ok.example/b", "snippet": ""},
+    ]
+
+
+def test_specstream_is_an_exact_egress_host(monkeypatch):
+    from openai4s import egress
+
+    monkeypatch.setenv("OPENAI4S_EGRESS", "allowlist")
+    assert egress.domain_allowed("api.specstream.ai")
+    assert not egress.domain_allowed("child.api.specstream.ai")
+    assert not egress.domain_allowed("specstream.ai")
 
 
 def test_specstream_is_opt_in_and_counted_only_with_a_key(monkeypatch):

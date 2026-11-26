@@ -191,7 +191,10 @@ def choose_primary(store, engine: str) -> dict[str, Any]:
 
 
 #: First-run setup's one search decision: Doubao, or a backup engine first.
-SETUP_CHOICES = ("doubao",) + AVAILABLE_SEARCH_ENGINES
+#: The same choices as the Web wizard and ``openai4s init --search``. Listed,
+#: not derived from AVAILABLE_SEARCH_ENGINES: SpecStream is switched on from
+#: Settings → Network and is not offered at setup.
+SETUP_CHOICES = ("doubao", "tavily", "you", "builtin", "parallel")
 
 
 def apply_setup_choice(store, choice: str, key: str = "") -> dict[str, Any]:
@@ -210,16 +213,14 @@ def apply_setup_choice(store, choice: str, key: str = "") -> dict[str, Any]:
 
         datapro.save_agent_plan_key(store, key)
         return project(store)
-    if choice not in AVAILABLE_SEARCH_ENGINES:
+    if choice not in SETUP_CHOICES:
         raise SearchSettingsError(
             f"search choice must be one of {', '.join(SETUP_CHOICES)}"
         )
     if key and choice in ENGINE_KEYS:
         set_key(store, choice, key)
-    if choice in KEY_REQUIRED and not has_key(store, choice):
-        raise SearchSettingsError(
-            f"{'Tavily' if choice == 'tavily' else 'SpecStream'} needs an API key"
-        )
+    if choice == "tavily" and not has_key(store, "tavily"):
+        raise SearchSettingsError("Tavily needs an API key")
     choose_primary(store, choice)
     return project(store)
 
@@ -230,6 +231,10 @@ def set_key(store, engine: str, key: str) -> None:
 
     setting, env = ENGINE_KEYS[engine]
     key = (key or "").strip()
+    if any(ch in key for ch in ("\r", "\n", "\x00")):
+        # The broker refuses a line break with its own error, which the
+        # settings route does not map to a 400; NUL cannot enter the env.
+        raise SearchSettingsError("an API key must not contain a line break or NUL")
     store.set_secret_setting(setting, key, scope=SECRET_SCOPE)
     if key:
         os.environ[env] = key
