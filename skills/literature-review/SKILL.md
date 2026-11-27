@@ -29,6 +29,7 @@ capabilities:
       - api.you.com
       - ydc-index.io
       - mcp.parallel.ai
+      - api.specstream.ai
       - duckduckgo.com
       - bing.com
       - mojeek.com

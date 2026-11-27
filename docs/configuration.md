@@ -305,6 +305,30 @@ engine list remain supported and preserve the saved Parallel on/off choice.
 请求标明来自 OpenAI4S；空闲不到一分钟的会话会被复用。Parallel 出错时与 Tavily、You.com 一样交给下一个已开启的备用引擎，
 错误原因保留在结果的 note 里。
 
+**SpecStream (opt-in, keyed).** Save a SpecStream API key on the SpecStream
+row in Settings → Network (or set `SPECSTREAM_API_KEY`, or
+`OPENAI4S_SECRET_SEARCH_SPECSTREAM_API_KEY` through the env broker), switch the
+engine on and place it in the list. It starts off, and like Tavily it counts as
+usable, and is offered on the Doubao quota card, only once a key is set.
+Queries are POSTed to `https://api.specstream.ai/v1/web-search` with the key as
+a bearer token, through the same egress, SSRF and no-redirect guards as the
+other keyed engines; that exact host is on the built-in Web search allowlist.
+Results map to the usual title, URL and snippet, capped at 500 characters. A
+refused key or spent credit hands over to the next switched-on engine; when no
+engine answers, the result's note gives the API's reason, shortened and with
+the key removed. Clients that submit an engine list without `specstream` keep
+its saved on/off state, and it stays behind the engines that outranked it.
+
+**SpecStream（可选，需要 key）。** 在设置 → 网络的 SpecStream 一行保存 API Key
+（或设置 `SPECSTREAM_API_KEY`，或通过环境变量凭证代理设置
+`OPENAI4S_SECRET_SEARCH_SPECSTREAM_API_KEY`），打开开关并调整位置。默认关闭；与 Tavily 一样，
+只有保存 key 后才算可用，也才会出现在豆包额度回退的审批卡片上。查询以 Bearer key POST 到
+`https://api.specstream.ai/v1/web-search`，与其他带 key 的引擎一样经过出口、SSRF 和不跟随重定向的检查，
+该精确主机已在内置的 Web search 出口白名单中。结果照常映射为标题、URL 和摘要，摘要截断为 500 个字符。
+出错（key 被拒、额度用完）时交给下一个已开启的引擎；所有引擎都没有结果时，结果的 note 写明接口给出的原因
+（已截短，并去掉 key）。提交的引擎列表里没有 `specstream` 的旧客户端，会保留它已保存的开关状态，
+它也继续排在原先排在它前面的引擎之后。
+
 `OPENAI4S_KERNEL_SANDBOX` (`auto`) — `enforce` fails closed when Seatbelt or bubblewrap cannot prove the boundary; `auto` warns and continues unsandboxed; `off` disables the OS boundary. Under `OPENAI4S_EGRESS=allowlist`, Cell admission needs the enforced, self-tested, `network_policy=blocked` posture. `OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1` reports `raw_allowed` and is refused while allowlist is on.
 
 `OPENAI4S_WEBUI` — unset (the default) serves the committed Vite workbench (`openai4s/server/webui/dist/index.html`) as the SPA shell at `/` and at deep links such as `/projects/{pid}/frames/{fid}`. Set to exactly `legacy` to serve the frozen `webui/index.html` + `app.js` escape hatch. Any other value (including `1` / `next` / `true`) keeps the new UI, so a typo cannot silently fall back. `/static/dist/` is ordinary static files under `WEBUI_DIR` either way. The retired `OPENAI4S_WEBUI_NEXT` name is ignored.

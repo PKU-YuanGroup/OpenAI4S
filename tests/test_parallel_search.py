@@ -311,7 +311,7 @@ def test_legacy_save_keeps_parallel_behind_engines_that_outranked_it(tmp_path):
             order=["builtin", "tavily", "you"],
             enabled={"tavily": True, "you": True, "builtin": True},
         )
-        assert stored["order"] == ["builtin", "tavily", "parallel", "you"]
+        assert stored["order"] == ["builtin", "tavily", "parallel", "you", "specstream"]
     finally:
         host.store.close()
 

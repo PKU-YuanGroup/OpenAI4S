@@ -470,6 +470,8 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
         # A real You.com key would turn the stubbed search tests into a live
         # POST to ydc-index.io.
         "YDC_API_KEY",
+        # Likewise a real SpecStream key would reach api.specstream.ai.
+        "SPECSTREAM_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
     # The BYOC confinement self-test caches its verdict process-wide, keyed by

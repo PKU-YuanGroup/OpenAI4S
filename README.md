@@ -124,7 +124,7 @@ A capability map of the current tree — what is implemented and reachable, plan
 |---|---|
 | **Control & orchestration** | class-based native `Tool`s · append-only Action Ledger · plan/review with a durable state machine · context compaction that archives the raw slices it summarizes · concurrent sub-agent delegation (fanout 48, depth 4) a user can stop mid-flight · enforced Specialist allowlists a child cannot widen · MCP connectors · cross-session memory |
 | **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 612 Skills (51 curated + 561 pinned bioSkills) · a FIFO execution coordinator with ABA-safe watchdog recovery |
-| **Data & retrieval** | ten normalized public-database connectors (Zenodo · UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex · STRING · BindingDB) plus three flag-gated ones (ClinVar · PubMed · ClinicalTrials.gov), whose records carry source and time · a nightly canary over three of them · Agent-Plan-keyed **Doubao Search Custom** as the primary web search · reorderable backups: Tavily, You.com, built-in keyless engines, and opt-in anonymous Parallel · Ollama web search and fetch with their own key · managed DataPro professional-dataset search |
+| **Data & retrieval** | ten normalized public-database connectors (Zenodo · UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex · STRING · BindingDB) plus three flag-gated ones (ClinVar · PubMed · ClinicalTrials.gov), whose records carry source and time · a nightly canary over three of them · Agent-Plan-keyed **Doubao Search Custom** as the primary web search · reorderable backups: Tavily, You.com, built-in keyless engines, opt-in anonymous Parallel, and opt-in keyed SpecStream · Ollama web search and fetch with their own key · managed DataPro professional-dataset search |
 | **Lab** | the OpenMHS submodule found automatically · a Lab tab with MHS/MCP device groups, live state, e-stop latches and receipt charts · a device market of 746 simulated devices · `openai4s lab` (`setup`, `add`, `remove`, `search`, `show`, `list`, `status`, `up`, `down`, `reset`) · an auto-maintained **OpenMHS Lab** project |
 | **Workbench** | live streaming · Action Timeline · read-only-by-default Notebook · branch fork/activate/revert · verified recovery with an explicit Partial/Failed state · `@file` references pinned to the version they name · 2D chemistry/genome/sequence/MSA/LaTeX renderers · Markdown and `.ipynb` export |
 | **Agentic RL** | external trainers drive the real agent loop · append-only Science Trajectory records · deterministic JSON/JSONL/ATIF (Harbor ATIF-v1.8) exports with byte hashes · per-decision training samples with prompt token IDs and loss masks · verifier, cost, admission, and budget ledgers kept separate from execution facts |
@@ -209,7 +209,7 @@ Data lives in `~/.openai4s`. If you close the tab, `openai4s url` prints the aut
 **First run — point it at a model, then at search.** No key ships, so once the workbench is open:
 
 1. **Model API** — the **First-run setup** wizard walks you through it, or open **Settings (⚙) → Models** later. Pick a protocol (**Ark-compatible** for Doubao/GLM/Kimi/DeepSeek, **OpenAI-compatible**, **OpenAI Responses**, **Anthropic-compatible**, **Gemini-compatible**, or **Ollama** for cloud or local models), paste your **API Key**, and save the profile as the active one. In the wizard, **Fetch models from endpoint** lists the model ids your endpoint actually serves. Cheapest path: the `ark` protocol on Volcengine Ark's ¥9.9/mo plan.
-2. **Search API** *(optional, recommended)* — open **Settings (⚙) → Network**, keep **Allow network access** on, and paste your Ark **Agent Plan Key** into the primary **Doubao Search** card → **Save credential**. If the active model is an Ark **Agent Plan**, you can skip this step: OpenAI4S saves that key as the default for both Doubao Search and DataPro professional datasets, and they keep working after you switch to another model. Tavily, You.com and the built-in keyless engines remain reorderable backups, and anonymous Parallel can be switched on; the dedicated Doubao health check never reports a fallback result as Doubao.
+2. **Search API** *(optional, recommended)* — open **Settings (⚙) → Network**, keep **Allow network access** on, and paste your Ark **Agent Plan Key** into the primary **Doubao Search** card → **Save credential**. If the active model is an Ark **Agent Plan**, you can skip this step: OpenAI4S saves that key as the default for both Doubao Search and DataPro professional datasets, and they keep working after you switch to another model. Tavily, You.com and the built-in keyless engines remain reorderable backups, and anonymous Parallel and keyed SpecStream can be switched on; the dedicated Doubao health check never reports a fallback result as Doubao.
 
 Full 1.0.1 walkthrough (install → model → search → R kernel): **[Startup guide](docs/startup-guide.md)**.
 
@@ -448,15 +448,16 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
 
 <!-- CONTRIBUTORS:START -->
 <a href="https://github.com/Nobody-Zhang" title="Nobody-Zhang"><img src=".github/contributors/Nobody-Zhang.png" width="64" height="64" alt="Nobody-Zhang" /></a>
+<a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
 <a href="https://github.com/wangyu-sd" title="wangyu-sd"><img src=".github/contributors/wangyu-sd.png" width="64" height="64" alt="wangyu-sd" /></a>
 <a href="https://github.com/dvd233" title="dvd233"><img src=".github/contributors/dvd233.png" width="64" height="64" alt="dvd233" /></a>
 <a href="https://github.com/HowardLi1984" title="HowardLi1984"><img src=".github/contributors/HowardLi1984.png" width="64" height="64" alt="HowardLi1984" /></a>
-<a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
 <a href="https://github.com/cursoragent" title="cursoragent"><img src=".github/contributors/cursoragent.png" width="64" height="64" alt="cursoragent" /></a>
 <a href="https://github.com/YuyangSunshine" title="YuyangSunshine"><img src=".github/contributors/YuyangSunshine.png" width="64" height="64" alt="YuyangSunshine" /></a>
-<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
 <a href="https://github.com/difficulttopickaname" title="difficulttopickaname"><img src=".github/contributors/difficulttopickaname.png" width="64" height="64" alt="difficulttopickaname" /></a>
+<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
 <a href="https://github.com/Weifeng2Wu" title="Weifeng2Wu"><img src=".github/contributors/Weifeng2Wu.png" width="64" height="64" alt="Weifeng2Wu" /></a>
+<a href="https://github.com/georgeatparallel" title="georgeatparallel"><img src=".github/contributors/georgeatparallel.png" width="64" height="64" alt="georgeatparallel" /></a>
 <a href="https://github.com/Lyu6PosHao" title="Lyu6PosHao"><img src=".github/contributors/Lyu6PosHao.png" width="64" height="64" alt="Lyu6PosHao" /></a>
 <a href="https://github.com/JunkaiWang-TheoPhy" title="JunkaiWang-TheoPhy"><img src=".github/contributors/JunkaiWang-TheoPhy.png" width="64" height="64" alt="JunkaiWang-TheoPhy" /></a>
 <a href="https://github.com/CyrusAuyeung" title="CyrusAuyeung"><img src=".github/contributors/CyrusAuyeung.png" width="64" height="64" alt="CyrusAuyeung" /></a>
@@ -472,7 +473,7 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
 <a href="https://github.com/stau-7001" title="stau-7001"><img src=".github/contributors/stau-7001.png" width="64" height="64" alt="stau-7001" /></a>
 <a href="https://github.com/EQSTLab" title="EQSTLab"><img src=".github/contributors/EQSTLab.png" width="64" height="64" alt="EQSTLab" /></a>
 <a href="https://github.com/Pandasama2025" title="Pandasama2025"><img src=".github/contributors/Pandasama2025.png" width="64" height="64" alt="Pandasama2025" /></a>
-<a href="https://github.com/georgeatparallel" title="georgeatparallel"><img src=".github/contributors/georgeatparallel.png" width="64" height="64" alt="georgeatparallel" /></a>
+<a href="https://github.com/Specstreamai" title="Specstreamai"><img src=".github/contributors/Specstreamai.png" width="64" height="64" alt="Specstreamai" /></a>
 <!-- CONTRIBUTORS:END -->
 
 <sub>Auto-generated daily from the GitHub <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">contributors graph</a> and a maintained public-recognition list by <code>scripts/update_contributors.py</code>.</sub>

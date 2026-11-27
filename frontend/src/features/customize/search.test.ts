@@ -3,6 +3,7 @@ import {
   canRemoveKey,
   canSwitchOff,
   engineConfigBody,
+  engineDescription,
   keyRemovalNote,
   moved,
   readSearchConfig,
@@ -130,5 +131,25 @@ describe("removing a saved key", () => {
     expect(keyRemovalNote(gone, "tavily")).toEqual({ text: searchT("search.keyRemoved"), warn: false });
     const kept = keyed({ enabled: false, usable: false }, true);
     expect(keyRemovalNote(kept, "tavily")).toEqual({ text: searchT("search.keyFromEnv"), warn: true });
+  });
+});
+
+it("keeps a keyed SpecStream engine and describes its key state", () => {
+  const config = readSearchConfig({
+    engines: [
+      { id: "builtin", enabled: true, usable: true },
+      { id: "specstream", enabled: true, needs_key: true, accepts_key: true, api_key_configured: false, usable: false },
+    ],
+  });
+  expect(config.engines.map((e) => e.id)).toEqual(["builtin", "specstream"]);
+  expect(canSwitchOff(config, "builtin")).toBe(false);
+  const specstream = config.engines[1]!;
+  expect(engineDescription(specstream)).toMatch(/SpecStream/);
+  expect(engineDescription({ ...specstream, keyConfigured: true })).not.toEqual(
+    engineDescription(specstream),
+  );
+  expect(engineConfigBody(config, { toggle: "specstream" }).enabled).toEqual({
+    builtin: true,
+    specstream: false,
   });
 });

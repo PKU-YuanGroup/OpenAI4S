@@ -24,6 +24,7 @@ ENGINE_LABELS = {
     "tavily": "Tavily",
     "you": "You.com",
     "parallel": "Parallel",
+    "specstream": "SpecStream",
     "builtin": "DuckDuckGo / Bing / Mojeek",
 }
 
@@ -40,8 +41,8 @@ def confirm_quota_fallback(
 ) -> list[str] | None:
     """Return the approved backup chain starting at the chosen engine.
 
-    ``engines`` is the switched-on chain in the user's order; Tavily without a
-    key is left out because it cannot answer. Engines are checked against
+    ``engines`` is the switched-on chain in the user's order; Tavily or
+    SpecStream without a key is left out because it cannot answer. Engines are checked against
     remembered rules first (an ``allow`` picks that engine, a ``deny`` removes
     it from the offer); only then, and only with a person present, is the user
     asked. After the chosen engine the chain only continues through engines
@@ -52,7 +53,8 @@ def confirm_quota_fallback(
     candidates = [
         engine
         for engine in engines
-        if engine != "tavily" or search_settings.has_key(store, engine)
+        if engine not in search_settings.KEY_REQUIRED
+        or search_settings.has_key(store, engine)
     ]
     if not candidates:
         return None

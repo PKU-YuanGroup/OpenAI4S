@@ -4,7 +4,7 @@ These give the Code-as-Action agent the same online reach opencode's `websearch`
 and `webfetch` tools provide, implemented over the stdlib + (optionally) requests
 and BeautifulSoup, which the kernel ships preinstalled. No API key is required:
 search walks an ordered list of engines — Tavily (keyed), the You.com Search
-API (keyless free tier) and a chain of keyless scrapers (DuckDuckGo → Bing →
+API (keyless free tier), opt-in Parallel (keyless) and SpecStream (keyed), and a chain of keyless scrapers (DuckDuckGo → Bing →
 DuckDuckGo lite → Mojeek) — with scholarly fast paths (a DOI resolves via
 Crossref, an arXiv id via the arXiv API); fetch downloads a URL and converts
 HTML to readable markdown/text.
@@ -1066,6 +1066,68 @@ def _tavily_search(query: str, num_results: int, timeout: float) -> list[dict]:
     return out
 
 
+_SPECSTREAM_URL = "https://api.specstream.ai/v1/web-search"
+#: A refused call's body is read only for its ``error.message``, and the reason
+#: kept for the note is short: neither may be as large as the server likes.
+_SPECSTREAM_ERROR_BODY_MAX = 16 * 1024
+_SPECSTREAM_REASON_MAX = 300
+
+
+def _specstream_key() -> str:
+    """SpecStream API key from ``SPECSTREAM_API_KEY``; a key saved in the
+    Search settings is mirrored into it, as for Tavily."""
+    return os.environ.get("SPECSTREAM_API_KEY", "").strip()
+
+
+def _specstream_search(query: str, num_results: int, timeout: float) -> list[dict]:
+    """SpecStream Search API (https://specstream.ai). Opt-in and keyed: without
+    ``SPECSTREAM_API_KEY`` it is skipped like Tavily. Unlike Tavily it raises on
+    failure, so when no engine answers `web_search` can name the reason (a
+    refused key, spent credit) in its note. stdlib-only POST."""
+    key = _specstream_key()
+    if not key or timeout <= 0:
+        return []
+    if any(ch in key for ch in ("\r", "\n", "\x00")):
+        # http.client would refuse the header and quote the whole
+        # ``Authorization`` value -- the key -- in its error.
+        raise ValueError("SPECSTREAM_API_KEY contains a line break or NUL")
+    raw = _post_json(
+        _SPECSTREAM_URL,
+        {"q": query, "num": max(1, min(int(num_results), 20))},
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=min(timeout, 15.0),
+    )
+    payload = json.loads(raw.decode("utf-8", "replace"))
+    data = payload.get("data") if isinstance(payload, dict) else None
+    sources = data.get("sources") if isinstance(data, dict) else None
+    if not isinstance(sources, list):
+        raise ValueError("SpecStream returned no sources list")
+    out: list[dict] = []
+    for r in sources:
+        if not isinstance(r, dict):
+            continue
+        # A row off the schema is skipped, not fatal: raising here would throw
+        # away every good row with it. Only http(s) URLs, as in Parallel's.
+        url = r.get("url")
+        url = url.strip() if isinstance(url, str) else ""
+        if not url.startswith(("https://", "http://")):
+            continue
+        title, snippet = r.get("title"), r.get("snippet")
+        title = title.strip() if isinstance(title, str) else ""
+        snippet = snippet.strip() if isinstance(snippet, str) else ""
+        out.append(
+            {
+                "title": title or url,
+                "url": url,
+                # Same snippet cap as the Tavily/You.com mappers.
+                "snippet": snippet[:500],
+            }
+        )
+        if len(out) >= num_results:
+            break
+    return out
+
+
 _YOU_FREE_URL = "https://api.you.com/v1/agents/search"
 _YOU_KEYED_URL = "https://ydc-index.io/v1/search"
 _YOU_UA = "youdotcom-integration/pku-yuangroup-openai4s"
@@ -1159,13 +1221,17 @@ def _you_search(query: str, num_results: int, timeout: float) -> list[dict]:
 #: `openai4s.search_settings` stores the user's order and on/off choices.
 SEARCH_ENGINES = ("tavily", "you", "builtin")
 # Available in settings, but opt-in so working keyless defaults stay unchanged.
-AVAILABLE_SEARCH_ENGINES = SEARCH_ENGINES + ("parallel",)
+AVAILABLE_SEARCH_ENGINES = SEARCH_ENGINES + ("parallel", "specstream")
 _ENGINE_LABELS = {
     "tavily": "Tavily",
     "you": "You.com",
     "parallel": "Parallel",
+    "specstream": "SpecStream",
     "builtin": "DuckDuckGo/Bing/Mojeek",
 }
+#: Engines that never answer without their own key, so they are not counted
+#: as runnable until one is set.
+_KEY_REQUIRED = {"tavily": _tavily_key, "specstream": _specstream_key}
 #: The hosts each engine connects to. A loaded Skill's ``host_only`` manifest
 #: refuses every other host, so an engine none of whose hosts it declares
 #: cannot answer, and is not tried.
@@ -1190,6 +1256,8 @@ def _engine_hosts(engine: str) -> tuple[str, ...]:
         from openai4s.parallel_search import ENDPOINT
 
         return (urllib.parse.urlsplit(ENDPOINT).hostname or "",)
+    if engine == "specstream":
+        return (urllib.parse.urlsplit(_SPECSTREAM_URL).hostname or "",)
     if engine == "builtin":
         return _BUILTIN_SEARCH_HOSTS
     return ()
@@ -1205,7 +1273,8 @@ def _engines_within(
     runnable = [
         engine
         for engine in engines
-        if engine in _ENGINE_LABELS and (engine != "tavily" or _tavily_key())
+        if engine in _ENGINE_LABELS
+        and (engine not in _KEY_REQUIRED or _KEY_REQUIRED[engine]())
     ]
     allowed = [
         engine
@@ -1297,6 +1366,18 @@ def web_search(
                 failures.append(f"Parallel: {error}")
                 results = []
             source = "parallel"
+        elif engine == "specstream":
+            key = _specstream_key()
+            if not key:
+                continue
+            try:
+                results = _dedupe(
+                    _specstream_search(query, num_results, _req_timeout(deadline))
+                )
+            except Exception as error:  # noqa: BLE001 - any failure → next engine
+                failures.append(f"SpecStream: {_specstream_reason(error, key)}")
+                results = []
+            source = "specstream"
         elif engine == "builtin":
             results, source, note = _builtin_search(query, num_results, deadline)
         else:
@@ -1324,6 +1405,36 @@ def web_search(
         f"database API instead.{failed}"
     )
     return {"query": query, "count": 0, "results": [], "note": note}
+
+
+def _specstream_reason(error: BaseException, key: str) -> str:
+    """The API's own words for a refused call (bad key, spent credit), else the
+    exception text: capped, and with ``key`` removed.
+
+    The note reaches the model and the transcript. An API may quote the bearer
+    key back, so it is scrubbed rather than trusted to be absent, and the error
+    body is read only up to a small cap, as `_post_json` caps a success body.
+    """
+    from openai4s.mcp_protocol import redact_reflected_secret
+
+    if isinstance(error, urllib.error.HTTPError):
+        reason = f"HTTP {error.code}"
+        try:
+            body = error.read(_SPECSTREAM_ERROR_BODY_MAX)
+            message = json.loads(body.decode("utf-8", "replace"))["error"]["message"]
+            if isinstance(message, str) and message.strip():
+                reason = f"{reason}: {' '.join(message.split())}"
+        except Exception:  # noqa: BLE001 - fall back to the status alone
+            pass
+        finally:
+            with contextlib.suppress(Exception):
+                error.close()
+    else:
+        reason = str(error) or type(error).__name__
+    reason = redact_reflected_secret(reason, key)
+    if len(reason) > _SPECSTREAM_REASON_MAX:
+        reason = reason[: _SPECSTREAM_REASON_MAX - 1] + "…"
+    return reason
 
 
 def _skill_declared_domains() -> tuple[str, ...] | None:
