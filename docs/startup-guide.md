@@ -183,8 +183,9 @@ that stores the broker value in SQLite. The credential is shared with
 the managed DataPro professional-dataset connector. **Backup engines** sit in
 the same Network screen, in an order you can change: Tavily (with a key),
 You.com (free tier without a key) and the built-in keyless engines (DuckDuckGo
-and friends), plus anonymous Parallel Search, which is off until you switch it
-on. When Doubao's quota runs out, an approval card asks before any fallback.
+and friends), plus anonymous Parallel Search and SpecStream (with a key), which
+stay off until you switch them on. When Doubao's quota runs out, an approval
+card asks before any fallback.
 Backup results never make the dedicated Doubao check claim success. See
 [Configuration](configuration.md) for the full order and the Ollama web tools.
 
@@ -354,7 +355,7 @@ Agent Plan Key 由所选的本地 SecretBroker 后端保存；`~/.openai4s` 下�
 不透明引用。显式启用 `OPENAI4S_SECRET_STORE=plaintext` 是例外，会把 broker 值保存到
 SQLite。该凭证与托管的 DataPro 专业数据集连接器共用。**备用引擎**也在同一「网络」页面，
 顺序可以调整：Tavily（需 Key）、You.com（无 Key 时用免费档）、内置免密钥引擎
-（DuckDuckGo 等），以及默认关闭、需手动开启的匿名 Parallel Search。豆包额度用尽时，
+（DuckDuckGo 等），以及默认关闭、需手动开启的匿名 Parallel Search 和 SpecStream（需 Key）。豆包额度用尽时，
 会先弹出审批卡片询问是否回退。备用结果都不会让豆包专用检查冒充成功。完整顺序与
 Ollama 网页工具见[配置](configuration.md)。
 

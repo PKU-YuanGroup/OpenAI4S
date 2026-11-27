@@ -18,6 +18,7 @@ const COPY: CopyTable = {
     "search.engine.tavily": "Tavily",
     "search.engine.you": "You.com",
     "search.engine.parallel": "Parallel",
+    "search.engine.specstream": "SpecStream",
     "search.engine.builtin": "内置免 key 引擎",
     "search.desc.tavily.set": "已保存 API Key。",
     "search.desc.tavily.unset": "保存 API Key 后才会使用。",
@@ -25,9 +26,12 @@ const COPY: CopyTable = {
       "免费额度每个 IP 每天 100 次；保存 API Key 后改用付费接口。查询会发送给 You.com，请求会表明来自 OpenAI4S。",
     "search.desc.you.keyed": "已保存 API Key，使用付费接口。查询会发送给 You.com，请求会表明来自 OpenAI4S。",
     "search.desc.parallel": "无需 key。查询会发送给 Parallel，请求会表明来自 OpenAI4S。匿名搜索默认使用 Fast 模式。",
+    "search.desc.specstream.set": "已保存 API Key。查询会发送给 SpecStream。",
+    "search.desc.specstream.unset": "保存 API Key 后才会使用。查询会发送给 SpecStream。",
     "search.desc.builtin": "DuckDuckGo / Bing / Mojeek，无需 key，可能被限流。",
     "search.keyPh.tavily": "输入 Tavily API Key",
     "search.keyPh.you": "输入 You.com API Key（可选）",
+    "search.keyPh.specstream": "输入 SpecStream API Key",
     "search.saveKey": "保存",
     "search.keySaved": "API Key 已保存",
     "search.up": "上移",
@@ -59,6 +63,7 @@ const COPY: CopyTable = {
     "search.engine.tavily": "Tavily",
     "search.engine.you": "You.com",
     "search.engine.parallel": "Parallel",
+    "search.engine.specstream": "SpecStream",
     "search.engine.builtin": "Built-in keyless engines",
     "search.desc.tavily.set": "API key saved.",
     "search.desc.tavily.unset": "Used only once an API key is saved.",
@@ -67,9 +72,12 @@ const COPY: CopyTable = {
     "search.desc.you.keyed":
       "API key saved; uses the paid endpoint. Queries go to You.com, and requests identify OpenAI4S.",
     "search.desc.parallel": "No key needed. Queries go to Parallel, and requests identify OpenAI4S. Anonymous searches default to Fast mode.",
+    "search.desc.specstream.set": "API key saved. Queries go to SpecStream.",
+    "search.desc.specstream.unset": "Used only once an API key is saved. Queries go to SpecStream.",
     "search.desc.builtin": "DuckDuckGo / Bing / Mojeek. No key needed; may be rate-limited.",
     "search.keyPh.tavily": "Enter Tavily API key",
     "search.keyPh.you": "Enter You.com API key (optional)",
+    "search.keyPh.specstream": "Enter SpecStream API key",
     "search.saveKey": "Save",
     "search.keySaved": "API key saved",
     "search.up": "Move up",
@@ -96,7 +104,7 @@ const COPY: CopyTable = {
 
 export const searchT = copyLookup(COPY);
 
-export const SEARCH_ENGINE_IDS = ["tavily", "you", "builtin", "parallel"] as const;
+export const SEARCH_ENGINE_IDS = ["tavily", "you", "builtin", "parallel", "specstream"] as const;
 export type SearchEngineId = (typeof SEARCH_ENGINE_IDS)[number];
 
 export type SearchEngine = {
@@ -174,6 +182,9 @@ export function engineDescription(e: SearchEngine): string {
     return searchT(e.keyConfigured ? "search.desc.tavily.set" : "search.desc.tavily.unset");
   }
   if (e.id === "parallel") return searchT("search.desc.parallel");
+  if (e.id === "specstream") {
+    return searchT(e.keyConfigured ? "search.desc.specstream.set" : "search.desc.specstream.unset");
+  }
   if (e.id === "you") return searchT(e.keyConfigured ? "search.desc.you.keyed" : "search.desc.you");
   return searchT("search.desc.builtin");
 }

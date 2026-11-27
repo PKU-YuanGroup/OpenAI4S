@@ -113,7 +113,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 |---|---|
 | **控制与编排** | 基于类的原生 `Tool` · 追加式 Action Ledger · 带持久状态机的 plan/review · 会归档原始切片的上下文压缩 · 可中途叫停的并发子代理委派（fanout 48、depth 4）· 子代理无法自行放宽的 Specialist 白名单 · MCP 连接器 · 跨会话记忆 |
 | **科学执行** | 持久的 Python **与** R 内核 · cell 执行中途的同步 `host` RPC · 对象级数据血缘 · 版本化 Artifact · 按内核 *generation* 记录的环境溯源（绝不借用守护进程的）· 后台执行 · 612 个 Skill（51 个精选维护 + 561 个固定版本 bioSkills）· 带 ABA 安全看门狗恢复的 FIFO 执行协调器 |
-| **数据与检索** | 十个规范化公共数据库连接器（Zenodo · UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex · STRING · BindingDB），外加三个由开关管控的数据源（ClinVar · PubMed · ClinicalTrials.gov），记录自带来源与时间 · 覆盖其中三个的每日金丝雀 · 以 Agent Plan Key 授权的**豆包搜索 Custom 版**作为联网搜索主选 · 可调整顺序的备用引擎：Tavily、You.com、内置免密钥引擎，以及需手动开启的匿名 Parallel · 使用独立 Key 的 Ollama 联网搜索与抓取 · 托管的 DataPro 专业数据集检索 |
+| **数据与检索** | 十个规范化公共数据库连接器（Zenodo · UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex · STRING · BindingDB），外加三个由开关管控的数据源（ClinVar · PubMed · ClinicalTrials.gov），记录自带来源与时间 · 覆盖其中三个的每日金丝雀 · 以 Agent Plan Key 授权的**豆包搜索 Custom 版**作为联网搜索主选 · 可调整顺序的备用引擎：Tavily、You.com、内置免密钥引擎，以及需手动开启的匿名 Parallel 和需 Key 的 SpecStream · 使用独立 Key 的 Ollama 联网搜索与抓取 · 托管的 DataPro 专业数据集检索 |
 | **实验室** | 自动发现的 OpenMHS 子模块 · 按 MHS/MCP 分组、带实时状态、急停锁存与回执图表的实验室标签页 · 746 台模拟设备的设备市场 · `openai4s lab`（`setup`、`add`、`remove`、`search`、`show`、`list`、`status`、`up`、`down`、`reset`）· 自动维护的 **OpenMHS Lab** 项目 |
 | **工作台** | 实时流式 · Action Timeline · 默认只读的 Notebook · 分支 fork/激活/revert · 带明确 Partial/Failed 状态的验证式恢复 · 锁定到所指版本的 `@file` 引用 · 2D 化学/基因组/序列/MSA/LaTeX 渲染器 · Markdown 与 `.ipynb` 导出 |
 | **Agentic RL** | 外部 Trainer 驱动真实的 Agent 循环 · 只追加的 Science Trajectory 记录 · 确定性 JSON/JSONL/ATIF（Harbor ATIF-v1.8）导出并带字节哈希 · 逐决策训练样本（含 prompt token ID 与 loss mask）· verifier、cost、准入与预算账本与执行事实分离 |
@@ -197,7 +197,7 @@ openai4s serve                    # 启动守护进程，并用访问令牌打�
 **首次运行 —— 先配模型，再配搜索。** 启动不带任何 Key，所以打开工作台之后：
 
 1. **模型 API** —— **首次设置**向导会一步步引导；之后也可以在 **设置（⚙）→ 模型** 里修改。选协议（**ark 兼容协议** 对应豆包/GLM/Kimi/DeepSeek，或 **OpenAI 兼容协议**、**OpenAI Responses 协议**、**Anthropic 兼容协议**、**Gemini 兼容协议**，以及对应云端或本地模型的 **Ollama**），粘贴 **API Key**，保存并设为当前配置。在向导里点「从端点获取模型」，会列出你的接入点实际提供的模型 id。最省钱：用火山方舟 ¥9.9/月 套餐的 `ark` 协议。
-2. **搜索 API** *（可选、推荐）* —— 打开 **设置（⚙）→ 网络**，保持 **允许联网** 打开，把火山方舟 **Agent Plan Key** 粘进主选的**豆包搜索**卡片 → **保存凭证**。当前模型是火山方舟 **Agent Plan** 时可以跳过这一步：OpenAI4S 会把它的 Key 自动设为豆包搜索和 DataPro 专业数据库的默认凭证，之后换用别的模型也无需重新设置。Tavily、You.com 与内置免密钥引擎仍是可调整顺序的备用引擎，匿名 Parallel 可以手动开启；豆包专用健康检查不会把备用结果冒充豆包成功。
+2. **搜索 API** *（可选、推荐）* —— 打开 **设置（⚙）→ 网络**，保持 **允许联网** 打开，把火山方舟 **Agent Plan Key** 粘进主选的**豆包搜索**卡片 → **保存凭证**。当前模型是火山方舟 **Agent Plan** 时可以跳过这一步：OpenAI4S 会把它的 Key 自动设为豆包搜索和 DataPro 专业数据库的默认凭证，之后换用别的模型也无需重新设置。Tavily、You.com 与内置免密钥引擎仍是可调整顺序的备用引擎，匿名 Parallel 和需 Key 的 SpecStream 可以手动开启；豆包专用健康检查不会把备用结果冒充豆包成功。
 
 1.0.1 完整流程（安装 → 模型 → 搜索 → R 内核）见：**[上手指南](docs/startup-guide.md#zh)**。
 
@@ -415,15 +415,16 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 
 <!-- CONTRIBUTORS:START -->
 <a href="https://github.com/Nobody-Zhang" title="Nobody-Zhang"><img src=".github/contributors/Nobody-Zhang.png" width="64" height="64" alt="Nobody-Zhang" /></a>
+<a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
 <a href="https://github.com/wangyu-sd" title="wangyu-sd"><img src=".github/contributors/wangyu-sd.png" width="64" height="64" alt="wangyu-sd" /></a>
 <a href="https://github.com/dvd233" title="dvd233"><img src=".github/contributors/dvd233.png" width="64" height="64" alt="dvd233" /></a>
 <a href="https://github.com/HowardLi1984" title="HowardLi1984"><img src=".github/contributors/HowardLi1984.png" width="64" height="64" alt="HowardLi1984" /></a>
-<a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
 <a href="https://github.com/cursoragent" title="cursoragent"><img src=".github/contributors/cursoragent.png" width="64" height="64" alt="cursoragent" /></a>
 <a href="https://github.com/YuyangSunshine" title="YuyangSunshine"><img src=".github/contributors/YuyangSunshine.png" width="64" height="64" alt="YuyangSunshine" /></a>
-<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
 <a href="https://github.com/difficulttopickaname" title="difficulttopickaname"><img src=".github/contributors/difficulttopickaname.png" width="64" height="64" alt="difficulttopickaname" /></a>
+<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
 <a href="https://github.com/Weifeng2Wu" title="Weifeng2Wu"><img src=".github/contributors/Weifeng2Wu.png" width="64" height="64" alt="Weifeng2Wu" /></a>
+<a href="https://github.com/georgeatparallel" title="georgeatparallel"><img src=".github/contributors/georgeatparallel.png" width="64" height="64" alt="georgeatparallel" /></a>
 <a href="https://github.com/Lyu6PosHao" title="Lyu6PosHao"><img src=".github/contributors/Lyu6PosHao.png" width="64" height="64" alt="Lyu6PosHao" /></a>
 <a href="https://github.com/JunkaiWang-TheoPhy" title="JunkaiWang-TheoPhy"><img src=".github/contributors/JunkaiWang-TheoPhy.png" width="64" height="64" alt="JunkaiWang-TheoPhy" /></a>
 <a href="https://github.com/CyrusAuyeung" title="CyrusAuyeung"><img src=".github/contributors/CyrusAuyeung.png" width="64" height="64" alt="CyrusAuyeung" /></a>
@@ -439,7 +440,7 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 <a href="https://github.com/stau-7001" title="stau-7001"><img src=".github/contributors/stau-7001.png" width="64" height="64" alt="stau-7001" /></a>
 <a href="https://github.com/EQSTLab" title="EQSTLab"><img src=".github/contributors/EQSTLab.png" width="64" height="64" alt="EQSTLab" /></a>
 <a href="https://github.com/Pandasama2025" title="Pandasama2025"><img src=".github/contributors/Pandasama2025.png" width="64" height="64" alt="Pandasama2025" /></a>
-<a href="https://github.com/georgeatparallel" title="georgeatparallel"><img src=".github/contributors/georgeatparallel.png" width="64" height="64" alt="georgeatparallel" /></a>
+<a href="https://github.com/Specstreamai" title="Specstreamai"><img src=".github/contributors/Specstreamai.png" width="64" height="64" alt="Specstreamai" /></a>
 <!-- CONTRIBUTORS:END -->
 
 <sub>由 <code>scripts/update_contributors.py</code> 每日根据 GitHub <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">贡献者图谱</a>与维护中的公开署名名单自动生成。</sub>

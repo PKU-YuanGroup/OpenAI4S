@@ -45,7 +45,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`replay.py`](./replay.py) | 把成功的 `host.*` 结果记进离线回放 tape（溯源、凭据读取这类内部管道调用刻意不入 tape）；导出的 notebook 回放这盘 tape 时，它负责发现调用顺序的漂移。 |
 | [`review.py`](./review.py) | 对已完成回合的证据做一次有界、无工具的审查，并把 JSON verdict 标准化。审查者动不了工作区。 |
 | [`scientific_reviewer.py`](./scientific_reviewer.py) | Stage 3 Scientific Reviewer V2：只读冻结 Evidence Snapshot、严格 `pass`/`issues`/`incomplete` schema，以及冻结的 provider/base_url/model 指纹。省略 Artifact 不能判 pass。 |
-| [`search_settings.py`](./search_settings.py) | 豆包之后的备用网页搜索引擎及其顺序：Tavily、You.com 和内置免 key 引擎，每个都可开关，并始终保留至少一个可用引擎。也负责这些引擎的 key（经 broker 存储，并同步到 `webtools` 读取的环境变量），以及首次设置和 `openai4s init` 里那一个搜索选项。 |
+| [`search_settings.py`](./search_settings.py) | 豆包之后的备用网页搜索引擎及其顺序：Tavily、You.com、内置免 key 引擎，以及需手动开启的 Parallel 和 SpecStream，每个都可开关，并始终保留至少一个可用引擎。也负责这些引擎的 key（经 broker 存储，并同步到 `webtools` 读取的环境变量），以及首次设置和 `openai4s init` 里那一个搜索选项。 |
 | [`specialists.py`](./specialists.py) | 内置 specialist 档案——gateway 提供的目录清单与委派解析器实际应用的 persona/capability 策略共用这一个事实来源。可从 host 层导入；绝不导入 server。同名的 agents 表存储行覆盖内置档案。 |
 | [`store.py`](./store.py) | 持久化层的兼容 facade。唯一那条 SQLite 连接放在这里，schema 和受保护的只读查询也放在这里。各个聚焦的 storage 仓储拿到的是同一条连接和同一把锁。migration 已经不属于这个 facade：它们带版本、走事务、按 checksum 记录，放在 [`storage/migrations.py`](./storage/migrations.py) 里——每次打开都把所有表重新探一遍、再把失败的 `ALTER` 逐个吞掉，会让「这个数据库是不是最新的」变成代码自己都答不上来的问题。`close()` 是幂等的，并且只逐出恰好是它自己的那个缓存实例，因此之后 `get_store(path)` 可以为同一路径开出新的一代。 |
 | [`tls_trust.py`](./tls_trust.py) | Host 侧 HTTPS 校验证书时所用的信任库。所有出站 TLS 客户端（web fetch、LLM/MCP/搜索客户端背后的 deadline transport、endpoint 查询、telemetry、share 隧道）都在这里构造 context。在 macOS 上，它在解释器默认信任库之外再加上 Apple 随系统发布的根证书，因为 uv 安装的 CPython 用的是一份落后于系统的静态证书包；它从不放宽校验，显式设置的 `SSL_CERT_FILE`/`SSL_CERT_DIR` 保持原样，并把校验失败翻译成指明主机和处理办法的提示。 |
