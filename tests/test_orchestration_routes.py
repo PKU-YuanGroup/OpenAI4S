@@ -570,9 +570,11 @@ printf '0' > "{s}/in_queue"; printf 'CANCELLED' > "{s}/acct_state"
         # the token really did reach the scheduler (INV-8's precondition)
         assert (state / "job_comment").read_text().startswith("tok_")
 
-        # and the job finishes
-        (state / "in_queue").write_text("0", encoding="utf-8")
+        # and the job finishes. Accounting is written before the job leaves
+        # the queue: a reconcile that lands between the two writes otherwise
+        # finds the job in neither place and reports LOST, which is terminal.
         (state / "acct_state").write_text("COMPLETED", encoding="utf-8")
+        (state / "in_queue").write_text("0", encoding="utf-8")
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             status, raw = _get(
