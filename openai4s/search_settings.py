@@ -170,10 +170,10 @@ def _key_after_clear(store, engine: str) -> str:
     """The key `has_key` would still see after clearing ``engine``.
 
     Empty when the clear removes every copy. This process's mirror goes with
-    it. Two copies do not: an operator export of ``OPENAI4S_TAVILY_API_KEY`` /
-    ``YDC_API_KEY`` (`load_keys_into_env` leaves it alone, and a saved key
-    only overrode it), and a secret the env broker keeps because its delete
-    does nothing.
+    it. Two copies do not: an operator export of the engine's variable
+    (``OPENAI4S_TAVILY_API_KEY``, ``YDC_API_KEY`` or ``SPECSTREAM_API_KEY``;
+    `load_keys_into_env` leaves it alone, and a saved key only overrode it),
+    and a secret the env broker keeps because its delete does nothing.
     """
 
     names = ENGINE_KEYS.get(engine)

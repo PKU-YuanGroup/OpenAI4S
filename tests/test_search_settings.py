@@ -564,6 +564,7 @@ def test_a_clear_removes_a_saved_key_and_its_mirror(tmp_path):
     [
         ("tavily", "OPENAI4S_TAVILY_API_KEY", "tvly-exported"),
         ("you", "YDC_API_KEY", "ydc-exported"),
+        ("specstream", "SPECSTREAM_API_KEY", "ss-exported"),
     ],
 )
 def test_a_clear_does_not_unset_an_exported_key(
@@ -896,6 +897,21 @@ def test_route_refuses_removing_the_key_the_last_usable_engine_needs(route):
     assert status == 200
     status, body = route("POST", {"engine": "tavily", "clear_api_key": True})
     assert status == 200 and body["api_key_configured"] is False
+
+
+def test_route_refuses_removing_specstreams_key_as_the_last_usable_engine(route):
+    # SpecStream needs its key as Tavily does, so removing it while it is the
+    # only usable engine is refused the same way.
+    only_specstream = {**_ONLY_TAVILY, "tavily": False, "specstream": True}
+    order = list(webtools.AVAILABLE_SEARCH_ENGINES)
+    route("POST", {"engine": "specstream", "api_key": "ss-route"})
+    status, _ = route("PUT", {"order": order, "enabled": only_specstream})
+    assert status == 200
+    status, body = route("POST", {"engine": "specstream", "clear_api_key": True})
+    assert status == 400 and "switch another engine on first" in body["error"]
+    _, body = route("GET")
+    specstream = next(e for e in body["engines"] if e["id"] == "specstream")
+    assert specstream["api_key_configured"] is True
 
 
 def test_route_a_refused_write_changes_nothing(route):

@@ -1020,7 +1020,8 @@ def _post_json(url: str, body: dict, *, headers: dict, timeout: float) -> bytes:
 def _tavily_key() -> str:
     """Tavily API key from the environment. A key saved from the UI (global
     Search settings) is written to this env var — live by the Search settings
-    endpoint and at daemon startup — so a UI-entered key works without .env."""
+    endpoint, at daemon startup and again before each search — so a
+    UI-entered key works without .env."""
     return os.environ.get("OPENAI4S_TAVILY_API_KEY", "").strip()
 
 
