@@ -388,7 +388,7 @@ streams，验证真实 RPC worker 重启后原结果恢复且不重放 action。
 | [`test_science_control_tools.py`](test_science_control_tools.py) | 关于科学检索两个表面（原生的与内核内的）的测试：两个扁平且做过 schema 检查的注册表条目、一个不用网络也能跑的目录、只编码顶层字段的 Host wire，以及只向模型提供本守护进程可检索的数据库的 provider schema（Stage 10 的三个库只在开关打开时出现），而 Host 校验仍保留完整词表。 |
 | [`test_sdk_compute.py`](test_sdk_compute.py) | worker 侧的 `host.compute` 命名空间：provider、实例、传输、attach、清理。带安全锋刃的是路径处理——本地路径按允许名单做相对化，绝对路径直接拒绝。 |
 | [`test_security.py`](test_security.py) | 纵深防御的几层，LLM 全程被 mock。快路径和失败即放行的那几处，要和拦截一样仔细读：常规代码根本不进分类器，而注入筛查在没有配置 key 时是失败即放行的。不失败即放行的是 query 的拒绝名单——即使用拆分标识符绕，它也把 `host.query` 挡在设置、connector 与秘密表之外。 |
-| [`test_search_settings.py`](test_search_settings.py) | 备用搜索引擎：保存的顺序与开关（新安装沿用原有顺序，拒绝没有可用引擎的配置）、首次设置选项、豆包配额回退确认（已记住的规则直接生效，新的确认只在有人时弹出，选中的引擎就是规则的 pattern）、调度器接线，以及 `/search/config`。 |
+| [`test_search_settings.py`](test_search_settings.py) | 备用搜索引擎：保存的顺序与开关（新安装沿用原有顺序，拒绝没有可用引擎的配置）、首次设置选项、豆包配额回退确认（已记住的规则直接生效，新的确认只在有人时弹出，选中的引擎就是规则的 pattern）、调度器接线（保存的 key 在每个进程的搜索里都能用到，运维注入的也一样），以及 `/search/config`（写入要么全部生效要么全不生效；移除 key 同样不能让可用引擎归零；格式不对的 key 返回 400）。 |
 | [`test_parallel_search.py`](test_parallel_search.py) | 离线合成测试：原生 host 路径、默认关闭需手动启用、网络策略、请求来源标识，以及长连接不关闭的 SSE 在成功与出错两种情况下的回归覆盖。 |
 | [`test_server_agent_run.py`](test_server_agent_run.py) | 纯引擎外围的 Web 适配器，其中大半在讲用户不该看到什么。fence 要跨增量边界一直藏住；代码草稿是临时的、可丢弃的；只用于完成的 Cell 在执行之前先把草稿清掉。旧版的 fenced Tool 调用仍然会执行，并以一条用户 observation 的形式回来。 |
 | [`test_server_completions.py`](test_server_completions.py) | 一轮结束时给用户看的东西。完成消息由真实的 Artifact／capture 增量和实际输出渲染出来，绝不依赖隐藏的推理内容；可信链接来自服务端 helper 与精确 version id；只跑了代码的一轮，会拿到一个如实的状态，而不是被暗示成成功。 |

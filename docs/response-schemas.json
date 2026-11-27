@@ -6360,6 +6360,9 @@
                 "api_key_configured": {
                   "type": "boolean"
                 },
+                "api_key_from_env": {
+                  "type": "boolean"
+                },
                 "enabled": {
                   "type": "boolean"
                 },
@@ -6379,6 +6382,7 @@
               "required": [
                 "accepts_key",
                 "api_key_configured",
+                "api_key_from_env",
                 "enabled",
                 "endpoint",
                 "id",
@@ -23002,6 +23006,9 @@
                 "api_key_configured": {
                   "type": "boolean"
                 },
+                "api_key_from_env": {
+                  "type": "boolean"
+                },
                 "enabled": {
                   "type": "boolean"
                 },
@@ -23021,6 +23028,7 @@
               "required": [
                 "accepts_key",
                 "api_key_configured",
+                "api_key_from_env",
                 "enabled",
                 "endpoint",
                 "id",
@@ -32446,6 +32454,9 @@
                 "api_key_configured": {
                   "type": "boolean"
                 },
+                "api_key_from_env": {
+                  "type": "boolean"
+                },
                 "enabled": {
                   "type": "boolean"
                 },
@@ -32465,6 +32476,7 @@
               "required": [
                 "accepts_key",
                 "api_key_configured",
+                "api_key_from_env",
                 "enabled",
                 "endpoint",
                 "id",
@@ -46860,6 +46872,9 @@
                 "api_key_configured": {
                   "type": "boolean"
                 },
+                "api_key_from_env": {
+                  "type": "boolean"
+                },
                 "enabled": {
                   "type": "boolean"
                 },
@@ -46879,6 +46894,7 @@
               "required": [
                 "accepts_key",
                 "api_key_configured",
+                "api_key_from_env",
                 "enabled",
                 "endpoint",
                 "id",
@@ -55808,6 +55824,9 @@
                 "api_key_configured": {
                   "type": "boolean"
                 },
+                "api_key_from_env": {
+                  "type": "boolean"
+                },
                 "enabled": {
                   "type": "boolean"
                 },
@@ -55827,6 +55846,7 @@
               "required": [
                 "accepts_key",
                 "api_key_configured",
+                "api_key_from_env",
                 "enabled",
                 "endpoint",
                 "id",

@@ -34,6 +34,10 @@ const COPY: CopyTable = {
     "search.keyPh.specstream": "输入 SpecStream API Key",
     "search.saveKey": "保存",
     "search.keySaved": "API Key 已保存",
+    "search.removeKey": "移除 Key",
+    "search.keyRemoved": "API Key 已移除",
+    "search.keyFromEnv": "这个 Key 来自服务器的环境变量，在这里移除不了，需要在服务器上修改。",
+    "search.lastKey": "移除后就没有可用的搜索引擎了；请先开启另一个引擎",
     "search.up": "上移",
     "search.down": "下移",
     "search.drag": "拖动调整顺序",
@@ -80,6 +84,11 @@ const COPY: CopyTable = {
     "search.keyPh.specstream": "Enter SpecStream API key",
     "search.saveKey": "Save",
     "search.keySaved": "API key saved",
+    "search.removeKey": "Remove key",
+    "search.keyRemoved": "API key removed",
+    "search.keyFromEnv":
+      "This key comes from the server's environment, so it cannot be removed here; change it on the server.",
+    "search.lastKey": "Removing it would leave no usable search engine; switch another engine on first",
     "search.up": "Move up",
     "search.down": "Move down",
     "search.drag": "Drag to reorder",
@@ -113,6 +122,8 @@ export type SearchEngine = {
   needsKey: boolean;
   acceptsKey: boolean;
   keyConfigured: boolean;
+  /** A clear would leave this key; it comes from the server's environment. */
+  keyFromEnv: boolean;
   usable: boolean;
 };
 
@@ -140,6 +151,7 @@ export function readSearchConfig(raw: unknown): SearchConfig {
       needsKey: e.needs_key === true,
       acceptsKey: e.accepts_key === true,
       keyConfigured: e.api_key_configured === true,
+      keyFromEnv: e.api_key_from_env === true,
       usable: e.usable === true,
     });
   }
@@ -149,6 +161,30 @@ export function readSearchConfig(raw: unknown): SearchConfig {
 /** Whether ``id`` may be switched off: not if it is the last usable engine. */
 export function canSwitchOff(config: SearchConfig, id: SearchEngineId): boolean {
   return config.engines.some((e) => e.id !== id && e.usable);
+}
+
+/**
+ * Whether ``id``'s saved key may be removed. The server holds a removal to the
+ * rule switching off obeys: not while the engine needs its key and nothing
+ * else is usable. A key the server's environment still holds survives the
+ * clear, so that removal is allowed — it changes nothing, and the notice says
+ * the key has to be changed on the server.
+ */
+export function canRemoveKey(config: SearchConfig, id: SearchEngineId): boolean {
+  const engine = config.engines.find((e) => e.id === id);
+  if (!engine?.keyConfigured) return false;
+  if (engine.keyFromEnv) return true;
+  return !(engine.needsKey && engine.usable) || canSwitchOff(config, id);
+}
+
+/**
+ * What to say once a removal is saved. A key set in the server's environment
+ * outlives it, and the server then still reports the key configured.
+ */
+export function keyRemovalNote(config: SearchConfig, id: SearchEngineId): { text: string; warn: boolean } {
+  return config.engines.some((e) => e.id === id && e.keyConfigured)
+    ? { text: searchT("search.keyFromEnv"), warn: true }
+    : { text: searchT("search.keyRemoved"), warn: false };
 }
 
 /** The order with ``id`` moved by ``delta`` places (clamped to the ends). */

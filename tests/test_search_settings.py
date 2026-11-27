@@ -31,6 +31,8 @@ def _clean_search_env(monkeypatch):
     for name in _KEY_ENVS:
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
+    # Nor may one test's record of what it mirrored decide another's clear.
+    monkeypatch.setattr(search_settings, "_MIRRORED", {}, raising=False)
 
 
 def _store(tmp_path):
@@ -233,6 +235,17 @@ def test_you_key_switches_the_reported_endpoint(tmp_path):
     search_settings.set_key(st, "you", "ydc-test")
     assert you()["endpoint"] == "https://ydc-index.io/v1/search"
     assert you()["api_key_configured"] is True
+
+
+def test_a_blank_key_variable_does_not_hide_a_stored_key(tmp_path, monkeypatch):
+    # `has_key` strips the variable and falls back to the broker; the mirror
+    # took " " for a key already set, so Tavily counted as usable while
+    # `webtools` saw no key and skipped it.
+    st = _store(tmp_path)
+    st.set_secret_setting("tavily_api_key", "tvly-stored", scope="search")
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", " ")
+    search_settings.load_keys_into_env(st)
+    assert webtools._tavily_key() == "tvly-stored"
 
 
 # --------------------------------------------------------------------------- #
@@ -493,6 +506,201 @@ def test_the_backups_follow_the_stored_order(tmp_path, monkeypatch):
     assert calls == [("builtin", "tavily")]
 
 
+_ONLY_TAVILY = {
+    "tavily": True,
+    "you": False,
+    "builtin": False,
+    "parallel": False,
+    "specstream": False,
+}
+
+
+def _answer_from_tavily(monkeypatch):
+    """Stub Tavily's request; record the key it would have sent."""
+    import os
+
+    keys = []
+
+    def tavily(query, num_results, timeout):
+        keys.append(os.environ.get("OPENAI4S_TAVILY_API_KEY"))
+        return [{"title": "T", "url": "https://hit.example/t", "snippet": ""}]
+
+    monkeypatch.setattr(webtools, "_tavily_search", tavily)
+    return keys
+
+
+def test_a_stored_key_reaches_a_process_that_never_mirrored_it(tmp_path, monkeypatch):
+    # `openai4s run` builds its dispatcher in-process, and only the daemon's
+    # start-up mirrored stored keys: Tavily was reported usable -- and accepted
+    # as the only engine on -- while every search here skipped it.
+    keys = _answer_from_tavily(monkeypatch)
+    dispatcher = _dispatcher(tmp_path)
+    try:
+        st = dispatcher.store
+        st.set_secret_setting("tavily_api_key", "tvly-stored", scope="search")
+        order = list(webtools.AVAILABLE_SEARCH_ENGINES)
+        search_settings.save(st, order=order, enabled=_ONLY_TAVILY)
+        dispatcher._doubao_search_service = _NoDoubao()
+        result = dispatcher._search_web("q")
+    finally:
+        dispatcher.store.close()
+    assert keys == ["tvly-stored"]
+    assert result["source"] == "tavily"
+
+
+def test_a_clear_removes_a_saved_key_and_its_mirror(tmp_path):
+    import os
+
+    st = _store(tmp_path)
+    search_settings.set_key(st, "tavily", "tvly-saved")
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert "OPENAI4S_TAVILY_API_KEY" not in os.environ
+    assert search_settings.has_key(st, "tavily") is False
+    assert search_settings.project(st)["engines"][0]["api_key_from_env"] is False
+
+
+@pytest.mark.parametrize(
+    "engine, env, value",
+    [
+        ("tavily", "OPENAI4S_TAVILY_API_KEY", "tvly-exported"),
+        ("you", "YDC_API_KEY", "ydc-exported"),
+        ("specstream", "SPECSTREAM_API_KEY", "ss-exported"),
+    ],
+)
+def test_a_clear_does_not_unset_an_exported_key(
+    tmp_path, monkeypatch, engine, env, value
+):
+    # The variable is the operator's, not a mirror of a stored secret. Popping
+    # it dropped the key for the rest of the process and the UI reported a
+    # normal removal.
+    import os
+
+    st = _store(tmp_path)
+    monkeypatch.setenv(env, value)
+    search_settings.update(st, engine=engine, clear_api_key=True)
+    assert os.environ[env] == value
+    assert search_settings.has_key(st, engine) is True
+    row = next(e for e in search_settings.project(st)["engines"] if e["id"] == engine)
+    assert row["api_key_configured"] is True
+    assert row["api_key_from_env"] is True
+
+
+def test_a_clear_keeps_an_export_and_drops_a_different_stored_key(
+    tmp_path, monkeypatch
+):
+    import os
+
+    st = _store(tmp_path)
+    search_settings.set_key(st, "tavily", "tvly-saved")
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", "tvly-exported")
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-exported"
+    assert (st.get_secret_setting("tavily_api_key") or "") == ""
+    assert search_settings.has_key(st, "tavily") is True
+
+
+def test_a_clear_drops_its_mirror_even_when_the_store_cannot_be_read(
+    tmp_path, monkeypatch
+):
+    # Told apart by comparing the variable with the stored key, the mirror
+    # passed for an export whenever that read failed (a locked keychain): the
+    # removed key kept being sent, and Settings blamed the server's environment.
+    import os
+
+    st = _store(tmp_path)
+    search_settings.set_key(st, "tavily", "tvly-saved")
+
+    def unreadable(*_args, **_kwargs):
+        raise RuntimeError("keychain locked")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(st, "get_secret_setting", unreadable)
+        search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert "OPENAI4S_TAVILY_API_KEY" not in os.environ
+    assert search_settings.has_key(st, "tavily") is False
+    assert search_settings.project(st)["engines"][0]["api_key_from_env"] is False
+
+
+def test_a_clear_puts_back_an_export_a_saved_key_overrode(tmp_path, monkeypatch):
+    # A saved key overrides an export only until a restart, where the export
+    # wins again; a clear leaves what that restart would find.
+    import os
+
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", "tvly-exported")
+    st = _store(tmp_path)
+    search_settings.set_key(st, "tavily", "tvly-saved")
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-saved"
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-exported"
+    tavily = search_settings.project(st)["engines"][0]
+    assert tavily["api_key_configured"] is True
+    assert tavily["api_key_from_env"] is True
+
+
+def test_a_clear_keeps_an_export_equal_to_the_stored_key(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", "tvly-same")
+    st = _store(tmp_path)
+    st.set_secret_setting("tavily_api_key", "tvly-same", scope="search")
+    search_settings.load_keys_into_env(st)  # the export wins: nothing mirrored
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-same"
+    assert (st.get_secret_setting("tavily_api_key") or "") == ""
+
+
+def test_clearing_an_injected_key_is_allowed_when_it_is_the_only_engine(
+    tmp_path, monkeypatch
+):
+    # The one-usable-engine rule predicted the clear would make Tavily keyless.
+    # Env-broker delete is a no-op, so Tavily would have stayed usable and the
+    # refusal hid the "change it on the server" result.
+    import os
+
+    from openai4s.security.secret_broker import EnvInjectionBackend, SecretBroker
+
+    monkeypatch.setenv("OPENAI4S_SECRET_ENV", "1")
+    monkeypatch.setenv("OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY", "tvly-injected")
+    st = _store(tmp_path)
+    st._secret_broker = SecretBroker(st, mode="env", backends=[EnvInjectionBackend()])
+    search_settings.load_keys_into_env(st)
+    search_settings.save(
+        st, order=list(webtools.AVAILABLE_SEARCH_ENGINES), enabled=_ONLY_TAVILY
+    )
+    search_settings.update(st, engine="tavily", clear_api_key=True)
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-injected"
+    assert search_settings.has_key(st, "tavily") is True
+    assert search_settings.engine_chain(st) == ("tavily",)
+
+
+def test_an_injected_key_a_clear_cannot_unset_keeps_running(tmp_path, monkeypatch):
+    # A clear cannot unset an operator-injected credential (see
+    # `Store.set_secret_setting`), so `has_key` keeps finding it; the next
+    # search must send it too rather than skip an engine reported usable.
+    from openai4s.security.secret_broker import EnvInjectionBackend, SecretBroker
+
+    keys = _answer_from_tavily(monkeypatch)
+    monkeypatch.setenv("OPENAI4S_SECRET_ENV", "1")
+    monkeypatch.setenv("OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY", "tvly-injected")
+    dispatcher = _dispatcher(tmp_path)
+    try:
+        st = dispatcher.store
+        st._secret_broker = SecretBroker(
+            st, mode="env", backends=[EnvInjectionBackend()]
+        )
+        search_settings.load_keys_into_env(st)  # the daemon's start-up
+        search_settings.update(st, engine="tavily", clear_api_key=True)
+        assert search_settings.has_key(st, "tavily")
+        order = list(webtools.AVAILABLE_SEARCH_ENGINES)
+        search_settings.save(st, order=order, enabled=_ONLY_TAVILY)
+        dispatcher._doubao_search_service = _NoDoubao()
+        result = dispatcher._search_web("q")
+    finally:
+        dispatcher.store.close()
+    assert keys == ["tvly-injected"]
+    assert result["source"] == "tavily"
+
+
 def test_an_approved_fallback_starts_at_the_picked_engine(tmp_path, monkeypatch):
     from openai4s.host import search as host_search
 
@@ -654,6 +862,86 @@ def test_route_primary_is_the_setup_choice(route):
     status, body = route("POST", {"primary": "builtin"})
     assert status == 200
     assert [e["id"] for e in body["engines"] if e["enabled"]] == ["builtin"]
+
+
+_ORDER = ["tavily", "you", "builtin", "parallel"]
+
+
+def test_route_an_exported_last_key_is_not_a_refused_removal(route, monkeypatch):
+    import os
+
+    monkeypatch.setenv("OPENAI4S_TAVILY_API_KEY", "tvly-exported")
+    status, _ = route("PUT", {"order": _ORDER, "enabled": _ONLY_TAVILY})
+    assert status == 200
+    status, body = route("POST", {"engine": "tavily", "clear_api_key": True})
+    assert status == 200
+    tavily = next(e for e in body["engines"] if e["id"] == "tavily")
+    assert tavily["api_key_configured"] is True
+    assert tavily["api_key_from_env"] is True
+    assert os.environ["OPENAI4S_TAVILY_API_KEY"] == "tvly-exported"
+
+
+def test_route_refuses_removing_the_key_the_last_usable_engine_needs(route):
+    route("POST", {"engine": "tavily", "api_key": "tvly-route"})
+    status, _ = route("PUT", {"order": _ORDER, "enabled": _ONLY_TAVILY})
+    assert status == 200
+    # Held to the rule that keeps Tavily's switch on: the user switches
+    # another engine on first, rather than every search coming back empty.
+    status, body = route("POST", {"engine": "tavily", "clear_api_key": True})
+    assert status == 400 and "switch another engine on first" in body["error"]
+    _, body = route("GET")
+    assert body["api_key_configured"] is True
+    status, _ = route(
+        "PUT", {"order": _ORDER, "enabled": {**_ONLY_TAVILY, "builtin": True}}
+    )
+    assert status == 200
+    status, body = route("POST", {"engine": "tavily", "clear_api_key": True})
+    assert status == 200 and body["api_key_configured"] is False
+
+
+def test_route_refuses_removing_specstreams_key_as_the_last_usable_engine(route):
+    # SpecStream needs its key as Tavily does, so removing it while it is the
+    # only usable engine is refused the same way.
+    only_specstream = {**_ONLY_TAVILY, "tavily": False, "specstream": True}
+    order = list(webtools.AVAILABLE_SEARCH_ENGINES)
+    route("POST", {"engine": "specstream", "api_key": "ss-route"})
+    status, _ = route("PUT", {"order": order, "enabled": only_specstream})
+    assert status == 200
+    status, body = route("POST", {"engine": "specstream", "clear_api_key": True})
+    assert status == 400 and "switch another engine on first" in body["error"]
+    _, body = route("GET")
+    specstream = next(e for e in body["engines"] if e["id"] == "specstream")
+    assert specstream["api_key_configured"] is True
+
+
+def test_route_a_refused_write_changes_nothing(route):
+    import os
+
+    route("POST", {"engine": "tavily", "api_key": "tvly-route"})
+    _, before = route("GET")
+    bad_order = {"order": ["tavily"], "enabled": {"tavily": True}}
+    # The key used to be cleared, or stored, before the order was refused.
+    status, _ = route("POST", {"engine": "tavily", "clear_api_key": True, **bad_order})
+    assert status == 400
+    status, _ = route("POST", {"engine": "you", "api_key": "ydc-new", **bad_order})
+    assert status == 400
+    _, after = route("GET")
+    assert after == before
+    assert "YDC_API_KEY" not in os.environ
+
+
+def test_route_refuses_a_key_that_is_not_one_line_of_text(route):
+    import os
+
+    # The broker's refusal of a line break, and `.strip()` on a number, used to
+    # escape the route as unhandled errors instead of a 400.
+    for bad in ("tvly-A\nB", "tvly-A\rB", "tvly-A\x00B", 12345):
+        status, body = route("POST", {"engine": "tavily", "api_key": bad})
+        assert status == 400, bad
+        assert "tvly-A" not in body["error"]
+    _, body = route("GET")
+    assert body["api_key_configured"] is False
+    assert "OPENAI4S_TAVILY_API_KEY" not in os.environ
 
 
 # --------------------------------------------------------------------------- #

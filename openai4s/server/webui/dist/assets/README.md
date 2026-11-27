@@ -8,7 +8,7 @@ Committed output of `frontend/` (`npm run build`). The gateway serves this tree 
 
 | File | Responsibility |
 | --- | --- |
-| `CapabilityBadges-BX1jVVRa.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `CapabilityBadges-C14sJ-4Z.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `KaTeX_AMS-Regular-BQhdFMY1.woff2` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `KaTeX_AMS-Regular-DMm9YOAa.woff` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `KaTeX_AMS-Regular-DRggAlZN.ttf` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
@@ -70,12 +70,12 @@ Committed output of `frontend/` (`npm run build`). The gateway serves this tree 
 | `KaTeX_Typewriter-Regular-CO6r4hn1.woff2` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `KaTeX_Typewriter-Regular-D3Ib7_Hf.ttf` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `en-BRK109D2.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `index-DNVC4zeg.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `index-B8O1NKC2.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `index-Eh7Ognhd.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `katex-DAR36jk3.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `katex-IejJBL89.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `mount-BsahTPsu.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `mount-BS64X8so.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `mount-Bv08Oltp.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `mount-D8suk1Qe.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `mount-C2k5w5AK.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `mount-DB7w1lOG.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `zh-CbWSriuu.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
