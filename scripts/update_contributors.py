@@ -83,12 +83,15 @@ EXCLUDE = {"github-actions[bot]", "dependabot[bot]", "actions-user"}
 # repeated-action continuation failures in #174, addressed by #175.
 # `georgeatparallel` contributed the opt-in keyless Parallel search engine in
 # #254; the entry drops out on its own once the API lists the login.
+# `Specstreamai` contributed the opt-in keyed SpecStream search engine in #277;
+# the entry drops out on its own once the API lists the login.
 RECOGNIZED_CONTRIBUTORS = (
     "EQSTLab",
     "difficulttopickaname",
     "ChampionZhong",
     "Pandasama2025",
     "georgeatparallel",
+    "Specstreamai",
 )
 _UA = {"User-Agent": "openai4s-contributors-script"}
 
