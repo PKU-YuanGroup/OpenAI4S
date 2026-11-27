@@ -109,12 +109,12 @@ Get-FileHash .\OpenAI4S-1.0.2-windows-x86_64.zip -Algorithm SHA256
 OpenAI4S.cmd
 ```
 
-**Windows 验证范围：**1.0.0 的 x86_64 ZIP 在发布后于 Windows Server 2025 + Ubuntu 24.04 WSL2
+**Windows 验证范围：**1.0.2 的 x86_64 ZIP 在发布后于 Windows Server 2025 + Ubuntu 24.04 WSL2
 上通过了运行验收：随包启动器、在 Windows Chromium 浏览器中通过认证打开工作台、九项科学与
 运行时检查（包括绘图、不可变 Artifact 与重启后回读）、status/stop，以及强制启用的 bubblewrap
 隔离。验收未使用模型凭据，启动器仍未签名；Windows on ARM 与完整的 Windows 10/11 主机矩阵未经测试。
-1.0.1 与 1.0.2 的启动器与 1.0.0 相同，两者的 ZIP 都通过了发布 workflow 的 `verify_windows_zip.py`，
-但都没有重新做这次 Windows 主机验收。
+1.0.0 的 ZIP 通过过同一验收。1.0.1 的启动器与之相同，其 ZIP 通过了发布 workflow 的
+`verify_windows_zip.py`，但没有做这次 Windows 主机验收。
 
 启动器会依次完成：
 
@@ -343,15 +343,15 @@ no global WSL configuration change is needed.
    only if they match. This is a complete ZIP; no `Restore-ZIP.cmd` or split-file
    restoration is needed. Extract all files, then double-click `OpenAI4S.cmd`.
 
-**Windows validation:** the 1.0.0 x86_64 ZIP passed a post-publication runtime run
+**Windows validation:** the 1.0.2 x86_64 ZIP passed a post-publication runtime run
 on Windows Server 2025 with Ubuntu 24.04 WSL2: the shipped launcher, the
 authenticated dashboard in a Windows Chromium browser, nine science and runtime
 checks (plots, immutable artifacts and restart read-back among them),
 status/stop, and enforced bubblewrap isolation. The run used no model
 credentials, and the launcher remains unsigned. Windows on ARM and the full
-Windows 10/11 host matrix were not exercised. 1.0.1 and 1.0.2 ship the same
-launcher; each ZIP passed the release workflow's `verify_windows_zip.py`, and
-the Windows host run has not been repeated for either.
+Windows 10/11 host matrix were not exercised. The 1.0.0 ZIP passed the same
+run. 1.0.1 shipped the same launcher and passed the release workflow's
+`verify_windows_zip.py`, without the host run.
 
 The ZIP carries the complete Linux application, so first installation is
 offline. The launcher refuses WSL1, performs a real bubblewrap namespace test,

@@ -220,7 +220,7 @@ cd OpenAI4S-1.0.2-linux-x86_64
 
 下载[完整的 1.0.2 Windows ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-windows-x86_64.zip) 与 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/SHA256SUMS)，按 [Windows/WSL2 指南](docs/windows-wsl.md#中文)校验 ZIP 后，完整解压并双击 `OpenAI4S.cmd`，无需合并分卷。首次运行会检查 WSL2 与可工作的 bubblewrap 0.8.0+ 沙箱，校验并安装随包 Linux payload，创建 `~/.local/bin/openai4s`，在 WSL 中启动守护进程，再用 Windows 浏览器打开带本地登录引导的安全 URL。应用本体不下载、不 `pip`、不装工具链；支持基线是 Ubuntu 24.04，启动器可配置国内 PyPI/Conda 镜像以及 WSL 可访问的代理。
 
-**Windows 验证范围：**1.0.0 的 x86_64 ZIP 在发布后于 Windows Server 2025 + Ubuntu 24.04 WSL2 上通过了运行验收：随包启动器、在 Windows Chromium 浏览器中通过认证打开工作台、九项科学与运行时检查（包括绘图、不可变 Artifact 与重启后回读）、status/stop，以及强制启用的 bubblewrap 隔离。这次验收没有使用模型凭据，启动器也仍未签名。Windows on ARM 与完整的 Windows 10/11 主机矩阵未经测试。1.0.1 与 1.0.2 的启动器与 1.0.0 相同，两者的 ZIP 都通过了发布 workflow 的 `verify_windows_zip.py`，但都没有重新做这次 Windows 主机验收。
+**Windows 验证范围：**1.0.2 的 x86_64 ZIP 在发布后于 Windows Server 2025 + Ubuntu 24.04 WSL2 上通过了运行验收：随包启动器、在 Windows Chromium 浏览器中通过认证打开工作台、九项科学与运行时检查（包括绘图、不可变 Artifact 与重启后回读）、status/stop，以及强制启用的 bubblewrap 隔离。这次验收没有使用模型凭据，启动器也仍未签名。Windows on ARM 与完整的 Windows 10/11 主机矩阵未经测试。1.0.0 的 ZIP 通过过同一验收。1.0.1 的启动器与之相同，其 ZIP 通过了发布 workflow 的 `verify_windows_zip.py`，但没有做这次 Windows 主机验收。
 
 `v0.3.0` 是第一个发布这个安装包的版本，它的验收证据只覆盖 x86_64 上的 WSL2 和测试所用的 Ubuntu 24.04 发行版。[WSL2 一致性审计](docs/windows-wsl-parity-audit_zh.md)的最后一节（「修复验收记录 — 2026-09-07」）列出以下尚未验证的范围：
 
