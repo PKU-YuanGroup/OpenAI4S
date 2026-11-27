@@ -2,9 +2,11 @@
 
 [中文说明](upgrading_zh.md)
 
-An install that is already on 1.0.1 reads the next section before the first
-start of the release after it. An install that is already on 1.0.0 reads
-"Upgrading to 1.0.1" before the first start of 1.0.1. An install that is already on 0.3.1 reads "Upgrading to 1.0.0"
+An install that is already on 1.0.1 reads "Upgrading to 1.0.2" before the
+first start of 1.0.2. An install that is already on 1.0.0 reads
+"Upgrading to 1.0.1" before the first start of 1.0.1; one that goes straight
+to 1.0.2 reads that section and "Upgrading to 1.0.2", and its first open
+migrates schema 36 to 45. An install that is already on 0.3.1 reads "Upgrading to 1.0.0"
 before the first start of 1.0.0; one that goes straight to 1.0.1 reads that
 section and "Upgrading to 1.0.1", and its first open migrates schema 35 to 43.
 An install that is already on 0.3.0 reads "Upgrading to 0.3.1" before the first
@@ -19,11 +21,22 @@ tested on one upgrade path before it is published; "How a release tests the
 upgrade" at the end of this page says which data and which channel that covers
 and how to roll back.
 
-## Upgrading to the release after 1.0.1 (schema 43 → 45)
+## Upgrading to 1.0.2 (schema 43 → 45)
 
 Stop the daemon (`openai4s stop`, then check `openai4s status`) and copy the
 whole data directory while nothing is running, including any
-`openai4s.db-wal` or `openai4s.db-journal` file, exactly as for 1.0.1 below.
+`openai4s.db-wal` or `openai4s.db-journal` file:
+
+```bash
+cp -a ~/.openai4s ~/.openai4s-before-1.0.2
+```
+
+Where the data directory is, and what to back up for a container, is the same
+as in "Upgrading to 1.0.1" below. For an existing PyPI installation, activate
+its environment and run
+`python -m pip install --upgrade "openai4s[science]==1.0.2"`. For a source
+checkout, `git fetch --tags && git checkout v1.0.2 && git submodule update --init third_party/OpenMHS`,
+then `./setup.sh`.
 
 The first command that opens the database migrates it from schema 43 to 45.
 Migration 44 adds one nullable column and migration 45 creates one table,
@@ -36,11 +49,25 @@ that 1.0.1 stored is rewritten or removed:
 | 45 | `message_admissions`: submission receipts for plain messages, so a browser whose `POST /frames/{fid}/message` answer was lost asks what happened instead of sending the turn again |
 
 This upgrade path — data written by the 1.0.1 Linux x86_64 bundle, migrated
-and read back by the new bundle, then the pre-migration copy restored and read
-by 1.0.1 again — is the one the release runs before it is published; see
-"How a release tests the upgrade" at the end of this page. To go back to
-1.0.1, stop the daemon and restore the copy you made: 1.0.1 refuses a schema
-45 database with `future_schema` before it writes anything.
+and read back by the 1.0.2 bundle, then the pre-migration copy restored and
+read by 1.0.1 again — is the one the release ran before it was published; see
+"How a release tests the upgrade" at the end of this page.
+
+As in every upgrade, the migration first copies the database to a file named
+for the schema it is leaving (`openai4s.db.v43.bak` for a 1.0.1 database) and
+deletes that copy once it succeeds, so it is not a way back. Downgrade is
+unsupported: 1.0.1 refuses a schema 45 database with `future_schema` before it
+writes anything. To go back to 1.0.1, stop 1.0.2 and restore the copy you
+made:
+
+```bash
+mv ~/.openai4s ~/.openai4s-1.0.2
+cp -a ~/.openai4s-before-1.0.2 ~/.openai4s
+```
+
+Install 1.0.1 again before anything opens the restored copy: for PyPI,
+`python -m pip install "openai4s[science]==1.0.1"`. Anything created under
+1.0.2 is absent from that copy.
 
 What an API client sees change:
 
@@ -61,6 +88,9 @@ What an API client sees change:
   404 read `llm_model_not_found`; those two codes remain only for the same
   provider codes on another status. Failures stored by 1.0.1 keep their codes.
 - `GET /onboarding` adds `completed_explicitly`; `complete` keeps its meaning.
+- A package install is approved one request at a time. A standing allow rule
+  for an install that 1.0.1 stored is ignored, and `POST /permissions` refuses
+  a new one with 400 `install_rule_refused`.
 
 ## Upgrading to 1.0.1 (schema 36 → 43)
 
