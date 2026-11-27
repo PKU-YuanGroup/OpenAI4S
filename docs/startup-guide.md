@@ -1,6 +1,6 @@
 <a id="en"></a>
 
-# Startup guide — macOS 1.0.1
+# Startup guide — macOS 1.0.2
 
 **English** · [简体中文](#zh)
 
@@ -8,10 +8,10 @@ This walks a new macOS user to a first answer: install OpenAI4S, point it at a
 model, and (so the agent can read the live literature and databases) point it
 at web search.
 
-> **On Apple Silicon, install the [1.0.1 DMG](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg)**
-> from the [v1.0.1 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1).
+> **On Apple Silicon, install the [1.0.2 DMG](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-macos-arm64.dmg)**
+> from the [v1.0.2 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.2).
 > It is ad-hoc signed, not notarized. **On Intel, or if you prefer a virtual
-> environment, install [1.0.1 from PyPI](https://pypi.org/project/openai4s/1.0.1/).**
+> environment, install [1.0.2 from PyPI](https://pypi.org/project/openai4s/1.0.2/).**
 
 For Linux and Windows downloads, see the [release download table](../README.md#-quickstart)
 and [Windows/WSL2 guide](windows-wsl.md#english). Containers use the
@@ -23,18 +23,18 @@ as described in the [Docker guide](docker.md).
 ## 1. Install
 
 Upgrading an existing installation? Stop the daemon and copy the whole data
-directory before installing 1.0.1. It migrates the database to schema 43
-(1.0.0 used 36), and older versions refuse the upgraded database; follow the
+directory before installing 1.0.2. It migrates the database to schema 45
+(1.0.1 used 43), and older versions refuse the upgraded database; follow the
 [upgrade guide](upgrading.md).
 
 ### The Apple Silicon app (DMG)
 
-1. From the [v1.0.1 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1),
-   download `OpenAI4S-1.0.1-macos-arm64.dmg` and
-   `OpenAI4S-1.0.1-macos-arm64.dmg.sha256` into the same folder. In Terminal,
+1. From the [v1.0.2 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.2),
+   download `OpenAI4S-1.0.2-macos-arm64.dmg` and
+   `OpenAI4S-1.0.2-macos-arm64.dmg.sha256` into the same folder. In Terminal,
    change to that folder and run
-   `shasum -a 256 -c OpenAI4S-1.0.1-macos-arm64.dmg.sha256`. It must print
-   `OpenAI4S-1.0.1-macos-arm64.dmg: OK`.
+   `shasum -a 256 -c OpenAI4S-1.0.2-macos-arm64.dmg.sha256`. It must print
+   `OpenAI4S-1.0.2-macos-arm64.dmg: OK`.
 2. Double-click the `.dmg` to mount it.
 3. **Drag `OpenAI4S` onto the `Applications` folder** in the same window.
 4. Eject the disk image and launch **OpenAI4S** from Applications (or Spotlight).
@@ -48,11 +48,12 @@ Apple Silicon only; R and the OpenMHS lab are separate installs (§5 and the
 [OpenMHS guide](openmhs.md)).
 
 Older images stay on the
+[v1.0.1](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1),
 [v1.0.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0),
 [v0.3.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0) and
 [v0.2.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0)
 release pages. They install those older versions and must not open a data
-directory that 1.0.1 has upgraded.
+directory that 1.0.2 has upgraded.
 
 ### From PyPI (Apple Silicon and Intel)
 
@@ -61,13 +62,13 @@ into a virtual environment of its own, then start the daemon:
 
 ```bash
 python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
-python -m pip install --upgrade "openai4s[science]==1.0.1"
+python -m pip install --upgrade "openai4s[science]==1.0.2"
 openai4s --version
 openai4s serve
 ```
 
 The `science` extra adds numpy, pandas, matplotlib, scikit-learn, openpyxl,
-statsmodels and seaborn to the environment the Python kernel runs in. Use `"openai4s[science,chemistry]==1.0.1"` if
+statsmodels and seaborn to the environment the Python kernel runs in. Use `"openai4s[science,chemistry]==1.0.2"` if
 you also want RDKit. `openai4s serve` starts the local daemon and opens the
 workbench in your browser with its access token. All data (SQLite database,
 artifacts, logs) lives under `~/.openai4s`. Next time, run
@@ -238,13 +239,13 @@ stay available behind it.
 
 <a id="zh"></a>
 
-# 上手指南 — macOS 1.0.1
+# 上手指南 — macOS 1.0.2
 
 [English](#en) · **简体中文**
 
 本指南带一位全新的 macOS 用户走到第一个结果：装好 OpenAI4S、配好模型，再配好联网搜索（让智能体能读实时文献与数据库）。
 
-> **Apple Silicon 请安装 [1.0.1 DMG](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg)**（见 [v1.0.1 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1)），它是 ad-hoc 签名、未经公证的镜像。**Intel Mac，或更想用虚拟环境时，请[从 PyPI 安装 1.0.1](https://pypi.org/project/openai4s/1.0.1/)。**
+> **Apple Silicon 请安装 [1.0.2 DMG](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-macos-arm64.dmg)**（见 [v1.0.2 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.2)），它是 ad-hoc 签名、未经公证的镜像。**Intel Mac，或更想用虚拟环境时，请[从 PyPI 安装 1.0.2](https://pypi.org/project/openai4s/1.0.2/)。**
 
 Linux 与 Windows 下载见 [release 下载表](../README_zh.md#-快速开始)和 [Windows/WSL2 指南](windows-wsl.md#中文)。容器请使用[公开 GHCR 镜像](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)，步骤见 [Docker 指南](docker.md#zh)。
 
@@ -252,18 +253,18 @@ Linux 与 Windows 下载见 [release 下载表](../README_zh.md#-快速开始)�
 
 ## 1. 安装
 
-升级已有安装时，请先停止守护进程并复制整个数据目录，再安装 1.0.1。它会把数据库升到 schema 43（1.0.0 为 36），旧版本会拒绝打开升级后的数据库；请按[升级指南](upgrading_zh.md)操作。
+升级已有安装时，请先停止守护进程并复制整个数据目录，再安装 1.0.2。它会把数据库升到 schema 45（1.0.1 为 43），旧版本会拒绝打开升级后的数据库；请按[升级指南](upgrading_zh.md)操作。
 
 ### Apple Silicon 应用（DMG）
 
-1. 从 [v1.0.1 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1)把 `OpenAI4S-1.0.1-macos-arm64.dmg` 和 `OpenAI4S-1.0.1-macos-arm64.dmg.sha256` 下载到同一目录。在终端里进入该目录，运行 `shasum -a 256 -c OpenAI4S-1.0.1-macos-arm64.dmg.sha256`，必须输出 `OpenAI4S-1.0.1-macos-arm64.dmg: OK`。
+1. 从 [v1.0.2 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.2)把 `OpenAI4S-1.0.2-macos-arm64.dmg` 和 `OpenAI4S-1.0.2-macos-arm64.dmg.sha256` 下载到同一目录。在终端里进入该目录，运行 `shasum -a 256 -c OpenAI4S-1.0.2-macos-arm64.dmg.sha256`，必须输出 `OpenAI4S-1.0.2-macos-arm64.dmg: OK`。
 2. 双击 `.dmg` 挂载。
 3. 在弹出的窗口里，**把 `OpenAI4S` 拖到 `Applications`（应用程序）文件夹**。
 4. 推出磁盘镜像，从「应用程序」（或聚焦搜索 Spotlight）启动 **OpenAI4S**。
 
 镜像已内嵌 Python 3.13 以及默认内核科学栈——numpy · pandas · scipy · matplotlib · seaborn · plotly · **rdkit**（化学信息学）· **scanpy** 及单细胞栈（anndata · leidenalg · igraph）· umap · numba · scikit-learn · statsmodels · biopython · h5py · zarr · pyarrow——所以首次启动**不联网、不 `pip`**。它只支持 Apple Silicon；R 与 OpenMHS 实验室需要另行安装（见第 5 节与 [OpenMHS 指南](openmhs_zh.md)）。
 
-旧镜像仍在 [v1.0.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0)、[v0.3.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0) 与 [v0.2.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0) 的 release 页面。它们安装的是对应的旧版本，不能打开已被 1.0.1 升级过的数据目录。
+旧镜像仍在 [v1.0.1](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1)、[v1.0.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.0)、[v0.3.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0) 与 [v0.2.0](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0) 的 release 页面。它们安装的是对应的旧版本，不能打开已被 1.0.2 升级过的数据目录。
 
 ### 从 PyPI 安装（Apple Silicon 与 Intel）
 
@@ -271,12 +272,12 @@ Linux 与 Windows 下载见 [release 下载表](../README_zh.md#-快速开始)�
 
 ```bash
 python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
-python -m pip install --upgrade "openai4s[science]==1.0.1"
+python -m pip install --upgrade "openai4s[science]==1.0.2"
 openai4s --version
 openai4s serve
 ```
 
-`science` extra 会把 numpy、pandas、matplotlib、scikit-learn、openpyxl、statsmodels 和 seaborn 装进 Python 内核所用的环境；如果还需要 RDKit，请用 `"openai4s[science,chemistry]==1.0.1"`。`openai4s serve` 会启动本地守护进程，并用访问令牌在浏览器里打开工作台。所有数据（SQLite 数据库、Artifact、日志）都写在 `~/.openai4s`。下次使用时，再运行一次 `source ~/.venvs/openai4s/bin/activate && openai4s serve`。
+`science` extra 会把 numpy、pandas、matplotlib、scikit-learn、openpyxl、statsmodels 和 seaborn 装进 Python 内核所用的环境；如果还需要 RDKit，请用 `"openai4s[science,chemistry]==1.0.2"`。`openai4s serve` 会启动本地守护进程，并用访问令牌在浏览器里打开工作台。所有数据（SQLite 数据库、Artifact、日志）都写在 `~/.openai4s`。下次使用时，再运行一次 `source ~/.venvs/openai4s/bin/activate && openai4s serve`。
 
 ## 2. 仅适用于 DMG —— 通过 Gatekeeper
 

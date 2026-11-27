@@ -74,6 +74,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## 📣 更新
 
+- **`2026-11-27`** 🧪 **[`v1.0.2`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.2) —— 可靠性版本** —— 四轮以真实模型、真实科研任务进行的可用性评审共提出 345 个问题，本版全部修复。消息现在带有提交回执：应答丢失或刷新页面后，浏览器会查询结果，而不是把这一轮再发一次。模型反复宣布要运行代码却不发出代码时，会得到由引擎负责的 `run_cell`；与未执行的单元同时发出的最终回答会被拒绝。安装软件包每次都会询问，并装进内核实际使用的解释器。历史打开的是每一步当时产生的确切产物版本；对话失败时会说明原因，并给出模型设置的入口。本版还新增离线只读 HTML 导出、可选的 **SpecStream** 搜索和中文 CLI 输出，并且首次在发布前实测升级路径（1.0.1 写入的数据，迁移后逐字节回读）。数据库从 schema 43 升到 45；首次启动前请阅读 **[升级到 1.0.2](docs/upgrading_zh.md)**。
 - **`2026-11-17`** 🛠️ **[`v1.0.1`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1) —— 跟上方舟 Agent Plan，并带来智能体强化学习运行时** —— 方舟 Agent Plan 已下线 1.0.0 的默认模型，全新的方舟配置因此在第一条消息就失败；默认模型改为 `doubao-seed-2.1-pro`，预设与套餐模型表一致。默认输出预算从 4096 提高到 16384 token，给推理模型留出作答空间；连续两次空回复即以 `no_progress` 停止，不再空转。失败的子代理现在会作为失败返回给父任务；本地登录有效期改为 30 天，不再随浏览器会话结束。本版同时带来智能体强化学习运行时、可选的匿名 **Parallel Search**，以及首次设置中的**接入点模型发现**。数据库从 schema 36 升到 43，首次启动前请先阅读 **[升级到 1.0.1](docs/upgrading_zh.md)**。
 - **`2026-11-12`** 🤖 **Agentic RL runtime** —— OpenAI4S 现在也可以作为强化学习的环境：外部 Trainer 负责采样策略，Agent 用真实的工具、权限与内核执行，新增的 `openai4s/rl` 包把每次 rollout 记录成版本化的 Science Trajectory，并导出确定性的 JSON/JSONL 训练数据，以及 Harbor 使用的 ATIF-v1.8 交换格式。Reward、Cost、准入与预算保持为独立的追加式记录；中断的 rollout 会 fail closed，而不是被重放。→ [RL runtime](openai4s/rl/README_zh.md)
 - **`2026-11`** 🔭 **`main` —— `v1.0.0` 之后** —— 新增可选的匿名 **Parallel Search**，作为免密钥的备用联网搜索引擎（默认关闭；`openai4s init --search parallel`）；**首次设置**新增**接入点模型发现**：「从端点获取模型」会列出 Ark/OpenAI 兼容、Responses、Anthropic、Gemini 或 Ollama 接入点实际提供的模型 id，不再靠猜默认值。两者都已随上方的 `v1.0.1` 发布。→ [配置](docs/configuration.md)
@@ -150,21 +151,21 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## ⚡ 快速开始
 
-**当前版本：[1.0.1](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.1)。** 请按下表选择安装渠道。已有 1.0.0 或更早版本数据时，请先停止守护进程并备份整个数据目录，再安装：1.0.1 会把数据库升到 schema 43（1.0.0 为 36），且不支持退回。详见[升级指南](docs/upgrading_zh.md)。
+**当前版本：[1.0.2](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v1.0.2)。** 请按下表选择安装渠道。已有 1.0.1 或更早版本数据时，请先停止守护进程并备份整个数据目录，再安装：1.0.2 会把数据库升到 schema 45（1.0.1 为 43），且不支持退回。详见[升级指南](docs/upgrading_zh.md)。
 
-| 渠道 | 1.0.1 下载 |
+| 渠道 | 1.0.2 下载 |
 | --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg)（[SHA-256](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg.sha256)），ad-hoc 签名，未经公证 |
-| Linux x86_64 | [独立 tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-linux-x86_64.tar.gz) |
-| Windows x86_64，需 WSL2 | [完整 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-windows-x86_64.zip) |
-| Python，包括 Intel Mac | [PyPI：openai4s 1.0.1](https://pypi.org/project/openai4s/1.0.1/) |
-| 容器（linux/amd64） | [GHCR：openai4s](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)，标签 `1.0.1` |
-| 下载验证 | [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/SHA256SUMS) · [构建与验证资料](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/openai4s-1.0.1-evidence.zip) · [macOS 验证记录](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64-validation.json) |
+| macOS Apple Silicon | [DMG](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-macos-arm64.dmg)（[SHA-256](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-macos-arm64.dmg.sha256)），ad-hoc 签名，未经公证 |
+| Linux x86_64 | [独立 tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-linux-x86_64.tar.gz) |
+| Windows x86_64，需 WSL2 | [完整 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-windows-x86_64.zip) |
+| Python，包括 Intel Mac | [PyPI：openai4s 1.0.2](https://pypi.org/project/openai4s/1.0.2/) |
+| 容器（linux/amd64） | [GHCR：openai4s](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)，标签 `1.0.2` |
+| 下载验证 | [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/SHA256SUMS) · [构建与验证资料](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/openai4s-1.0.2-evidence.zip) · [macOS 验证记录](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-macos-arm64-validation.json) |
 
 从已发布的源码运行（`--recursive` 会一并拉取 OpenMHS 实验室子模块）：
 
 ```bash
-git clone --recursive --branch v1.0.1 https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
+git clone --recursive --branch v1.0.2 https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 ./setup.sh     # 一次性:用 uv 创建环境
 ./start.sh     # 启动 Web UI(http://127.0.0.1:8760/)
 ```
@@ -174,12 +175,12 @@ git clone --recursive --branch v1.0.1 https://github.com/PKU-YuanGroup/OpenAI4S 
 ### macOS
 
 > [!NOTE]
-> **1.0.1 提供 ad-hoc 签名的 Apple Silicon DMG。** 它没有 Developer ID 签名，也未经 Apple 公证，所以首次启动会被 macOS 拦下，需要手动放行。Intel Mac，以及更想用虚拟环境的用户，请改用 [PyPI 1.0.1](https://pypi.org/project/openai4s/1.0.1/)。
+> **1.0.2 提供 ad-hoc 签名的 Apple Silicon DMG。** 它没有 Developer ID 签名，也未经 Apple 公证，所以首次启动会被 macOS 拦下，需要手动放行。Intel Mac，以及更想用虚拟环境的用户，请改用 [PyPI 1.0.2](https://pypi.org/project/openai4s/1.0.2/)。
 
-**Apple Silicon 应用。** 把 [OpenAI4S-1.0.1-macos-arm64.dmg](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg) 和它的 [SHA-256 文件](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-macos-arm64.dmg.sha256)下载到同一目录，然后校验：
+**Apple Silicon 应用。** 把 [OpenAI4S-1.0.2-macos-arm64.dmg](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-macos-arm64.dmg) 和它的 [SHA-256 文件](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-macos-arm64.dmg.sha256)下载到同一目录，然后校验：
 
 ```bash
-shasum -a 256 -c OpenAI4S-1.0.1-macos-arm64.dmg.sha256   # 必须输出：OpenAI4S-1.0.1-macos-arm64.dmg: OK
+shasum -a 256 -c OpenAI4S-1.0.2-macos-arm64.dmg.sha256   # 必须输出：OpenAI4S-1.0.2-macos-arm64.dmg: OK
 ```
 
 打开 DMG，把 **OpenAI4S** 拖进「应用程序」，推出磁盘镜像后启动应用。如果首次启动被拦截，到「**系统设置 → 隐私与安全性**」点 **仍要打开**。应用内嵌 Python 3.13 与默认科学栈，会启动本地守护进程并在浏览器里打开工作台。
@@ -188,7 +189,7 @@ shasum -a 256 -c OpenAI4S-1.0.1-macos-arm64.dmg.sha256   # 必须输出：OpenAI
 
 ```bash
 python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
-python -m pip install --upgrade "openai4s[science]==1.0.1"   # 需要 RDKit 时用 "openai4s[science,chemistry]==1.0.1"
+python -m pip install --upgrade "openai4s[science]==1.0.2"   # 需要 RDKit 时用 "openai4s[science,chemistry]==1.0.2"
 openai4s serve                    # 启动守护进程，并用访问令牌打开工作台
 ```
 
@@ -199,16 +200,16 @@ openai4s serve                    # 启动守护进程，并用访问令牌打�
 1. **模型 API** —— **首次设置**向导会一步步引导；之后也可以在 **设置（⚙）→ 模型** 里修改。选协议（**ark 兼容协议** 对应豆包/GLM/Kimi/DeepSeek，或 **OpenAI 兼容协议**、**OpenAI Responses 协议**、**Anthropic 兼容协议**、**Gemini 兼容协议**，以及对应云端或本地模型的 **Ollama**），粘贴 **API Key**，保存并设为当前配置。在向导里点「从端点获取模型」，会列出你的接入点实际提供的模型 id。最省钱：用火山方舟 ¥9.9/月 套餐的 `ark` 协议。
 2. **搜索 API** *（可选、推荐）* —— 打开 **设置（⚙）→ 网络**，保持 **允许联网** 打开，把火山方舟 **Agent Plan Key** 粘进主选的**豆包搜索**卡片 → **保存凭证**。当前模型是火山方舟 **Agent Plan** 时可以跳过这一步：OpenAI4S 会把它的 Key 自动设为豆包搜索和 DataPro 专业数据库的默认凭证，之后换用别的模型也无需重新设置。Tavily、You.com 与内置免密钥引擎仍是可调整顺序的备用引擎，匿名 Parallel 和需 Key 的 SpecStream 可以手动开启；豆包专用健康检查不会把备用结果冒充豆包成功。
 
-1.0.1 完整流程（安装 → 模型 → 搜索 → R 内核）见：**[上手指南](docs/startup-guide.md#zh)**。
+1.0.2 完整流程（安装 → 模型 → 搜索 → R 内核）见：**[上手指南](docs/startup-guide.md#zh)**。
 
 ### Linux 应用（无需任何工具链）
 
-将 [1.0.1 Linux tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-linux-x86_64.tar.gz) 与 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/SHA256SUMS) 下载到同一目录，校验后解包到任意位置运行。它内嵌自带的 Python 和预装科学栈，形态是一个可任意移动的目录：
+将 [1.0.2 Linux tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-linux-x86_64.tar.gz) 与 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/SHA256SUMS) 下载到同一目录，校验后解包到任意位置运行。它内嵌自带的 Python 和预装科学栈，形态是一个可任意移动的目录：
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS   # Linux tarball 必须显示 OK
-tar -xzf OpenAI4S-1.0.1-linux-x86_64.tar.gz
-cd OpenAI4S-1.0.1-linux-x86_64
+tar -xzf OpenAI4S-1.0.2-linux-x86_64.tar.gz
+cd OpenAI4S-1.0.2-linux-x86_64
 ./OpenAI4S          # 启动守护进程并打开 http://127.0.0.1:8760/
 ./install.sh        # 可选：把 `openai4s` 挂到 PATH，并注册应用菜单项
 ```
@@ -217,9 +218,9 @@ cd OpenAI4S-1.0.1-linux-x86_64
 
 ### Windows（经由 WSL2）
 
-下载[完整的 1.0.1 Windows ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/OpenAI4S-1.0.1-windows-x86_64.zip) 与 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.1/SHA256SUMS)，按 [Windows/WSL2 指南](docs/windows-wsl.md#中文)校验 ZIP 后，完整解压并双击 `OpenAI4S.cmd`，无需合并分卷。首次运行会检查 WSL2 与可工作的 bubblewrap 0.8.0+ 沙箱，校验并安装随包 Linux payload，创建 `~/.local/bin/openai4s`，在 WSL 中启动守护进程，再用 Windows 浏览器打开带本地登录引导的安全 URL。应用本体不下载、不 `pip`、不装工具链；支持基线是 Ubuntu 24.04，启动器可配置国内 PyPI/Conda 镜像以及 WSL 可访问的代理。
+下载[完整的 1.0.2 Windows ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/OpenAI4S-1.0.2-windows-x86_64.zip) 与 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v1.0.2/SHA256SUMS)，按 [Windows/WSL2 指南](docs/windows-wsl.md#中文)校验 ZIP 后，完整解压并双击 `OpenAI4S.cmd`，无需合并分卷。首次运行会检查 WSL2 与可工作的 bubblewrap 0.8.0+ 沙箱，校验并安装随包 Linux payload，创建 `~/.local/bin/openai4s`，在 WSL 中启动守护进程，再用 Windows 浏览器打开带本地登录引导的安全 URL。应用本体不下载、不 `pip`、不装工具链；支持基线是 Ubuntu 24.04，启动器可配置国内 PyPI/Conda 镜像以及 WSL 可访问的代理。
 
-**Windows 验证范围：**1.0.0 的 x86_64 ZIP 在发布后于 Windows Server 2025 + Ubuntu 24.04 WSL2 上通过了运行验收：随包启动器、在 Windows Chromium 浏览器中通过认证打开工作台、九项科学与运行时检查（包括绘图、不可变 Artifact 与重启后回读）、status/stop，以及强制启用的 bubblewrap 隔离。这次验收没有使用模型凭据，启动器也仍未签名。Windows on ARM 与完整的 Windows 10/11 主机矩阵未经测试。1.0.1 的启动器和打包脚本与 1.0.0 相同，其 ZIP 通过了发布 workflow 的 `verify_windows_zip.py`，但没有重新做这次 Windows 主机验收。
+**Windows 验证范围：**1.0.0 的 x86_64 ZIP 在发布后于 Windows Server 2025 + Ubuntu 24.04 WSL2 上通过了运行验收：随包启动器、在 Windows Chromium 浏览器中通过认证打开工作台、九项科学与运行时检查（包括绘图、不可变 Artifact 与重启后回读）、status/stop，以及强制启用的 bubblewrap 隔离。这次验收没有使用模型凭据，启动器也仍未签名。Windows on ARM 与完整的 Windows 10/11 主机矩阵未经测试。1.0.1 与 1.0.2 的启动器与 1.0.0 相同，两者的 ZIP 都通过了发布 workflow 的 `verify_windows_zip.py`，但都没有重新做这次 Windows 主机验收。
 
 `v0.3.0` 是第一个发布这个安装包的版本，它的验收证据只覆盖 x86_64 上的 WSL2 和测试所用的 Ubuntu 24.04 发行版。[WSL2 一致性审计](docs/windows-wsl-parity-audit_zh.md)的最后一节（「修复验收记录 — 2026-09-07」）列出以下尚未验证的范围：
 
@@ -247,19 +248,19 @@ openai4s serve                               # 实验室 → 设备市场 → �
 
 ### 🐳 Docker 与 Kubernetes
 
-[公开 GHCR 包](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)无需登录即可拉取。安装本版请固定 `1.0.1`；`latest` 会随后续版本移动。镜像为 **linux/amd64**，ARM 主机需要 amd64 模拟支持。
+[公开 GHCR 包](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)无需登录即可拉取。安装本版请固定 `1.0.2`；`latest` 会随后续版本移动。镜像为 **linux/amd64**，ARM 主机需要 amd64 模拟支持。
 
 ```bash
-docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:1.0.1
+docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:1.0.2
 docker run -d --name openai4s --platform linux/amd64 \
   -p 127.0.0.1:8760:8760 \
   -v openai4s-data:/data \
   -e OPENAI4S_SECRET_LLM_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
-  ghcr.io/pku-yuangroup/openai4s:1.0.1
+  ghcr.io/pku-yuangroup/openai4s:1.0.2
 docker exec openai4s openai4s url   # 带令牌、可直接打开的 URL
 ```
 
-镜像包含 Debian-slim 上的 CPython、wheel 与 `science` extra，以非特权用户运行，只有一个挂在 `/data` 的卷。命令把当前 shell 的 `OPENAI4S_LLM_API_KEY` 传给容器的 `OPENAI4S_SECRET_LLM_LLM_API_KEY`；供应商和模型配置见[容器指南](docs/docker.md#zh)。凭据从环境读取。需要从检出的源码构建时，使用 `docker compose up -d --build`。使用 Kubernetes 时，先把 `deploy/kubernetes.yaml` 中的 `image: openai4s:local` 改为 `image: ghcr.io/pku-yuangroup/openai4s:1.0.1`，再部署到 amd64 节点；Secret、持久卷和访问 URL 也见指南。镜像既不含 OpenMHS 也不含 Git；要在容器里使用实验室，请挂载一份 OpenMHS 检出，并把 `OPENAI4S_OPENMHS` 指向它。
+镜像包含 Debian-slim 上的 CPython、wheel 与 `science` extra，以非特权用户运行，只有一个挂在 `/data` 的卷。命令把当前 shell 的 `OPENAI4S_LLM_API_KEY` 传给容器的 `OPENAI4S_SECRET_LLM_LLM_API_KEY`；供应商和模型配置见[容器指南](docs/docker.md#zh)。凭据从环境读取。需要从检出的源码构建时，使用 `docker compose up -d --build`。使用 Kubernetes 时，先把 `deploy/kubernetes.yaml` 中的 `image: openai4s:local` 改为 `image: ghcr.io/pku-yuangroup/openai4s:1.0.2`，再部署到 amd64 节点；Secret、持久卷和访问 URL 也见指南。镜像既不含 OpenMHS 也不含 Git；要在容器里使用实验室，请挂载一份 OpenMHS 检出，并把 `OPENAI4S_OPENMHS` 指向它。
 
 发布版镜像通过 `container_smoke.sh` 后才会上传。在容器内绑定 `0.0.0.0` 会强制要求访问令牌，并关闭防 DNS 重绑定的 `Host` 白名单，因此请把对外发布的端口限制在 loopback。非特权容器无法给 bubblewrap 提供所需命名空间，内核沙箱会可见地降级，由容器充当边界；具体限制见**[容器指南](docs/docker.md#zh)**。
 
@@ -294,8 +295,8 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 
 | 文档 | 内容 |
 |---|---|
-| [**上手指南**](docs/startup-guide.md#zh) | macOS 1.0.1 全流程：ad-hoc 签名的 Apple Silicon DMG，或在 Apple Silicon 与 Intel 上通过 PyPI 安装，再配置模型与豆包搜索 |
-| [**升级**](docs/upgrading_zh.md) | 新的在前。1.0.1（schema 36 → 43）：先备份；智能体强化学习运行时新增的 `rl_*` 表。1.0.0（schema 35 → 36）：先备份；数据集校验回执，以及需主动启用的实验室。0.3.1（schema 32 → 35）：首次启动前先停守护进程并复制数据目录，因为不支持退回。从 0.2.x 升级：在 schema 27 → 32 迁移之前备份数据库、为什么不支持退回 0.2.x，以及现在总是必需的访问令牌 |
+| [**上手指南**](docs/startup-guide.md#zh) | macOS 1.0.2 全流程：ad-hoc 签名的 Apple Silicon DMG，或在 Apple Silicon 与 Intel 上通过 PyPI 安装，再配置模型与豆包搜索 |
+| [**升级**](docs/upgrading_zh.md) | 新的在前。1.0.2（schema 43 → 45）：先备份；单元所运行的脚本，以及消息的提交回执。1.0.1（schema 36 → 43）：先备份；智能体强化学习运行时新增的 `rl_*` 表。1.0.0（schema 35 → 36）：先备份；数据集校验回执，以及需主动启用的实验室。0.3.1（schema 32 → 35）：首次启动前先停守护进程并复制数据目录，因为不支持退回。从 0.2.x 升级：在 schema 27 → 32 迁移之前备份数据库、为什么不支持退回 0.2.x，以及现在总是必需的访问令牌 |
 | [**OpenMHS 实验室**](docs/openmhs_zh.md) | 模拟实验室：安装配置、设备市场、MHS 与 MCP 两种接入面、实验室文件与操作员动作 |
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
 | [**RL runtime**](openai4s/rl/README_zh.md) | 把 OpenAI4S 作为 agentic RL 环境：rollout 生命周期、JSONL Trainer 传输、轨迹导出与训练数据投影 |
@@ -342,7 +343,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 
 ### 下一步
 
-- [ ] **经过公证的 macOS 镜像与 arm64 安装包。** Linux 安装包自 `v0.2.0` 起发布，Windows/WSL2 安装包自 `v0.3.0` 起发布。1.0.1 的 Apple Silicon DMG 是 ad-hoc 签名、未经公证的镜像，Linux 与 Windows 也只发布 `x86_64`。有了 Developer ID 签名并经过公证的 `.dmg`，再加上 arm64 Linux 与 Windows on ARM 安装包，每个受支持的平台才都能免工具链安装。
+- [ ] **经过公证的 macOS 镜像与 arm64 安装包。** Linux 安装包自 `v0.2.0` 起发布，Windows/WSL2 安装包自 `v0.3.0` 起发布。1.0.2 的 Apple Silicon DMG 是 ad-hoc 签名、未经公证的镜像，Linux 与 Windows 也只发布 `x86_64`。有了 Developer ID 签名并经过公证的 `.dmg`，再加上 arm64 Linux 与 Windows on ARM 安装包，每个受支持的平台才都能免工具链安装。
 - [ ] **NVIDIA 科学计算套件** —— 在现有 NVIDIA NIM 集成之外，把 **BioNeMo**（生物分子基础模型）与 **Parabricks**（GPU 加速的基因组学流水线）作为一等公民接入 Skill 与 BYOC 后端。
 - [ ] 本地 GPU 模型服务,让结构/设计类 Skill 无需远程计算即可运行。
 - [ ] SSH + NVIDIA NIM 之外的更多 BYOC 提供方(Modal / SLURM)。

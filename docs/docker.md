@@ -56,19 +56,19 @@ understanding before you publish anything:
 ## Quick start
 
 The [public GHCR package](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)
-provides `ghcr.io/pku-yuangroup/openai4s:1.0.1`; no registry login is required.
-Pin `1.0.1` for this release. `latest` follows subsequent releases.
+provides `ghcr.io/pku-yuangroup/openai4s:1.0.2`; no registry login is required.
+Pin `1.0.2` for this release. `latest` follows subsequent releases.
 Only **linux/amd64** is published; ARM hosts need amd64 emulation.
 Before reusing existing data, stop the old container and back up its volume
-as described in [Upgrading to 1.0.1](upgrading.md).
+as described in [Upgrading to 1.0.2](upgrading.md).
 
 ```bash
-docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:1.0.1
+docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:1.0.2
 docker run -d --name openai4s --platform linux/amd64 \
   -p 127.0.0.1:8760:8760 \
   -v openai4s-data:/data \
   -e OPENAI4S_SECRET_LLM_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
-  ghcr.io/pku-yuangroup/openai4s:1.0.1
+  ghcr.io/pku-yuangroup/openai4s:1.0.2
 docker exec openai4s openai4s url
 ```
 
@@ -87,7 +87,7 @@ instead — a `?token=` link is not a browser login there.
 
 From a source checkout, `docker build -t openai4s:local .` builds a local image.
 The repository's Compose configuration also builds locally, adding a health
-check and a stop grace period. Use the `v1.0.1` checkout to build this release:
+check and a stop grace period. Use the `v1.0.2` checkout to build this release:
 
 ```bash
 docker compose up -d --build
@@ -238,7 +238,7 @@ Your options, in order of strength:
 2. Grant the namespace privileges and set `OPENAI4S_KERNEL_SANDBOX=enforce`, so
    a kernel that cannot be isolated refuses to start instead of degrading.
    Verify with `openai4s doctor` inside the container:
-   `docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN ghcr.io/pku-yuangroup/openai4s:1.0.1 openai4s doctor`.
+   `docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN ghcr.io/pku-yuangroup/openai4s:1.0.2 openai4s doctor`.
    Note that this hands the container capabilities that weaken *its* boundary,
    which is a real trade and not a free upgrade.
 3. Set `OPENAI4S_KERNEL_SANDBOX=off` if you have decided the container is the
@@ -265,7 +265,7 @@ mode, the pidfile singleton only guards `serve`, and the manifests pin
 
 Before applying the manifest, replace `image: openai4s:local` in
 [`deploy/kubernetes.yaml`](../deploy/kubernetes.yaml) with
-`image: ghcr.io/pku-yuangroup/openai4s:1.0.1`. Schedule it on amd64 nodes;
+`image: ghcr.io/pku-yuangroup/openai4s:1.0.2`. Schedule it on amd64 nodes;
 in a mixed-architecture cluster, add `nodeSelector: {kubernetes.io/arch: amd64}`
 under `spec.template.spec`. The public image needs no `imagePullSecrets`.
 
@@ -395,17 +395,17 @@ grant，Workbench 对 HTML 报表始终保留惰性、不执行脚本的预览�
 ## 快速开始
 
 [公开 GHCR 包](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)提供
-`ghcr.io/pku-yuangroup/openai4s:1.0.1`，无需登录镜像仓库。安装本版请固定 `1.0.1`；
+`ghcr.io/pku-yuangroup/openai4s:1.0.2`，无需登录镜像仓库。安装本版请固定 `1.0.2`；
 `latest` 会随后续版本移动。目前只发布 **linux/amd64**，ARM 主机需要 amd64 模拟支持。
-复用已有数据之前，请先停止旧容器并备份其数据卷，步骤见[升级到 1.0.1](upgrading_zh.md)。
+复用已有数据之前，请先停止旧容器并备份其数据卷，步骤见[升级到 1.0.2](upgrading_zh.md)。
 
 ```bash
-docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:1.0.1
+docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:1.0.2
 docker run -d --name openai4s --platform linux/amd64 \
   -p 127.0.0.1:8760:8760 \
   -v openai4s-data:/data \
   -e OPENAI4S_SECRET_LLM_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
-  ghcr.io/pku-yuangroup/openai4s:1.0.1
+  ghcr.io/pku-yuangroup/openai4s:1.0.2
 docker exec openai4s openai4s url
 ```
 
@@ -419,7 +419,7 @@ docker exec openai4s openai4s url
 ### 从源码构建
 
 在源码目录里运行 `docker build -t openai4s:local .` 可构建本地镜像。仓库随附的
-Compose 配置也在本地构建，并加上健康检查与停止宽限期。构建本版时请使用 `v1.0.1` 的源码：
+Compose 配置也在本地构建，并加上健康检查与停止宽限期。构建本版时请使用 `v1.0.2` 的源码：
 
 ```bash
 docker compose up -d --build
@@ -552,7 +552,7 @@ secret-read 掩码与网络命名空间是一起消失的。那些掩码正是�
    `kubectl port-forward`。随附文件就是这么做的。
 2. 授予命名空间权限并设 `OPENAI4S_KERNEL_SANDBOX=enforce`，这样无法隔离的内核会
    拒绝启动而不是降级。在容器里用 `openai4s doctor` 验证：
-   `docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN ghcr.io/pku-yuangroup/openai4s:1.0.1 openai4s doctor`。
+   `docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN ghcr.io/pku-yuangroup/openai4s:1.0.2 openai4s doctor`。
    注意这是把削弱*容器自身*边界的能力交了出去，是一笔真实的交易，不是白捡的升级。
 3. 如果你已经决定由容器充当边界，就设 `OPENAI4S_KERNEL_SANDBOX=off`。它只是让那
    条警告不再出现，别的什么都不改变。
@@ -576,7 +576,7 @@ Kubernetes 里由 `fsGroup: 1000` 负责这件事。
 ## Kubernetes
 
 应用清单之前，请先把 [`deploy/kubernetes.yaml`](../deploy/kubernetes.yaml) 中的
-`image: openai4s:local` 改为 `image: ghcr.io/pku-yuangroup/openai4s:1.0.1`。
+`image: openai4s:local` 改为 `image: ghcr.io/pku-yuangroup/openai4s:1.0.2`。
 请调度到 amd64 节点；混合架构集群应在 `spec.template.spec` 下添加
 `nodeSelector: {kubernetes.io/arch: amd64}`。公开镜像无需 `imagePullSecrets`。
 
