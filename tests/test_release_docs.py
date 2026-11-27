@@ -361,6 +361,49 @@ def test_the_101_section_matches_the_migrations_it_describes():
     assert "退出码是 2" in chinese
 
 
+# -- upgrading to 1.0.2 (schema 43 → 45) --------------------------------------
+
+#: Written as "the release after 1.0.1" until that release was numbered.
+TO_102_EN = "## Upgrading to 1.0.2 (schema 43 → 45)"
+TO_102_ZH = "## 升级到 1.0.2（schema 43 → 45）"
+
+
+def test_the_102_section_matches_the_migrations_it_describes():
+    """Each claim is read from the code that makes it true: the step names in
+    the table are the ones the Store registers for 44 and 45, the migration
+    still deletes its copy on success, 1.0.1 refuses the upgraded database
+    with `future_schema`, and a standing install rule is refused with the code
+    the permission store raises. The install pins name the release the section
+    is for and the one it rolls back to."""
+    from openai4s.storage.migrations import FutureSchemaError
+    from openai4s.storage.permissions import InstallRuleRefused
+
+    registered = {
+        int(number): name
+        for number, name in re.findall(
+            r'^\s*(\d+): \(\s*"([a-z0-9_]+)"',
+            (ROOT / "openai4s" / "store.py").read_text("utf-8"),
+            re.M,
+        )
+    }
+    english = " ".join(_section(UPGRADING, TO_102_EN).split())
+    chinese = " ".join(_section(UPGRADING_ZH, TO_102_ZH).split())
+    deletes = _migration_deletes_its_backup_on_success()
+    for text in (english, chinese):
+        for number in (44, 45):
+            assert f"| {number} | `{registered[number]}`" in text, number
+        assert "`openai4s.db.v43.bak`" in text
+        assert f"`{FutureSchemaError.code}`" in text
+        assert f"`{InstallRuleRefused.code}`" in text
+        assert "cp -a ~/.openai4s ~/.openai4s-before-1.0.2" in text
+        assert 'python -m pip install --upgrade "openai4s[science]==1.0.2"' in text
+        assert 'python -m pip install "openai4s[science]==1.0.1"' in text
+    assert deletes == ("deletes that copy once it succeeds" in english)
+    assert deletes == ("迁移成功后会删除这份副本" in chinese)
+    assert "Downgrade is unsupported" in english
+    assert "不支持降级" in chinese
+
+
 # -- what each platform can actually download ----------------------------------
 
 WORKFLOWS = ROOT / ".github" / "workflows"
